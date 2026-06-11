@@ -1,0 +1,356 @@
+# PRD 02: Level 1 to Level 2 Normalization
+
+## Document Status
+
+- Status: Draft v1
+- Product area: `elt_pipeline`
+- Stage: `level1` -> `level2`
+- Proposed implementation language: Python
+- Proposed packaging and environment management: `uv`
+
+## Background
+
+The legacy platforms describe `level2` as the first structured and queryable layer. In practice, the discovered `mercell` implementation uses `level2` heavily for converting JSON, XML, CSV, and stream payloads into structured tables, while the user-described `camlot` implementation treats `level2` as largely redundant except when the source payload is nested or otherwise non-tabular.
+
+The new `elt_pipeline` should preserve the useful role of `level2` without forcing every source through an unnecessary stage. This PRD defines `level2` as a normalization layer used only when it adds value.
+
+## Problem Statement
+
+The historical `level2` concept mixes two different needs:
+
+- a necessary parsing and normalization step for semi-structured inputs,
+- an unnecessary extra hop for already-tabular or analytics-ready data.
+
+This creates avoidable latency, duplicated configuration, extra storage churn, and confusion about where structure should be introduced.
+
+The new platform needs a crisp product definition for `level2` so teams know:
+
+- when to use it,
+- what it is allowed to do,
+- what it must never become,
+- and when a source may safely bypass it.
+
+## Product Vision
+
+Build a lightweight, explicit normalization framework that converts raw `level1` assets into queryable `level2` datasets only when raw source structure requires it. `level2` exists to parse, flatten, type, and expose source-aligned tables, not to implement business conformance or reporting semantics.
+
+## Goals
+
+- Make `level2` optional by design rather than mandatory by convention.
+- Preserve `level2` for nested, semi-structured, multi-record, or schema-ambiguous inputs.
+- Standardize parsing, schema application, flattening, and source-aligned table materialization.
+- Allow already-tabular inputs to bypass or minimize `level2`.
+- Provide downstream consumers with a stable, queryable handoff into SQL-driven modeling.
+
+## Non-Goals
+
+- Business conformance, golden model design, or domain harmonization.
+- Consumer/reporting marts.
+- Publish/export products.
+- Recreating legacy `level2` tables that exist only because of historical platform constraints.
+
+## Product Definition
+
+In `elt_pipeline`, `level2` is the source-normalized analytical landing zone.
+
+It is used when at least one of the following is true:
+
+- raw payloads are nested or hierarchical,
+- raw payloads require parsing from XML, JSON, CSV variants, Avro, or binary-derived structures,
+- raw inputs contain arrays that must be exploded into structured tables,
+- raw inputs require type enforcement before reliable SQL use,
+- raw source files bundle multiple logical entities into one asset.
+
+It may be bypassed when:
+
+- the source already lands in a tabular format with stable schema,
+- the raw extract is directly queryable and fit for SQL modeling,
+- the only `level2` value would be mechanical copying without normalization.
+
+## Users and Stakeholders
+
+- Data platform engineers building parsers and source mappings.
+- Analytics engineers and SQL model authors consuming source-aligned tables.
+- Source owners needing predictable structure from complex raw feeds.
+- Platform operators responsible for runtime efficiency and reprocessing behavior.
+
+## Scope
+
+This PRD covers:
+
+- source-to-table normalization from `level1`,
+- parsing and schema application,
+- structural flattening and array expansion,
+- write semantics into `level2`,
+- optional stage bypass rules,
+- observability and replay requirements for normalization.
+
+This PRD excludes:
+
+- business-rule enrichment,
+- cross-source conformance,
+- downstream marts and exports.
+
+## Functional Requirements
+
+### FR1. Optional Stage Behavior
+
+The product shall support two execution modes:
+
+- `normalize`: transform `level1` data into structured `level2` tables,
+- `bypass`: register or expose source data for downstream SQL without an unnecessary intermediate rewrite.
+
+The decision to normalize or bypass must be explicit in source configuration.
+
+### FR2. Source Mapping Configuration
+
+The framework shall provide source-level mapping definitions that specify:
+
+- source name,
+- entity name,
+- source format,
+- compression type,
+- record selection strategy,
+- schema definition or schema reference,
+- flattening and explode rules,
+- write mode,
+- partition strategy,
+- bypass eligibility.
+
+The configuration should be human-maintainable and versioned independently of runtime code.
+
+### FR3. Supported Input Patterns
+
+The normalization runtime shall support patterns evidenced in the existing stack:
+
+- JSON documents and document collections,
+- XML payloads with row-tag or path-based record extraction,
+- CSV and delimiter-driven files with configurable headers,
+- Avro or message-derived structured payloads,
+- raw file manifests or metadata feeds,
+- already-tabular Parquet or equivalent sources.
+
+### FR4. Parsing and Extraction
+
+For normalized sources, the framework shall:
+
+- locate records within a raw payload,
+- parse source-specific structures,
+- extract one or more logical tables from a single asset,
+- preserve source-identifying keys back to `level1` artifacts.
+
+### FR5. Schema Enforcement
+
+The framework shall support:
+
+- explicit schemas,
+- schema inference under controlled conditions,
+- schema evolution policies,
+- required versus optional fields,
+- type casting with error capture,
+- nullability and default handling.
+
+Schema handling must be deterministic and visible in run metadata.
+
+### FR6. Flattening and Expansion
+
+The runtime shall support:
+
+- flattening nested structs,
+- exploding arrays into child tables,
+- parent-child key propagation,
+- extraction of repeated nested objects into separate entities,
+- controlled naming conventions for derived tables and columns.
+
+### FR7. Source-Aligned Table Semantics
+
+`level2` outputs must remain source-aligned rather than business-conformed.
+
+Allowed behavior:
+
+- parsing,
+- flattening,
+- typing,
+- renaming for technical clarity,
+- splitting one payload into multiple structured entities.
+
+Disallowed behavior:
+
+- applying domain-wide golden rules,
+- joining unrelated sources,
+- embedding consumer-specific aggregations,
+- introducing reporting semantics that belong in `level3` or `level4`.
+
+### FR8. Write Semantics
+
+The framework shall support:
+
+- append and overwrite modes where appropriate,
+- incremental loads for partitioned windows,
+- partitioning based on ingestion date, business date, or source-aligned keys,
+- physically efficient file/table output for downstream SQL use.
+
+### FR9. Error Isolation and Quarantine
+
+When parsing or typing fails, the system shall support:
+
+- record-level error capture where feasible,
+- file-level quarantine when record-level isolation is not practical,
+- replay from the original `level1` artifact,
+- metrics on dropped, quarantined, and successfully normalized records.
+
+### FR10. Level 1 Traceability
+
+Every `level2` record or partition must be traceable back to:
+
+- source name,
+- entity name,
+- `level1` artifact path or manifest reference,
+- run id,
+- normalization mapping version.
+
+### FR11. Replay and Backfill
+
+Operators shall be able to:
+
+- rerun normalization for a specific `level1` partition or date range,
+- rerun after schema/mapping changes,
+- rebuild a `level2` dataset from the immutable raw zone without re-ingesting the source.
+
+## Non-Functional Requirements
+
+### NFR1. Performance
+
+- The framework must handle large nested payloads efficiently.
+- Normalization should scale horizontally by source, entity, and partition.
+
+### NFR2. Cost Efficiency
+
+- `level2` should only exist where it adds technical value.
+- Sources that can safely bypass `level2` should avoid unnecessary rewrites.
+
+### NFR3. Reliability
+
+- Failed normalization runs must not corrupt or partially advance target partitions silently.
+- Rebuilds from `level1` must be deterministic.
+
+### NFR4. Maintainability
+
+- Source-specific parsing logic should be isolated behind reusable readers or adapters.
+- Mapping definitions should be simpler than the current fragmented legacy config model.
+
+### NFR5. Observability
+
+- Metrics must capture payloads processed, records produced, parse failures, schema drift, and output partitions written.
+
+## Proposed Product Design
+
+### Normalization Runtime
+
+The Python implementation should provide a shared normalization engine that:
+
+- loads source mappings,
+- reads raw `level1` assets,
+- dispatches to format-specific readers,
+- applies schema and flattening rules,
+- materializes one or more `level2` outputs,
+- emits run lineage and quality metrics.
+
+### Suggested Package Areas
+
+- `elt_pipeline.normalize.readers`
+- `elt_pipeline.normalize.mappings`
+- `elt_pipeline.normalize.schema`
+- `elt_pipeline.normalize.writer`
+- `elt_pipeline.normalize.lineage`
+
+### Configuration Model
+
+The new configuration approach should replace the current split between HOCON, JSON source mappings, and code-level assumptions with a simpler contract.
+
+Each source mapping should express:
+
+- ingestion source reference,
+- raw format and compression,
+- record path strategy,
+- entity extraction plan,
+- schema definitions,
+- table naming strategy,
+- bypass policy.
+
+### Stage Bypass Policy
+
+The platform should support three source classes:
+
+1. `required_level2`
+   Use `level2` because the source is nested, semi-structured, or needs structural normalization.
+
+2. `lightweight_level2`
+   Use `level2` for minimal typing or layout standardization, but avoid unnecessary transformations.
+
+3. `bypass_level2`
+   Skip physical normalization and expose the source directly to `level3` modeling when technically safe.
+
+## Data Contract for Level 2
+
+Each `level2` entity must publish:
+
+- source name,
+- entity name,
+- schema version,
+- mapping version,
+- source run id,
+- `level1` lineage reference,
+- partition keys,
+- record counts,
+- error and quarantine counts.
+
+## Success Metrics
+
+- Teams can clearly decide whether `level2` is required for a source.
+- A nested source can be normalized through configuration plus reusable framework code.
+- A tabular source can bypass `level2` without custom exceptions in orchestration.
+- `level2` rebuilds are possible from immutable raw data.
+- Downstream SQL authors receive stable, queryable source-aligned datasets.
+
+## Acceptance Criteria
+
+- The Python `uv` project can normalize at least one JSON source and one XML or CSV source from `level1` into `level2`.
+- The framework supports child-table extraction from nested data.
+- The runtime records lineage from `level2` outputs back to `level1` artifacts.
+- At least one already-tabular source can be configured to bypass physical `level2` transformation.
+- Schema errors are surfaced with quarantine or explicit run failure semantics.
+
+## Migration Considerations
+
+- Legacy `level2` datasets should be classified into required, lightweight, and bypass candidates.
+- Historical `level2` tables that only copy tabular source data should be strong candidates for removal.
+- Sources with brittle nested parsing should be migrated early enough to validate the normalization framework.
+
+## Risks
+
+- Teams may continue to push business logic into `level2` unless boundaries are enforced in design and review.
+- Stage bypass can create inconsistency if not reflected clearly in lineage and orchestration.
+- Deeply nested sources may require more expressive mapping rules than a minimal configuration model initially supports.
+
+## Assumptions
+
+- `level2` remains part of the architecture, but only as a technical normalization layer.
+- The user-described `camlot` insight is a core design constraint: `level2` should not exist as mandatory ceremony.
+- This document is informed by the discovered `mercell` implementation and the user-provided `camlot` behavior, since no `camlot` folder was present in the local archive.
+
+## Open Questions
+
+- Should bypassed sources materialize metadata-only registrations, or should they be referenced directly by downstream models?
+- Which schema definition approach should be primary: declarative files, Python models, or generated contracts?
+- How much source-specific parsing logic belongs in reusable readers versus per-source plugins?
+- What is the target table format for `level2` in the new platform?
+
+## Delivery Recommendation
+
+Phase the normalization product as follows:
+
+1. Implement the common normalization engine and source mapping contract.
+2. Prove nested extraction on a representative complex source.
+3. Add bypass support for a representative tabular source.
+4. Classify legacy sources and migrate them by source class rather than one-for-one legacy parity.
