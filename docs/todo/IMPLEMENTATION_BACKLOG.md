@@ -104,11 +104,11 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement auth strategy support for v1 REST flows
 - [x] Implement token acquisition + token injection
 - [x] Implement retries / timeout / error classification
-- [ ] Implement pagination
-- [ ] Implement envelope extraction support
-- [ ] Implement payload decoding hooks
-- [ ] Implement raw landing of responses into level1
-- [ ] Implement checkpoint update only after durable persistence
+- [x] Implement pagination
+- [x] Implement envelope extraction support
+- [x] Implement payload decoding hooks
+- [x] Implement raw landing of responses into level1
+- [x] Implement checkpoint update only after durable persistence
 
 ### Phase 6: Level1 to Level2 Normalization
 

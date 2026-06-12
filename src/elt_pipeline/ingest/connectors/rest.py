@@ -751,6 +751,253 @@ class RestConnectorBase(ABC):
     ) -> None:
         return None
 
+    def decode_response_document(
+        self,
+        *,
+        request: RestPreparedRequest,
+        response: RestResponse,
+    ) -> Any:
+        raw_body = response.body.decode("utf-8", errors="replace") if isinstance(
+            response.body, bytes
+        ) else response.body
+        payload_format = (self.config.request.payload_format or "").strip().lower()
+        content_type = (response.content_type or "").strip().lower()
+        if payload_format in {"json", "ndjson", "jsonl"} or "json" in content_type:
+            try:
+                return json.loads(raw_body)
+            except json.JSONDecodeError:
+                return raw_body
+        return raw_body
+
+    def extract_response_items(
+        self,
+        *,
+        request: RestPreparedRequest,
+        response: RestResponse,
+        document: Any,
+    ) -> Any:
+        response_items_path = self.config.request.response_items_path
+        if response_items_path:
+            return _resolve_document_path(
+                document,
+                path=response_items_path,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                path_label="response_items_path",
+            )
+        if isinstance(document, list):
+            return document
+        return None
+
+    def _prepare_initial_pagination_request(
+        self,
+        *,
+        request: RestPreparedRequest,
+        checkpoint_before: dict[str, Any] | None,
+    ) -> RestPreparedRequest:
+        pagination = self.config.pagination
+        if pagination.mode == RestPaginationMode.none:
+            return request
+
+        query_params = dict(request.query_params)
+        if pagination.page_size is not None:
+            query_params.setdefault(pagination.page_size_parameter_name, pagination.page_size)
+
+        if pagination.mode == RestPaginationMode.page:
+            page_name = pagination.page_parameter_name
+            page_value = query_params.get(page_name)
+            if page_value is None and checkpoint_before:
+                page_value = checkpoint_before.get(page_name)
+            if page_value is None:
+                page_value = pagination.start_value if pagination.start_value is not None else 1
+            query_params[page_name] = _coerce_int_pagination_value(
+                page_value,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                field_name=page_name,
+            )
+
+        if pagination.mode == RestPaginationMode.offset:
+            offset_name = pagination.offset_parameter_name
+            offset_value = query_params.get(offset_name)
+            if offset_value is None and checkpoint_before:
+                offset_value = checkpoint_before.get(offset_name)
+            if offset_value is None:
+                offset_value = pagination.start_value if pagination.start_value is not None else 0
+            query_params[offset_name] = _coerce_int_pagination_value(
+                offset_value,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                field_name=offset_name,
+            )
+
+        if pagination.mode == RestPaginationMode.cursor:
+            cursor_name = pagination.cursor_parameter_name
+            if (
+                cursor_name not in query_params
+                and checkpoint_before
+                and cursor_name in checkpoint_before
+            ):
+                query_params[cursor_name] = checkpoint_before[cursor_name]
+            if cursor_name not in query_params and pagination.start_value is not None:
+                query_params[cursor_name] = pagination.start_value
+
+        return request.model_copy(update={"query_params": query_params})
+
+    def build_next_paginated_request(
+        self,
+        *,
+        request: RestPreparedRequest,
+        response: RestResponse,
+        document: Any,
+        items: Any,
+        page_index: int,
+    ) -> RestPreparedRequest | None:
+        pagination = self.config.pagination
+        if pagination.mode == RestPaginationMode.none:
+            return None
+        if pagination.max_pages is not None and page_index >= pagination.max_pages:
+            return None
+
+        if isinstance(items, list) and len(items) == 0:
+            return None
+
+        page_size_value = pagination.page_size
+        if page_size_value is None:
+            existing_value = request.query_params.get(pagination.page_size_parameter_name)
+            if existing_value is not None:
+                page_size_value = _coerce_int_pagination_value(
+                    existing_value,
+                    source_name=self.config.source_name,
+                    entity_name=self.config.entity_name,
+                    field_name=pagination.page_size_parameter_name,
+                )
+
+        total_count: int | None = None
+        if pagination.response_total_count_path:
+            resolved_total = _resolve_document_path(
+                document,
+                path=pagination.response_total_count_path,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                path_label="response_total_count_path",
+            )
+            total_count = _coerce_int_pagination_value(
+                resolved_total,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                field_name=pagination.response_total_count_path,
+            )
+
+        if pagination.mode == RestPaginationMode.page:
+            page_name = pagination.page_parameter_name
+            current_page = _coerce_int_pagination_value(
+                request.query_params.get(page_name),
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                field_name=page_name,
+            )
+            if total_count is not None and page_size_value is not None:
+                if current_page * page_size_value >= total_count:
+                    return None
+            if (
+                page_size_value is not None
+                and isinstance(items, list)
+                and len(items) < page_size_value
+            ):
+                return None
+            next_page = current_page + 1
+            query_params = dict(request.query_params)
+            query_params[page_name] = next_page
+            return request.model_copy(
+                update={
+                    "query_params": query_params,
+                    "metadata": {
+                        **request.metadata,
+                        "pagination": {
+                            "mode": pagination.mode.value,
+                            "page": next_page,
+                            "page_index": page_index + 1,
+                        },
+                    },
+                }
+            )
+
+        if pagination.mode == RestPaginationMode.offset:
+            offset_name = pagination.offset_parameter_name
+            current_offset = _coerce_int_pagination_value(
+                request.query_params.get(offset_name),
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                field_name=offset_name,
+            )
+            if page_size_value is None:
+                raise ConfigValidationError(
+                    message="Offset pagination requires a page_size value",
+                    context={
+                        "source_name": self.config.source_name,
+                        "entity_name": self.config.entity_name,
+                        "page_size_parameter_name": pagination.page_size_parameter_name,
+                    },
+                )
+            next_offset = current_offset + page_size_value
+            if total_count is not None and next_offset >= total_count:
+                return None
+            if isinstance(items, list) and len(items) < page_size_value:
+                return None
+            query_params = dict(request.query_params)
+            query_params[offset_name] = next_offset
+            return request.model_copy(
+                update={
+                    "query_params": query_params,
+                    "metadata": {
+                        **request.metadata,
+                        "pagination": {
+                            "mode": pagination.mode.value,
+                            "offset": next_offset,
+                            "page_index": page_index + 1,
+                        },
+                    },
+                }
+            )
+
+        if pagination.mode == RestPaginationMode.cursor:
+            if not pagination.response_next_cursor_path:
+                raise ConfigValidationError(
+                    message="Cursor pagination requires response_next_cursor_path",
+                    context={
+                        "source_name": self.config.source_name,
+                        "entity_name": self.config.entity_name,
+                    },
+                )
+            next_cursor = _resolve_document_path(
+                document,
+                path=pagination.response_next_cursor_path,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                path_label="response_next_cursor_path",
+            )
+            response.metadata = {**response.metadata, "next_cursor": next_cursor}
+            if next_cursor is None or isinstance(next_cursor, (Mapping, list)):
+                return None
+            query_params = dict(request.query_params)
+            query_params[pagination.cursor_parameter_name] = str(next_cursor)
+            return request.model_copy(
+                update={
+                    "query_params": query_params,
+                    "metadata": {
+                        **request.metadata,
+                        "pagination": {
+                            "mode": pagination.mode.value,
+                            "cursor": str(next_cursor),
+                            "page_index": page_index + 1,
+                        },
+                    },
+                }
+            )
+
+        return None
+
     def run(self) -> RestRunResult:
         self.validate_config()
         checkpoint_before = self.resolve_checkpoint_before()
@@ -759,7 +1006,7 @@ class RestConnectorBase(ABC):
         self._active_window = window
         try:
             auth = self.resolve_authentication()
-            requests = self.build_request_plan(
+            plan_requests = self.build_request_plan(
                 checkpoint_before=checkpoint_before,
                 window=window,
                 auth=auth,
@@ -767,24 +1014,64 @@ class RestConnectorBase(ABC):
 
             manifests: list[Level1ArtifactManifest] = []
             responses: list[RestResponse] = []
-            for request in requests:
-                response = self.send_request(request)
-                responses.append(response)
-                manifests.extend(
-                    self.persist_response(
+            executed_requests: list[RestPreparedRequest] = []
+            for plan_request in plan_requests:
+                request = self._prepare_initial_pagination_request(
+                    request=plan_request,
+                    checkpoint_before=checkpoint_before,
+                )
+                page_index = 0
+                while True:
+                    executed_requests.append(request)
+                    response = self.send_request(request)
+                    page_index += 1
+
+                    document: Any | None = None
+                    items: Any | None = None
+                    if (
+                        self.config.request.response_items_path
+                        or self.config.pagination.response_total_count_path
+                        or self.config.pagination.response_next_cursor_path
+                        or self.config.pagination.mode != RestPaginationMode.none
+                    ):
+                        document = self.decode_response_document(request=request, response=response)
+                        items = self.extract_response_items(
+                            request=request,
+                            response=response,
+                            document=document,
+                        )
+                        response.metadata = {
+                            **response.metadata,
+                            "extracted_items": items,
+                        }
+
+                    responses.append(response)
+                    manifests.extend(
+                        self.persist_response(
+                            request=request,
+                            response=response,
+                            checkpoint_before=checkpoint_before,
+                            window=window,
+                        )
+                    )
+
+                    next_request = self.build_next_paginated_request(
                         request=request,
                         response=response,
-                        checkpoint_before=checkpoint_before,
-                        window=window,
+                        document=document,
+                        items=items,
+                        page_index=page_index,
                     )
-                )
+                    if next_request is None:
+                        break
+                    request = next_request
         finally:
             self._active_checkpoint_before = None
             self._active_window = None
 
         checkpoint_after = self.build_checkpoint_after(
             checkpoint_before=checkpoint_before,
-            requests=requests,
+            requests=executed_requests,
             responses=responses,
             manifests=manifests,
             window=window,
@@ -800,7 +1087,7 @@ class RestConnectorBase(ABC):
             manifests=manifests,
             checkpoint_before=checkpoint_before,
             checkpoint_after=checkpoint_after,
-            request_count=len(requests),
+            request_count=len(executed_requests),
             response_count=len(responses),
         )
 
@@ -1067,7 +1354,7 @@ def _extract_access_token(
         source_name=source_name,
         entity_name=entity_name,
     )
-    if token_value is None or isinstance(token_value, Mapping | list):
+    if token_value is None or isinstance(token_value, (Mapping, list)):
         raise ConfigValidationError(
             message="REST auth token response path must resolve to a scalar value",
             context={
@@ -1139,6 +1426,82 @@ def _status_error_category(status_code: int) -> ErrorCategory:
     if 400 <= status_code < 500:
         return ErrorCategory.input_contract_error
     return ErrorCategory.processing_error
+
+
+def _resolve_document_path(
+    response_document: Any,
+    *,
+    path: str,
+    source_name: str,
+    entity_name: str,
+    path_label: str,
+) -> Any:
+    normalized_path = path.strip()
+    if not normalized_path:
+        raise ConfigValidationError(
+            message=f"REST {path_label} must not be empty",
+            context={"source_name": source_name, "entity_name": entity_name},
+        )
+
+    current = response_document
+    for part in normalized_path.split("."):
+        if isinstance(current, Mapping) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if 0 <= index < len(current):
+                current = current[index]
+                continue
+        raise ConfigValidationError(
+            message=f"REST {path_label} did not resolve to a value",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                path_label: normalized_path,
+            },
+        )
+    return current
+
+
+def _coerce_int_pagination_value(
+    value: Any,
+    *,
+    source_name: str,
+    entity_name: str,
+    field_name: str,
+) -> int:
+    if value is None:
+        raise ConfigValidationError(
+            message="REST pagination value is missing",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "field_name": field_name,
+            },
+        )
+    if isinstance(value, bool):
+        raise ConfigValidationError(
+            message="REST pagination value must be an integer",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "field_name": field_name,
+                "value": value,
+            },
+        )
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            message="REST pagination value must be an integer",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "field_name": field_name,
+                "value": value,
+            },
+        ) from exc
 
 
 __all__ = [

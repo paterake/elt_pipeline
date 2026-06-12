@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from elt_pipeline.ingest.connectors import (
     RestResolvedAuth,
     RestResponse,
 )
+from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalLevel1Writer
 from elt_pipeline.shared.errors import ConfigValidationError, ErrorCategory, PipelineError
@@ -109,6 +111,94 @@ def test_rest_connector_base_persists_before_checkpoint_update(tmp_path: Path) -
     assert result.checkpoint_after == {"page": 4}
     assert checkpoint_document.current_checkpoint == {"page": 4}
     assert checkpoint_document.history[0].manifest_paths == [result.manifests[0].manifest_path]
+
+
+def test_rest_connector_page_pagination_runs_until_short_page() -> None:
+    connector = PaginatingRestConnector(
+        run_context=_build_auth_run_context(),
+        pagination={
+            "mode": "page",
+            "page_parameter_name": "page",
+            "page_size_parameter_name": "page_size",
+            "page_size": 2,
+        },
+        response_items_path="items",
+        documents_by_key={
+            1: {"items": [{"id": 1}, {"id": 2}]},
+            2: {"items": [{"id": 3}]},
+        },
+    )
+
+    result = connector.run()
+
+    assert [request.query_params["page"] for request in connector.executed_requests] == [1, 2]
+    assert result.request_count == 2
+    assert result.response_count == 2
+    assert connector.persisted_items == [
+        [{"id": 1}, {"id": 2}],
+        [{"id": 3}],
+    ]
+
+
+def test_rest_connector_offset_pagination_runs_until_total_count_exhausted() -> None:
+    connector = PaginatingRestConnector(
+        run_context=_build_auth_run_context(),
+        pagination={
+            "mode": "offset",
+            "offset_parameter_name": "offset",
+            "page_size_parameter_name": "limit",
+            "page_size": 2,
+            "response_total_count_path": "total",
+        },
+        response_items_path="items",
+        documents_by_key={
+            0: {"total": 3, "items": [{"id": 1}, {"id": 2}]},
+            2: {"total": 3, "items": [{"id": 3}]},
+        },
+    )
+
+    result = connector.run()
+
+    assert [request.query_params["offset"] for request in connector.executed_requests] == [0, 2]
+    assert result.request_count == 2
+    assert result.response_count == 2
+
+
+def test_rest_connector_cursor_pagination_runs_until_next_cursor_is_missing() -> None:
+    connector = PaginatingRestConnector(
+        run_context=_build_auth_run_context(),
+        pagination={
+            "mode": "cursor",
+            "cursor_parameter_name": "cursor",
+            "response_next_cursor_path": "next_cursor",
+        },
+        response_items_path="items",
+        documents_by_key={
+            None: {"items": [{"id": 1}], "next_cursor": "abc"},
+            "abc": {"items": [{"id": 2}], "next_cursor": None},
+        },
+    )
+
+    result = connector.run()
+
+    assert [request.query_params.get("cursor") for request in connector.executed_requests] == [
+        None,
+        "abc",
+    ]
+    assert result.request_count == 2
+    assert result.response_count == 2
+
+
+def test_rest_connector_envelope_extraction_rejects_unknown_path() -> None:
+    connector = PaginatingRestConnector(
+        run_context=_build_auth_run_context(),
+        pagination={"mode": "page"},
+        response_items_path="payload.items",
+        documents_by_key={1: {"items": [{"id": 1}]}},
+    )
+
+    with pytest.raises(ConfigValidationError, match="response_items_path did not resolve"):
+        connector.run()
 
 
 def test_rest_connector_build_request_plan_renders_templates() -> None:
@@ -686,6 +776,70 @@ class RetryingRestConnector(RestConnectorBase):
 
     def persist_response(self, **kwargs):
         raise NotImplementedError
+
+
+class PaginatingRestConnector(RestConnectorBase):
+    def __init__(
+        self,
+        *,
+        run_context: RunContext,
+        pagination: dict[str, object],
+        response_items_path: str | None,
+        documents_by_key: dict[object, dict[str, object]],
+    ) -> None:
+        self.executed_requests: list[RestPreparedRequest] = []
+        self.persisted_items: list[object] = []
+        self.documents_by_key = documents_by_key
+        super().__init__(
+            config=RestConnectorConfig(
+                schema_version="v1",
+                environment="dev",
+                source_name="orders_api",
+                entity_name="orders",
+                execution_mode="scheduled_batch",
+                base_url="https://api.example.com",
+                request={
+                    "method": "GET",
+                    "path": "/v1/orders",
+                    "payload_format": "json",
+                    "response_items_path": response_items_path,
+                },
+                pagination=pagination,
+            ),
+            run_context=run_context,
+        )
+
+    def execute_request(self, request: RestPreparedRequest) -> RestResponse:
+        self.executed_requests.append(request)
+        mode = self.config.pagination.mode.value
+        if mode == "page":
+            key: object = request.query_params.get(self.config.pagination.page_parameter_name)
+        elif mode == "offset":
+            key = request.query_params.get(self.config.pagination.offset_parameter_name)
+        elif mode == "cursor":
+            key = request.query_params.get(self.config.pagination.cursor_parameter_name)
+        else:
+            key = None
+        document = self.documents_by_key[key]
+        return RestResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body=json.dumps(document),
+            received_at=datetime(2026, 1, 5, 10, 31, tzinfo=UTC),
+            content_type="application/json",
+            metadata={},
+        )
+
+    def persist_response(
+        self,
+        *,
+        request: RestPreparedRequest,
+        response: RestResponse,
+        checkpoint_before: dict[str, object] | None,
+        window: RestRequestWindow | None,
+    ) -> list[Level1ArtifactManifest]:
+        self.persisted_items.append(response.metadata.get("extracted_items"))
+        return []
 
 
 def _build_auth_run_context() -> RunContext:

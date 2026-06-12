@@ -1,5 +1,6 @@
 """Connector families for ingestion runtimes."""
 
+from elt_pipeline.ingest.connectors.local_rest import LocalRestConnector
 from elt_pipeline.ingest.connectors.rest import (
     RestAuthConfig,
     RestAuthStrategy,
@@ -30,4 +31,5 @@ __all__ = [
     "RestResolvedAuth",
     "RestResponse",
     "RestRunResult",
+    "LocalRestConnector",
 ]
