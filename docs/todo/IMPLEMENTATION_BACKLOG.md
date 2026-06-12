@@ -64,29 +64,29 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 1: Runtime Foundation
 
-- [ ] Create Python project scaffold managed by `uv`
-- [ ] Create package layout under `src/elt_pipeline/`
-- [ ] Add CLI entrypoint structure
-- [ ] Add test scaffold and baseline test runner
-- [ ] Define module boundaries for `config`, `ingest`, `normalize`, `sql`, and `shared`
+- [x] Create Python project scaffold managed by `uv`
+- [x] Create package layout under `src/elt_pipeline/`
+- [x] Add CLI entrypoint structure
+- [x] Add test scaffold and baseline test runner
+- [x] Define module boundaries for `config`, `ingest`, `normalize`, `sql`, and `shared`
 
 ### Phase 2: Config Contract
 
-- [ ] Implement config loader for `elt_pipeline_cfg`
-- [ ] Implement YAML parsing and schema validation
-- [ ] Implement config layering:
-- [ ] global defaults -> environment overlay -> source -> entity
-- [ ] Implement `schema_version` handling
-- [ ] Add config validation errors aligned to runtime error taxonomy
+- [x] Implement config loader for `elt_pipeline_cfg`
+- [x] Implement YAML parsing and schema validation
+- [x] Implement config layering:
+- [x] global defaults -> environment overlay -> source -> entity
+- [x] Implement `schema_version` handling
+- [x] Add config validation errors aligned to runtime error taxonomy
 
 ### Phase 3: Shared Runtime Contracts
 
-- [ ] Implement `run_id` generation and run context object
-- [ ] Implement authoritative audit record model
-- [ ] Implement structured execution logging model
-- [ ] Implement structured error taxonomy and error records
-- [ ] Implement lineage event model with OpenLineage-compatible shape
-- [ ] Implement low-cost metrics capture contract
+- [x] Implement `run_id` generation and run context object
+- [x] Implement authoritative audit record model
+- [x] Implement structured execution logging model
+- [x] Implement structured error taxonomy and error records
+- [x] Implement lineage event model with OpenLineage-compatible shape
+- [x] Implement low-cost metrics capture contract
 
 ### Phase 4: Local Storage and State
 
@@ -133,12 +133,12 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 The next implementation session should aim to complete:
 
-- Python project scaffold
-- package structure
-- CLI skeleton
-- config loader skeleton
-- shared run context
-- audit/logging/error framework skeleton
+- [x] Python project scaffold
+- [x] package structure
+- [x] CLI skeleton
+- [x] config loader skeleton
+- [x] shared run context
+- [x] audit/logging/error framework skeleton
 
 ## Open Decisions Still Allowed During Implementation
 
