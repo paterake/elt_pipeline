@@ -125,7 +125,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 7: Next Connector Families
 
-- [ ] Implement SQL connector family
+- [x] Implement SQL connector family
 - [ ] Implement object storage connector family
 - [ ] Implement Kafka client-based connector family
 

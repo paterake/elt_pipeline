@@ -1,6 +1,7 @@
 """Ingestion stage package."""
 
 from elt_pipeline.ingest.connectors import (
+    LocalSqlConnector,
     RestAuthConfig,
     RestAuthStrategy,
     RestConnectorBase,
@@ -13,6 +14,17 @@ from elt_pipeline.ingest.connectors import (
     RestResolvedAuth,
     RestResponse,
     RestRunResult,
+    SqlConnectionConfig,
+    SqlConnectionDriver,
+    SqlConnectorBase,
+    SqlConnectorConfig,
+    SqlExtractionMode,
+    SqlPreparedQuery,
+    SqlQueryResult,
+    SqlQueryTemplate,
+    SqlRunResult,
+    SqlWatermarkConfig,
+    SqlWatermarkSource,
 )
 from elt_pipeline.ingest.models import (
     CheckpointHistoryEntry,
@@ -29,6 +41,7 @@ __all__ = [
     "LocalArtifactStore",
     "LocalCheckpointStore",
     "LocalLevel1Writer",
+    "LocalSqlConnector",
     "RestAuthConfig",
     "RestAuthStrategy",
     "RestConnectorBase",
@@ -41,4 +54,15 @@ __all__ = [
     "RestResolvedAuth",
     "RestResponse",
     "RestRunResult",
+    "SqlConnectionConfig",
+    "SqlConnectionDriver",
+    "SqlConnectorBase",
+    "SqlConnectorConfig",
+    "SqlExtractionMode",
+    "SqlPreparedQuery",
+    "SqlQueryResult",
+    "SqlQueryTemplate",
+    "SqlRunResult",
+    "SqlWatermarkConfig",
+    "SqlWatermarkSource",
 ]

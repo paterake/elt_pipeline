@@ -1,6 +1,7 @@
 """Connector families for ingestion runtimes."""
 
 from elt_pipeline.ingest.connectors.local_rest import LocalRestConnector
+from elt_pipeline.ingest.connectors.local_sql import LocalSqlConnector
 from elt_pipeline.ingest.connectors.rest import (
     RestAuthConfig,
     RestAuthStrategy,
@@ -15,6 +16,19 @@ from elt_pipeline.ingest.connectors.rest import (
     RestResponse,
     RestRetryPolicy,
     RestRunResult,
+)
+from elt_pipeline.ingest.connectors.sql import (
+    SqlConnectionConfig,
+    SqlConnectionDriver,
+    SqlConnectorBase,
+    SqlConnectorConfig,
+    SqlExtractionMode,
+    SqlPreparedQuery,
+    SqlQueryResult,
+    SqlQueryTemplate,
+    SqlRunResult,
+    SqlWatermarkConfig,
+    SqlWatermarkSource,
 )
 
 __all__ = [
@@ -32,4 +46,16 @@ __all__ = [
     "RestResponse",
     "RestRunResult",
     "LocalRestConnector",
+    "LocalSqlConnector",
+    "SqlConnectionConfig",
+    "SqlConnectionDriver",
+    "SqlConnectorBase",
+    "SqlConnectorConfig",
+    "SqlExtractionMode",
+    "SqlPreparedQuery",
+    "SqlQueryResult",
+    "SqlQueryTemplate",
+    "SqlRunResult",
+    "SqlWatermarkConfig",
+    "SqlWatermarkSource",
 ]
