@@ -90,11 +90,11 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 4: Local Storage and State
 
-- [ ] Implement local level1 storage writer
-- [ ] Implement level1 manifest / artifact metadata contract
-- [ ] Implement local JSON state/checkpoint store
-- [ ] Implement local run/audit artifact storage layout
-- [ ] Implement replay and backfill primitives over local state
+- [x] Implement local level1 storage writer
+- [x] Implement level1 manifest / artifact metadata contract
+- [x] Implement local JSON state/checkpoint store
+- [x] Implement local run/audit artifact storage layout
+- [x] Implement replay and backfill primitives over local state
 
 ### Phase 5: REST Connector
 
