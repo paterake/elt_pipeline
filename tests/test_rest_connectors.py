@@ -17,7 +17,7 @@ from elt_pipeline.ingest.connectors import (
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalLevel1Writer
 from elt_pipeline.shared.errors import ConfigValidationError
-from elt_pipeline.shared.runtime import StageName, new_run_context
+from elt_pipeline.shared.runtime import RunContext, StageName, new_run_context
 
 
 def test_rest_connector_config_builds_from_resolved_entity_config() -> None:
@@ -100,6 +100,76 @@ def test_rest_connector_base_persists_before_checkpoint_update(tmp_path: Path) -
     assert result.checkpoint_after == {"page": 4}
     assert checkpoint_document.current_checkpoint == {"page": 4}
     assert checkpoint_document.history[0].manifest_paths == [result.manifests[0].manifest_path]
+
+
+def test_rest_connector_build_request_plan_renders_templates() -> None:
+    run_context = RunContext(
+        run_id="run-123",
+        stage=StageName.ingest,
+        job_name="orders-ingest",
+        trigger_type="scheduled_batch",
+        started_at=datetime(2026, 1, 5, 10, 30, tzinfo=UTC),
+    )
+    connector = TemplatedRestConnector(run_context=run_context)
+
+    requests = connector.build_request_plan(
+        checkpoint_before={"page": 3, "watermark": "2026-01-01T00:00:00+00:00"},
+        window=RestRequestWindow(
+            start=datetime(2026, 1, 3, tzinfo=UTC),
+            end=datetime(2026, 1, 4, tzinfo=UTC),
+            label="2026-01-03_to_2026-01-04",
+        ),
+        auth=RestResolvedAuth(
+            headers={"Authorization": "Bearer {run.id}"},
+            query_params={"api_key": "{entity.name}"},
+            body_fields={"issued_for": "{source.name}"},
+        ),
+    )
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.url == "https://api.example.com/v1/orders/2026-01-03"
+    assert request.headers == {
+        "Accept": "application/json",
+        "X-Window-Label": "2026-01-03_to_2026-01-04",
+        "Authorization": "Bearer run-123",
+    }
+    assert request.query_params == {
+        "page": 3,
+        "start": "2026-01-03T00:00:00+00:00",
+        "end": "2026-01-04T00:00:00+00:00",
+        "api_key": "orders",
+    }
+    assert request.body == {
+        "window": {
+            "start": "2026-01-03T00:00:00+00:00",
+            "end": "2026-01-04T00:00:00+00:00",
+        },
+        "metadata": ["run-123", "2026-01-03", "scheduled_batch"],
+        "watermark": "2026-01-01T00:00:00+00:00",
+        "issued_for": "orders_api",
+    }
+    assert request.metadata["template_context"]["run"]["id"] == "run-123"
+
+
+def test_rest_connector_build_request_plan_rejects_unknown_template_token() -> None:
+    connector = TemplatedRestConnector(
+        run_context=RunContext(
+            run_id="run-123",
+            stage=StageName.ingest,
+            job_name="orders-ingest",
+            trigger_type="manual",
+            started_at=datetime(2026, 1, 5, 10, 30, tzinfo=UTC),
+        )
+    )
+    connector.config.request.path = "/v1/orders/{window.missing_value}"
+
+    with pytest.raises(ConfigValidationError, match="unknown token"):
+        connector.build_request_plan(
+            checkpoint_before={"page": 1},
+            window=RestRequestWindow(start=datetime(2026, 1, 3, tzinfo=UTC)),
+            auth=RestResolvedAuth(),
+        )
 
 
 class FakeRestConnector(RestConnectorBase):
@@ -205,3 +275,49 @@ class FakeRestConnector(RestConnectorBase):
             window_label=window.label if window else None,
             manifest_paths=[manifest.manifest_path for manifest in manifests],
         )
+
+
+class TemplatedRestConnector(RestConnectorBase):
+    def __init__(self, *, run_context: RunContext) -> None:
+        super().__init__(
+            config=RestConnectorConfig(
+                schema_version="v1",
+                environment="dev",
+                source_name="orders_api",
+                entity_name="orders",
+                execution_mode="scheduled_batch",
+                base_url="https://api.example.com",
+                request={
+                    "method": "POST",
+                    "path": "/v1/orders/{window.start_date}",
+                    "headers": {
+                        "Accept": "application/json",
+                        "X-Window-Label": "{window.label}",
+                    },
+                    "query_params": {
+                        "page": "{checkpoint.page}",
+                        "start": "{window.start}",
+                        "end": "{window.end}",
+                    },
+                    "body_template": {
+                        "window": {
+                            "start": "{window.start}",
+                            "end": "{window.end}",
+                        },
+                        "metadata": [
+                            "{run.id}",
+                            "{window.start_date}",
+                            "{run.trigger_type}",
+                        ],
+                        "watermark": "{checkpoint.watermark}",
+                    },
+                },
+            ),
+            run_context=run_context,
+        )
+
+    def execute_request(self, request: RestPreparedRequest) -> RestResponse:
+        raise NotImplementedError
+
+    def persist_response(self, **kwargs):
+        raise NotImplementedError

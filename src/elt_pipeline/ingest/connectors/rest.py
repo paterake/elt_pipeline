@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -245,13 +247,43 @@ class RestConnectorBase(ABC):
         auth: RestResolvedAuth,
     ) -> list[RestPreparedRequest]:
         request = self.config.request
+        template_context = _build_template_context(
+            config=self.config,
+            run_context=self.run_context,
+            checkpoint_before=checkpoint_before,
+            window=window,
+        )
+        headers = _render_headers(
+            {**request.headers, **auth.headers},
+            template_context=template_context,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+        )
+        query_params = _render_template_value(
+            {**request.query_params, **auth.query_params},
+            template_context=template_context,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+        )
+        body = _render_template_value(
+            _merge_body_fields(request.body_template, auth.body_fields),
+            template_context=template_context,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+        )
+        path = _render_string_template(
+            request.path,
+            template_context=template_context,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+        )
         return [
             RestPreparedRequest(
                 method=request.method,
-                url=_build_url(self.config.base_url, request.path),
-                headers={**request.headers, **auth.headers},
-                query_params={**request.query_params, **auth.query_params},
-                body=_merge_body_fields(request.body_template, auth.body_fields),
+                url=_build_url(self.config.base_url, path),
+                headers=headers,
+                query_params=query_params,
+                body=body,
                 timeout_seconds=request.timeout_seconds,
                 metadata={
                     "source_name": self.config.source_name,
@@ -259,6 +291,7 @@ class RestConnectorBase(ABC):
                     "window_label": window.label if window else None,
                     "checkpoint_before": checkpoint_before,
                     "pagination_mode": self.config.pagination.mode.value,
+                    "template_context": template_context,
                 },
             )
         ]
@@ -363,6 +396,161 @@ def _merge_body_fields(body_template: Any, auth_body_fields: dict[str, Any]) -> 
     if isinstance(body_template, dict):
         return {**body_template, **auth_body_fields}
     return body_template
+
+
+_TEMPLATE_PATTERN = re.compile(r"\{([a-zA-Z0-9_.]+)\}")
+
+
+def _build_template_context(
+    *,
+    config: RestConnectorConfig,
+    run_context: RunContext,
+    checkpoint_before: dict[str, Any] | None,
+    window: RestRequestWindow | None,
+) -> dict[str, Any]:
+    window_start = window.start if window else None
+    window_end = window.end if window else None
+    return {
+        "run": {
+            "id": run_context.run_id,
+            "job_name": run_context.job_name,
+            "trigger_type": run_context.trigger_type,
+            "started_at": run_context.started_at.isoformat(),
+        },
+        "source": {"name": config.source_name},
+        "entity": {"name": config.entity_name},
+        "config": {
+            "schema_version": config.schema_version,
+            "environment": config.environment,
+            "execution_mode": config.execution_mode,
+            "base_url": config.base_url,
+        },
+        "window": {
+            "start": _serialize_template_scalar(window_start),
+            "end": _serialize_template_scalar(window_end),
+            "start_date": window_start.date().isoformat() if window_start else None,
+            "end_date": window_end.date().isoformat() if window_end else None,
+            "label": window.label if window else None,
+        },
+        "checkpoint": checkpoint_before or {},
+    }
+
+
+def _render_headers(
+    value: Mapping[str, Any],
+    *,
+    template_context: dict[str, Any],
+    source_name: str,
+    entity_name: str,
+) -> dict[str, str]:
+    rendered_headers: dict[str, str] = {}
+    for key, raw_value in value.items():
+        rendered_value = _render_template_value(
+            raw_value,
+            template_context=template_context,
+            source_name=source_name,
+            entity_name=entity_name,
+        )
+        if rendered_value is None:
+            continue
+        rendered_headers[key] = str(rendered_value)
+    return rendered_headers
+
+
+def _render_template_value(
+    value: Any,
+    *,
+    template_context: dict[str, Any],
+    source_name: str,
+    entity_name: str,
+) -> Any:
+    if isinstance(value, str):
+        return _render_string_template(
+            value,
+            template_context=template_context,
+            source_name=source_name,
+            entity_name=entity_name,
+        )
+    if isinstance(value, Mapping):
+        return {
+            key: _render_template_value(
+                child_value,
+                template_context=template_context,
+                source_name=source_name,
+                entity_name=entity_name,
+            )
+            for key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _render_template_value(
+                child_value,
+                template_context=template_context,
+                source_name=source_name,
+                entity_name=entity_name,
+            )
+            for child_value in value
+        ]
+    return value
+
+
+def _render_string_template(
+    value: str,
+    *,
+    template_context: dict[str, Any],
+    source_name: str,
+    entity_name: str,
+) -> Any:
+    match = _TEMPLATE_PATTERN.fullmatch(value)
+    if match:
+        resolved = _resolve_template_token(
+            match.group(1),
+            template_context=template_context,
+            source_name=source_name,
+            entity_name=entity_name,
+        )
+        return _serialize_template_scalar(resolved)
+
+    def replace_token(match: re.Match[str]) -> str:
+        resolved = _resolve_template_token(
+            match.group(1),
+            template_context=template_context,
+            source_name=source_name,
+            entity_name=entity_name,
+        )
+        serialized = _serialize_template_scalar(resolved)
+        return "" if serialized is None else str(serialized)
+
+    return _TEMPLATE_PATTERN.sub(replace_token, value)
+
+
+def _resolve_template_token(
+    token: str,
+    *,
+    template_context: dict[str, Any],
+    source_name: str,
+    entity_name: str,
+) -> Any:
+    current: Any = template_context
+    for part in token.split("."):
+        if isinstance(current, Mapping) and part in current:
+            current = current[part]
+            continue
+        raise ConfigValidationError(
+            message="REST request template references an unknown token",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "token": token,
+            },
+        )
+    return current
+
+
+def _serialize_template_scalar(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 __all__ = [
