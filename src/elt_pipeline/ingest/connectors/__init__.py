@@ -1,7 +1,23 @@
 """Connector families for ingestion runtimes."""
 
+from elt_pipeline.ingest.connectors.kafka import (
+    KafkaConnectorBase,
+    KafkaConnectorConfig,
+    KafkaMessage,
+    KafkaRunResult,
+    KafkaStartingPosition,
+)
+from elt_pipeline.ingest.connectors.local_kafka import LocalKafkaConnector
+from elt_pipeline.ingest.connectors.local_object_storage import LocalObjectStorageConnector
 from elt_pipeline.ingest.connectors.local_rest import LocalRestConnector
 from elt_pipeline.ingest.connectors.local_sql import LocalSqlConnector
+from elt_pipeline.ingest.connectors.object_storage import (
+    ObjectStorageConnectorBase,
+    ObjectStorageConnectorConfig,
+    ObjectStorageObject,
+    ObjectStorageRunResult,
+    ObjectStorageSyncMode,
+)
 from elt_pipeline.ingest.connectors.rest import (
     RestAuthConfig,
     RestAuthStrategy,
@@ -32,6 +48,13 @@ from elt_pipeline.ingest.connectors.sql import (
 )
 
 __all__ = [
+    "KafkaConnectorBase",
+    "KafkaConnectorConfig",
+    "KafkaMessage",
+    "KafkaRunResult",
+    "KafkaStartingPosition",
+    "LocalKafkaConnector",
+    "LocalObjectStorageConnector",
     "RestAuthConfig",
     "RestAuthStrategy",
     "RestConnectorBase",
@@ -47,6 +70,11 @@ __all__ = [
     "RestRunResult",
     "LocalRestConnector",
     "LocalSqlConnector",
+    "ObjectStorageConnectorBase",
+    "ObjectStorageConnectorConfig",
+    "ObjectStorageObject",
+    "ObjectStorageRunResult",
+    "ObjectStorageSyncMode",
     "SqlConnectionConfig",
     "SqlConnectionDriver",
     "SqlConnectorBase",
