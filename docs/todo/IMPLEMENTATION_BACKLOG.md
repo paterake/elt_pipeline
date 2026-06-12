@@ -101,7 +101,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement REST connector base abstractions
 - [x] Implement request templating
 - [x] Implement date/window parameter handling
-- [ ] Implement auth strategy support for v1 REST flows
+- [x] Implement auth strategy support for v1 REST flows
 - [ ] Implement token acquisition + token injection
 - [ ] Implement retries / timeout / error classification
 - [ ] Implement pagination

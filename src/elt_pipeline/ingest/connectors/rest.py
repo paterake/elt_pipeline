@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import base64
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
-import re
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -236,8 +237,109 @@ class RestConnectorBase(ABC):
     def resolve_window(self) -> RestRequestWindow | None:
         return None
 
+    def resolve_secret(self, *, secret_name: str, secret_ref: str) -> str:
+        return secret_ref
+
+    def resolve_client_credentials_authentication(
+        self,
+        *,
+        auth_config: RestAuthConfig,
+        resolved_secrets: Mapping[str, str],
+    ) -> RestResolvedAuth:
+        raise ConfigValidationError(
+            message="client_credentials auth is not yet implemented for the base REST connector",
+            context={
+                "source_name": self.config.source_name,
+                "entity_name": self.config.entity_name,
+                "strategy": auth_config.strategy.value,
+                "secret_names": sorted(resolved_secrets),
+            },
+        )
+
     def resolve_authentication(self) -> RestResolvedAuth:
-        return RestResolvedAuth()
+        auth_config = self.config.auth
+        if auth_config.strategy == RestAuthStrategy.none:
+            return RestResolvedAuth()
+
+        resolved_secrets = {
+            secret_name: self.resolve_secret(secret_name=secret_name, secret_ref=secret_ref)
+            for secret_name, secret_ref in auth_config.secret_refs.items()
+        }
+
+        if auth_config.strategy == RestAuthStrategy.bearer_token:
+            token = _require_secret(
+                resolved_secrets,
+                preferred_names=("token", "bearer_token"),
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                strategy=auth_config.strategy,
+                fallback_to_single_secret=True,
+            )
+            scheme = auth_config.injection_scheme.strip()
+            auth_value = f"{scheme} {token}".strip() if scheme else token
+            return _inject_auth_value(
+                location=auth_config.injection_location,
+                name=auth_config.injection_name,
+                value=auth_value,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+            )
+
+        if auth_config.strategy == RestAuthStrategy.basic:
+            username = _require_secret(
+                resolved_secrets,
+                preferred_names=("username", "user"),
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                strategy=auth_config.strategy,
+            )
+            password = _require_secret(
+                resolved_secrets,
+                preferred_names=("password", "pass"),
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                strategy=auth_config.strategy,
+            )
+            credentials = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+            return _inject_auth_value(
+                location=auth_config.injection_location,
+                name=auth_config.injection_name,
+                value=f"Basic {credentials}",
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+            )
+
+        if auth_config.strategy == RestAuthStrategy.api_key:
+            api_key = _require_secret(
+                resolved_secrets,
+                preferred_names=("api_key", "key", "token"),
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+                strategy=auth_config.strategy,
+                fallback_to_single_secret=True,
+            )
+            return _inject_auth_value(
+                location=auth_config.injection_location,
+                name=auth_config.injection_name,
+                value=api_key,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+            )
+
+        if auth_config.strategy == RestAuthStrategy.client_credentials:
+            return self.resolve_client_credentials_authentication(
+                auth_config=auth_config,
+                resolved_secrets=resolved_secrets,
+            )
+
+        raise ConfigValidationError(
+            message="REST auth strategy is not supported",
+            context={
+                "source_name": self.config.source_name,
+                "entity_name": self.config.entity_name,
+                "strategy": auth_config.strategy.value,
+            },
+        )
 
     def build_request_plan(
         self,
@@ -551,6 +653,77 @@ def _serialize_template_scalar(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def _inject_auth_value(
+    *,
+    location: str,
+    name: str,
+    value: Any,
+    source_name: str,
+    entity_name: str,
+) -> RestResolvedAuth:
+    normalized_location = location.strip().lower()
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise ConfigValidationError(
+            message="REST auth injection_name must not be empty",
+            context={"source_name": source_name, "entity_name": entity_name},
+        )
+
+    if normalized_location == "header":
+        return RestResolvedAuth(
+            headers={normalized_name: str(value)},
+            redacted_fields={f"headers.{normalized_name}"},
+        )
+    if normalized_location == "query_param":
+        return RestResolvedAuth(
+            query_params={normalized_name: value},
+            redacted_fields={f"query_params.{normalized_name}"},
+        )
+    if normalized_location == "body_field":
+        return RestResolvedAuth(
+            body_fields={normalized_name: value},
+            redacted_fields={f"body.{normalized_name}"},
+        )
+
+    raise ConfigValidationError(
+        message="REST auth injection_location is invalid",
+        context={
+            "source_name": source_name,
+            "entity_name": entity_name,
+            "injection_location": location,
+        },
+    )
+
+
+def _require_secret(
+    resolved_secrets: Mapping[str, str],
+    *,
+    preferred_names: tuple[str, ...],
+    source_name: str,
+    entity_name: str,
+    strategy: RestAuthStrategy,
+    fallback_to_single_secret: bool = False,
+) -> str:
+    for secret_name in preferred_names:
+        value = resolved_secrets.get(secret_name)
+        if value:
+            return value
+
+    if fallback_to_single_secret and len(resolved_secrets) == 1:
+        return next(iter(resolved_secrets.values()))
+
+    raise ConfigValidationError(
+        message="REST auth strategy is missing a required secret reference",
+        context={
+            "source_name": source_name,
+            "entity_name": entity_name,
+            "strategy": strategy.value,
+            "required_secret_names": list(preferred_names),
+            "configured_secret_names": sorted(resolved_secrets),
+        },
+    )
 
 
 __all__ = [

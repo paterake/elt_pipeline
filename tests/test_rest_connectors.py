@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -172,6 +173,89 @@ def test_rest_connector_build_request_plan_rejects_unknown_template_token() -> N
         )
 
 
+def test_rest_connector_resolves_bearer_token_authentication() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "bearer_token",
+            "secret_refs": {"token": "ORDERS_API_TOKEN"},
+        },
+        secrets={"ORDERS_API_TOKEN": "super-secret-token"},
+    )
+
+    auth = connector.resolve_authentication()
+
+    assert auth.headers == {"Authorization": "Bearer super-secret-token"}
+    assert auth.redacted_fields == {"headers.Authorization"}
+
+
+def test_rest_connector_resolves_basic_authentication() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "basic",
+            "secret_refs": {
+                "username": "ORDERS_API_USERNAME",
+                "password": "ORDERS_API_PASSWORD",
+            },
+        },
+        secrets={
+            "ORDERS_API_USERNAME": "alice",
+            "ORDERS_API_PASSWORD": "s3cr3t",
+        },
+    )
+
+    auth = connector.resolve_authentication()
+
+    encoded = base64.b64encode(b"alice:s3cr3t").decode("ascii")
+    assert auth.headers == {"Authorization": f"Basic {encoded}"}
+    assert auth.redacted_fields == {"headers.Authorization"}
+
+
+def test_rest_connector_resolves_api_key_query_param_authentication() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "api_key",
+            "injection_location": "query_param",
+            "injection_name": "api_key",
+            "secret_refs": {"api_key": "ORDERS_API_KEY"},
+        },
+        secrets={"ORDERS_API_KEY": "abc123"},
+    )
+
+    auth = connector.resolve_authentication()
+
+    assert auth.query_params == {"api_key": "abc123"}
+    assert auth.redacted_fields == {"query_params.api_key"}
+
+
+def test_rest_connector_resolves_api_key_body_field_authentication() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "api_key",
+            "injection_location": "body_field",
+            "injection_name": "api_key",
+            "secret_refs": {"api_key": "ORDERS_API_KEY"},
+        },
+        secrets={"ORDERS_API_KEY": "body-token"},
+        request={
+            "method": "POST",
+            "path": "/v1/orders",
+            "body_template": {"existing": "value"},
+        },
+    )
+
+    request = connector.build_request_plan(
+        checkpoint_before=None,
+        window=None,
+        auth=connector.resolve_authentication(),
+    )[0]
+
+    assert request.body == {"existing": "value", "api_key": "body-token"}
+
+
 class FakeRestConnector(RestConnectorBase):
     def __init__(self, *, tmp_path: Path, run_context) -> None:
         self.call_order: list[str] = []
@@ -321,3 +405,47 @@ class TemplatedRestConnector(RestConnectorBase):
 
     def persist_response(self, **kwargs):
         raise NotImplementedError
+
+
+class AuthResolvingRestConnector(RestConnectorBase):
+    def __init__(
+        self,
+        *,
+        run_context: RunContext,
+        auth: dict[str, object],
+        secrets: dict[str, str],
+        request: dict[str, object] | None = None,
+    ) -> None:
+        self.secrets = secrets
+        super().__init__(
+            config=RestConnectorConfig(
+                schema_version="v1",
+                environment="dev",
+                source_name="orders_api",
+                entity_name="orders",
+                execution_mode="scheduled_batch",
+                base_url="https://api.example.com",
+                auth=auth,
+                request=request or {"method": "GET", "path": "/v1/orders"},
+            ),
+            run_context=run_context,
+        )
+
+    def resolve_secret(self, *, secret_name: str, secret_ref: str) -> str:
+        return self.secrets[secret_ref]
+
+    def execute_request(self, request: RestPreparedRequest) -> RestResponse:
+        raise NotImplementedError
+
+    def persist_response(self, **kwargs):
+        raise NotImplementedError
+
+
+def _build_auth_run_context() -> RunContext:
+    return RunContext(
+        run_id="run-auth-123",
+        stage=StageName.ingest,
+        job_name="orders-ingest",
+        trigger_type="manual",
+        started_at=datetime(2026, 1, 5, 10, 30, tzinfo=UTC),
+    )
