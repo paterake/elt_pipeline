@@ -98,7 +98,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 5: REST Connector
 
-- [ ] Implement REST connector base abstractions
+- [x] Implement REST connector base abstractions
 - [ ] Implement request templating
 - [ ] Implement date/window parameter handling
 - [ ] Implement auth strategy support for v1 REST flows

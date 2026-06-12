@@ -1,6 +1,6 @@
-"""Ingestion stage package."""
+"""Connector families for ingestion runtimes."""
 
-from elt_pipeline.ingest.connectors import (
+from elt_pipeline.ingest.connectors.rest import (
     RestAuthConfig,
     RestAuthStrategy,
     RestConnectorBase,
@@ -14,21 +14,8 @@ from elt_pipeline.ingest.connectors import (
     RestResponse,
     RestRunResult,
 )
-from elt_pipeline.ingest.models import (
-    CheckpointHistoryEntry,
-    CheckpointStateDocument,
-    Level1ArtifactManifest,
-)
-from elt_pipeline.ingest.state import LocalCheckpointStore
-from elt_pipeline.ingest.storage import LocalArtifactStore, LocalLevel1Writer
 
 __all__ = [
-    "CheckpointHistoryEntry",
-    "CheckpointStateDocument",
-    "Level1ArtifactManifest",
-    "LocalArtifactStore",
-    "LocalCheckpointStore",
-    "LocalLevel1Writer",
     "RestAuthConfig",
     "RestAuthStrategy",
     "RestConnectorBase",
