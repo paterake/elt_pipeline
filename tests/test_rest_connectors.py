@@ -256,6 +256,111 @@ def test_rest_connector_resolves_api_key_body_field_authentication() -> None:
     assert request.body == {"existing": "value", "api_key": "body-token"}
 
 
+def test_rest_connector_resolves_client_credentials_authentication() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "client_credentials",
+            "secret_refs": {
+                "client_id": "ORDERS_API_CLIENT_ID",
+                "client_secret": "ORDERS_API_CLIENT_SECRET",
+            },
+            "token_request": {
+                "method": "POST",
+                "path": "/oauth/token",
+                "headers": {"Content-Type": "application/json"},
+                "body_template": {
+                    "grant_type": "client_credentials",
+                    "client_id": "{secret.client_id}",
+                    "client_secret": "{secrets.client_secret}",
+                    "requested_by": "{run.id}",
+                },
+            },
+            "token_response_path": "data.access_token",
+        },
+        secrets={
+            "ORDERS_API_CLIENT_ID": "client-123",
+            "ORDERS_API_CLIENT_SECRET": "secret-456",
+        },
+        token_response=RestResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body='{"data":{"access_token":"issued-token"}}',
+            received_at=datetime(2026, 1, 5, 10, 31, tzinfo=UTC),
+            content_type="application/json",
+        ),
+    )
+
+    auth = connector.resolve_authentication()
+
+    assert auth.headers == {"Authorization": "Bearer issued-token"}
+    assert connector.executed_requests[0].url == "https://api.example.com/oauth/token"
+    assert connector.executed_requests[0].body == {
+        "grant_type": "client_credentials",
+        "client_id": "client-123",
+        "client_secret": "secret-456",
+        "requested_by": "run-auth-123",
+    }
+
+
+def test_rest_connector_resolves_client_credentials_query_param_injection() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "client_credentials",
+            "injection_location": "query_param",
+            "injection_name": "access_token",
+            "injection_scheme": "",
+            "secret_refs": {"client_id": "ORDERS_API_CLIENT_ID"},
+            "token_request": {
+                "method": "POST",
+                "path": "/oauth/token",
+                "body_template": {"client_id": "{secret.client_id}"},
+            },
+        },
+        secrets={"ORDERS_API_CLIENT_ID": "client-123"},
+        token_response=RestResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body='{"access_token":"query-token"}',
+            received_at=datetime(2026, 1, 5, 10, 31, tzinfo=UTC),
+            content_type="application/json",
+        ),
+    )
+
+    auth = connector.resolve_authentication()
+
+    assert auth.query_params == {"access_token": "query-token"}
+    assert auth.redacted_fields == {"query_params.access_token"}
+
+
+def test_rest_connector_rejects_missing_client_credentials_token_path() -> None:
+    connector = AuthResolvingRestConnector(
+        run_context=_build_auth_run_context(),
+        auth={
+            "strategy": "client_credentials",
+            "secret_refs": {"client_id": "ORDERS_API_CLIENT_ID"},
+            "token_request": {
+                "method": "POST",
+                "path": "/oauth/token",
+                "body_template": {"client_id": "{secret.client_id}"},
+            },
+            "token_response_path": "data.access_token",
+        },
+        secrets={"ORDERS_API_CLIENT_ID": "client-123"},
+        token_response=RestResponse(
+            status_code=200,
+            headers={"Content-Type": "application/json"},
+            body='{"access_token":"query-token"}',
+            received_at=datetime(2026, 1, 5, 10, 31, tzinfo=UTC),
+            content_type="application/json",
+        ),
+    )
+
+    with pytest.raises(ConfigValidationError, match="did not resolve to a value"):
+        connector.resolve_authentication()
+
+
 class FakeRestConnector(RestConnectorBase):
     def __init__(self, *, tmp_path: Path, run_context) -> None:
         self.call_order: list[str] = []
@@ -415,8 +520,11 @@ class AuthResolvingRestConnector(RestConnectorBase):
         auth: dict[str, object],
         secrets: dict[str, str],
         request: dict[str, object] | None = None,
+        token_response: RestResponse | None = None,
     ) -> None:
+        self.executed_requests: list[RestPreparedRequest] = []
         self.secrets = secrets
+        self.token_response = token_response
         super().__init__(
             config=RestConnectorConfig(
                 schema_version="v1",
@@ -435,7 +543,10 @@ class AuthResolvingRestConnector(RestConnectorBase):
         return self.secrets[secret_ref]
 
     def execute_request(self, request: RestPreparedRequest) -> RestResponse:
-        raise NotImplementedError
+        self.executed_requests.append(request)
+        if self.token_response is None:
+            raise NotImplementedError
+        return self.token_response
 
     def persist_response(self, **kwargs):
         raise NotImplementedError

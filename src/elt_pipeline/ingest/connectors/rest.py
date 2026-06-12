@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -227,6 +228,8 @@ class RestConnectorBase(ABC):
     def __init__(self, *, config: RestConnectorConfig, run_context: RunContext) -> None:
         self.config = config
         self.run_context = run_context
+        self._active_checkpoint_before: dict[str, Any] | None = None
+        self._active_window: RestRequestWindow | None = None
 
     def validate_config(self) -> RestConnectorConfig:
         return self.config
@@ -246,14 +249,77 @@ class RestConnectorBase(ABC):
         auth_config: RestAuthConfig,
         resolved_secrets: Mapping[str, str],
     ) -> RestResolvedAuth:
-        raise ConfigValidationError(
-            message="client_credentials auth is not yet implemented for the base REST connector",
-            context={
+        token_request_template = auth_config.token_request
+        if token_request_template is None:
+            raise ConfigValidationError(
+                message="client_credentials auth requires token_request configuration",
+                context={
+                    "source_name": self.config.source_name,
+                    "entity_name": self.config.entity_name,
+                    "strategy": auth_config.strategy.value,
+                },
+            )
+
+        template_context = _build_template_context(
+            config=self.config,
+            run_context=self.run_context,
+            checkpoint_before=self._active_checkpoint_before,
+            window=self._active_window,
+        )
+        template_context["secret"] = dict(resolved_secrets)
+        template_context["secrets"] = dict(resolved_secrets)
+
+        token_request = RestPreparedRequest(
+            method=token_request_template.method,
+            url=_build_url(
+                self.config.base_url,
+                _render_string_template(
+                    token_request_template.path,
+                    template_context=template_context,
+                    source_name=self.config.source_name,
+                    entity_name=self.config.entity_name,
+                ),
+            ),
+            headers=_render_headers(
+                token_request_template.headers,
+                template_context=template_context,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+            ),
+            query_params=_render_template_value(
+                token_request_template.query_params,
+                template_context=template_context,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+            ),
+            body=_render_template_value(
+                token_request_template.body_template,
+                template_context=template_context,
+                source_name=self.config.source_name,
+                entity_name=self.config.entity_name,
+            ),
+            timeout_seconds=token_request_template.timeout_seconds,
+            metadata={
                 "source_name": self.config.source_name,
                 "entity_name": self.config.entity_name,
-                "strategy": auth_config.strategy.value,
-                "secret_names": sorted(resolved_secrets),
+                "request_kind": "auth_token",
             },
+        )
+        token_response = self.execute_request(token_request)
+        token = _extract_access_token(
+            response=token_response,
+            token_response_path=auth_config.token_response_path,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+        )
+        scheme = auth_config.injection_scheme.strip()
+        auth_value = f"{scheme} {token}".strip() if scheme else token
+        return _inject_auth_value(
+            location=auth_config.injection_location,
+            name=auth_config.injection_name,
+            value=auth_value,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
         )
 
     def resolve_authentication(self) -> RestResolvedAuth:
@@ -438,26 +504,32 @@ class RestConnectorBase(ABC):
         self.validate_config()
         checkpoint_before = self.resolve_checkpoint_before()
         window = self.resolve_window()
-        auth = self.resolve_authentication()
-        requests = self.build_request_plan(
-            checkpoint_before=checkpoint_before,
-            window=window,
-            auth=auth,
-        )
-
-        manifests: list[Level1ArtifactManifest] = []
-        responses: list[RestResponse] = []
-        for request in requests:
-            response = self.execute_request(request)
-            responses.append(response)
-            manifests.extend(
-                self.persist_response(
-                    request=request,
-                    response=response,
-                    checkpoint_before=checkpoint_before,
-                    window=window,
-                )
+        self._active_checkpoint_before = checkpoint_before
+        self._active_window = window
+        try:
+            auth = self.resolve_authentication()
+            requests = self.build_request_plan(
+                checkpoint_before=checkpoint_before,
+                window=window,
+                auth=auth,
             )
+
+            manifests: list[Level1ArtifactManifest] = []
+            responses: list[RestResponse] = []
+            for request in requests:
+                response = self.execute_request(request)
+                responses.append(response)
+                manifests.extend(
+                    self.persist_response(
+                        request=request,
+                        response=response,
+                        checkpoint_before=checkpoint_before,
+                        window=window,
+                    )
+                )
+        finally:
+            self._active_checkpoint_before = None
+            self._active_window = None
 
         checkpoint_after = self.build_checkpoint_after(
             checkpoint_before=checkpoint_before,
@@ -724,6 +796,92 @@ def _require_secret(
             "configured_secret_names": sorted(resolved_secrets),
         },
     )
+
+
+def _extract_access_token(
+    *,
+    response: RestResponse,
+    token_response_path: str | None,
+    source_name: str,
+    entity_name: str,
+) -> str:
+    response_document = _parse_json_response_body(
+        response=response,
+        source_name=source_name,
+        entity_name=entity_name,
+    )
+    token_value = _resolve_response_path(
+        response_document,
+        path=(token_response_path or "access_token"),
+        source_name=source_name,
+        entity_name=entity_name,
+    )
+    if token_value is None or isinstance(token_value, Mapping | list):
+        raise ConfigValidationError(
+            message="REST auth token response path must resolve to a scalar value",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "token_response_path": token_response_path or "access_token",
+            },
+        )
+    return str(token_value)
+
+
+def _parse_json_response_body(
+    *,
+    response: RestResponse,
+    source_name: str,
+    entity_name: str,
+) -> Any:
+    raw_body = response.body.decode("utf-8") if isinstance(response.body, bytes) else response.body
+    try:
+        return json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(
+            message="REST auth token response body is not valid JSON",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "status_code": response.status_code,
+                "content_type": response.content_type,
+            },
+        ) from exc
+
+
+def _resolve_response_path(
+    response_document: Any,
+    *,
+    path: str,
+    source_name: str,
+    entity_name: str,
+) -> Any:
+    normalized_path = path.strip()
+    if not normalized_path:
+        raise ConfigValidationError(
+            message="REST auth token_response_path must not be empty",
+            context={"source_name": source_name, "entity_name": entity_name},
+        )
+
+    current = response_document
+    for part in normalized_path.split("."):
+        if isinstance(current, Mapping) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdigit():
+            index = int(part)
+            if 0 <= index < len(current):
+                current = current[index]
+                continue
+        raise ConfigValidationError(
+            message="REST auth token response path did not resolve to a value",
+            context={
+                "source_name": source_name,
+                "entity_name": entity_name,
+                "token_response_path": normalized_path,
+            },
+        )
+    return current
 
 
 __all__ = [
