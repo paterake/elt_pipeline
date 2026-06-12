@@ -103,7 +103,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement date/window parameter handling
 - [x] Implement auth strategy support for v1 REST flows
 - [x] Implement token acquisition + token injection
-- [ ] Implement retries / timeout / error classification
+- [x] Implement retries / timeout / error classification
 - [ ] Implement pagination
 - [ ] Implement envelope extraction support
 - [ ] Implement payload decoding hooks

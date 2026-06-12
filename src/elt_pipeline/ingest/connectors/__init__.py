@@ -12,6 +12,7 @@ from elt_pipeline.ingest.connectors.rest import (
     RestRequestWindow,
     RestResolvedAuth,
     RestResponse,
+    RestRetryPolicy,
     RestRunResult,
 )
 
@@ -23,6 +24,7 @@ __all__ = [
     "RestPaginationConfig",
     "RestPaginationMode",
     "RestPreparedRequest",
+    "RestRetryPolicy",
     "RestRequestTemplate",
     "RestRequestWindow",
     "RestResolvedAuth",

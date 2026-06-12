@@ -17,7 +17,7 @@ from elt_pipeline.ingest.connectors import (
 )
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalLevel1Writer
-from elt_pipeline.shared.errors import ConfigValidationError
+from elt_pipeline.shared.errors import ConfigValidationError, ErrorCategory, PipelineError
 from elt_pipeline.shared.runtime import RunContext, StageName, new_run_context
 
 
@@ -37,6 +37,11 @@ def test_rest_connector_config_builds_from_resolved_entity_config() -> None:
                 "path": "/v1/orders",
                 "headers": {"Accept": "application/json"},
                 "query_params": {"status": "open"},
+                "retry": {
+                    "max_attempts": 4,
+                    "initial_backoff_seconds": 1.5,
+                    "success_status_codes": [202],
+                },
             },
             "pagination": {
                 "mode": "page",
@@ -55,6 +60,9 @@ def test_rest_connector_config_builds_from_resolved_entity_config() -> None:
     assert connector_config.auth.strategy.value == "bearer_token"
     assert connector_config.pagination.mode.value == "page"
     assert connector_config.execution_mode == "scheduled_batch"
+    assert connector_config.request.retry.max_attempts == 4
+    assert connector_config.request.retry.initial_backoff_seconds == 1.5
+    assert connector_config.request.retry.success_status_codes == [202]
 
 
 def test_rest_connector_config_rejects_non_rest_connector() -> None:
@@ -361,6 +369,91 @@ def test_rest_connector_rejects_missing_client_credentials_token_path() -> None:
         connector.resolve_authentication()
 
 
+def test_rest_connector_retries_timeout_and_then_succeeds() -> None:
+    connector = RetryingRestConnector(
+        run_context=_build_auth_run_context(),
+        retry={
+            "max_attempts": 3,
+            "initial_backoff_seconds": 1.5,
+            "backoff_multiplier": 2.0,
+        },
+        outcomes=[
+            TimeoutError("request timed out"),
+            _build_response(status_code=200),
+        ],
+    )
+
+    response = connector.send_request(_build_request(timeout_seconds=12.0))
+
+    assert response.status_code == 200
+    assert response.metadata["attempt"] == 2
+    assert response.metadata["max_attempts"] == 3
+    assert len(connector.executed_requests) == 2
+    assert connector.executed_requests[0].metadata["attempt"] == 1
+    assert connector.executed_requests[1].metadata["attempt"] == 2
+    assert connector.sleep_calls == [1.5]
+
+
+def test_rest_connector_retries_retryable_http_status_and_then_succeeds() -> None:
+    connector = RetryingRestConnector(
+        run_context=_build_auth_run_context(),
+        retry={"max_attempts": 2},
+        outcomes=[
+            _build_response(status_code=503),
+            _build_response(status_code=200),
+        ],
+    )
+
+    response = connector.send_request(_build_request())
+
+    assert response.status_code == 200
+    assert response.metadata["attempt"] == 2
+    assert len(connector.executed_requests) == 2
+
+
+def test_rest_connector_fails_fast_for_non_retryable_http_status() -> None:
+    connector = RetryingRestConnector(
+        run_context=_build_auth_run_context(),
+        retry={"max_attempts": 3},
+        outcomes=[_build_response(status_code=404)],
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        connector.send_request(_build_request())
+
+    assert exc_info.value.error_code == "REST_HTTP_STATUS_ERROR"
+    assert exc_info.value.error_category == ErrorCategory.input_contract_error
+    assert exc_info.value.retryable is False
+    assert exc_info.value.context["status_code"] == 404
+    assert len(connector.executed_requests) == 1
+    assert connector.sleep_calls == []
+
+
+def test_rest_connector_raises_retryable_timeout_after_attempts_are_exhausted() -> None:
+    connector = RetryingRestConnector(
+        run_context=_build_auth_run_context(),
+        retry={
+            "max_attempts": 2,
+            "initial_backoff_seconds": 0.25,
+        },
+        outcomes=[
+            TimeoutError("request timed out"),
+            TimeoutError("request timed out"),
+        ],
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        connector.send_request(_build_request(timeout_seconds=5.0))
+
+    assert exc_info.value.error_code == "REST_REQUEST_TIMEOUT"
+    assert exc_info.value.error_category == ErrorCategory.processing_error
+    assert exc_info.value.retryable is True
+    assert exc_info.value.context["attempt"] == 2
+    assert exc_info.value.context["max_attempts"] == 2
+    assert len(connector.executed_requests) == 2
+    assert connector.sleep_calls == [0.25]
+
+
 class FakeRestConnector(RestConnectorBase):
     def __init__(self, *, tmp_path: Path, run_context) -> None:
         self.call_order: list[str] = []
@@ -552,6 +645,49 @@ class AuthResolvingRestConnector(RestConnectorBase):
         raise NotImplementedError
 
 
+class RetryingRestConnector(RestConnectorBase):
+    def __init__(
+        self,
+        *,
+        run_context: RunContext,
+        retry: dict[str, object] | None,
+        outcomes: list[RestResponse | Exception],
+    ) -> None:
+        self.executed_requests: list[RestPreparedRequest] = []
+        self.sleep_calls: list[float] = []
+        self.outcomes = list(outcomes)
+        super().__init__(
+            config=RestConnectorConfig(
+                schema_version="v1",
+                environment="dev",
+                source_name="orders_api",
+                entity_name="orders",
+                execution_mode="scheduled_batch",
+                base_url="https://api.example.com",
+                request={
+                    "method": "GET",
+                    "path": "/v1/orders",
+                    "timeout_seconds": 30.0,
+                    "retry": retry or {},
+                },
+            ),
+            run_context=run_context,
+        )
+
+    def execute_request(self, request: RestPreparedRequest) -> RestResponse:
+        self.executed_requests.append(request)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def sleep_before_retry(self, delay_seconds: float) -> None:
+        self.sleep_calls.append(delay_seconds)
+
+    def persist_response(self, **kwargs):
+        raise NotImplementedError
+
+
 def _build_auth_run_context() -> RunContext:
     return RunContext(
         run_id="run-auth-123",
@@ -559,4 +695,22 @@ def _build_auth_run_context() -> RunContext:
         job_name="orders-ingest",
         trigger_type="manual",
         started_at=datetime(2026, 1, 5, 10, 30, tzinfo=UTC),
+    )
+
+
+def _build_request(*, timeout_seconds: float = 30.0) -> RestPreparedRequest:
+    return RestPreparedRequest(
+        method="GET",
+        url="https://api.example.com/v1/orders",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _build_response(*, status_code: int) -> RestResponse:
+    return RestResponse(
+        status_code=status_code,
+        headers={"Content-Type": "application/json"},
+        body="{}",
+        received_at=datetime(2026, 1, 5, 10, 31, tzinfo=UTC),
+        content_type="application/json",
     )

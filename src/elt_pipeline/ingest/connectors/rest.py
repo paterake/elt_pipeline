@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from datetime import datetime
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 from elt_pipeline.config.models import ResolvedEntityConfig
 from elt_pipeline.ingest.models import Level1ArtifactManifest
-from elt_pipeline.shared.errors import ConfigValidationError
+from elt_pipeline.shared.errors import ConfigValidationError, ErrorCategory, PipelineError
 from elt_pipeline.shared.runtime import RunContext
 
 
@@ -39,6 +40,7 @@ class RestRequestTemplate(BaseModel):
     query_params: dict[str, Any] = Field(default_factory=dict)
     body_template: Any = None
     timeout_seconds: float = Field(default=30.0, gt=0)
+    retry: "RestRetryPolicy" = Field(default_factory=lambda: RestRetryPolicy())
     payload_format: str = "json"
     artifact_name: str | None = None
     response_items_path: str | None = None
@@ -87,6 +89,60 @@ class RestRequestWindow(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
     label: str | None = None
+
+
+class RestRetryPolicy(BaseModel):
+    max_attempts: int = Field(default=1, ge=1)
+    initial_backoff_seconds: float = Field(default=0.0, ge=0)
+    backoff_multiplier: float = Field(default=2.0, ge=1)
+    max_backoff_seconds: float | None = Field(default=None, gt=0)
+    retryable_status_codes: list[int] = Field(
+        default_factory=lambda: [408, 425, 429, 500, 502, 503, 504]
+    )
+    non_retryable_status_codes: list[int] = Field(default_factory=list)
+    success_status_codes: list[int] | None = None
+
+    @field_validator(
+        "retryable_status_codes",
+        "non_retryable_status_codes",
+        "success_status_codes",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_status_code_lists(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return list(value)
+
+    @field_validator(
+        "retryable_status_codes",
+        "non_retryable_status_codes",
+        "success_status_codes",
+    )
+    @classmethod
+    def _validate_status_code_lists(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        normalized: list[int] = []
+        seen: set[int] = set()
+        for status_code in value:
+            if not 100 <= status_code <= 599:
+                raise ValueError("HTTP status codes must be between 100 and 599")
+            if status_code not in seen:
+                normalized.append(status_code)
+                seen.add(status_code)
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_status_code_overrides(self) -> "RestRetryPolicy":
+        conflicting_statuses = set(self.retryable_status_codes) & set(
+            self.non_retryable_status_codes
+        )
+        if conflicting_statuses:
+            raise ValueError(
+                "retryable_status_codes and non_retryable_status_codes must not overlap"
+            )
+        return self
 
 
 class RestResolvedAuth(BaseModel):
@@ -172,6 +228,7 @@ class RestConnectorConfig(BaseModel):
             "query_params": extraction.get("query_params", {}),
             "body_template": extraction.get("body"),
             "timeout_seconds": extraction.get("timeout_seconds", 30.0),
+            "retry": extraction.get("retry", {}),
             "payload_format": extraction.get("payload_format", "json"),
             "artifact_name": extraction.get("artifact_name"),
             "response_items_path": extraction.get("response_items_path"),
@@ -305,7 +362,7 @@ class RestConnectorBase(ABC):
                 "request_kind": "auth_token",
             },
         )
-        token_response = self.execute_request(token_request)
+        token_response = self.send_request(token_request)
         token = _extract_access_token(
             response=token_response,
             token_response_path=auth_config.token_response_path,
@@ -464,6 +521,200 @@ class RestConnectorBase(ABC):
             )
         ]
 
+    def send_request(self, request: RestPreparedRequest) -> RestResponse:
+        retry_policy = self.config.request.retry
+        last_error: PipelineError | None = None
+        for attempt in range(1, retry_policy.max_attempts + 1):
+            attempt_request = request.model_copy(
+                update={
+                    "metadata": {
+                        **request.metadata,
+                        "attempt": attempt,
+                        "max_attempts": retry_policy.max_attempts,
+                    }
+                }
+            )
+            try:
+                response = self.execute_request(attempt_request)
+            except TimeoutError as exc:
+                last_error = self.classify_timeout_error(
+                    request=attempt_request,
+                    attempt=attempt,
+                    max_attempts=retry_policy.max_attempts,
+                    error=exc,
+                )
+                if self._should_retry(last_error, attempt, retry_policy.max_attempts):
+                    self.sleep_before_retry(self._compute_backoff_seconds(retry_policy, attempt))
+                    continue
+                raise last_error from exc
+            except PipelineError as exc:
+                last_error = exc
+                if self._should_retry(last_error, attempt, retry_policy.max_attempts):
+                    self.sleep_before_retry(self._compute_backoff_seconds(retry_policy, attempt))
+                    continue
+                raise
+            except Exception as exc:
+                last_error = self.classify_runtime_error(
+                    request=attempt_request,
+                    attempt=attempt,
+                    max_attempts=retry_policy.max_attempts,
+                    error=exc,
+                )
+                if self._should_retry(last_error, attempt, retry_policy.max_attempts):
+                    self.sleep_before_retry(self._compute_backoff_seconds(retry_policy, attempt))
+                    continue
+                raise last_error from exc
+
+            try:
+                self.raise_for_response_status(
+                    request=attempt_request,
+                    response=response,
+                    attempt=attempt,
+                    max_attempts=retry_policy.max_attempts,
+                )
+            except PipelineError as exc:
+                last_error = exc
+                if self._should_retry(last_error, attempt, retry_policy.max_attempts):
+                    self.sleep_before_retry(self._compute_backoff_seconds(retry_policy, attempt))
+                    continue
+                raise
+
+            response.metadata = {
+                **response.metadata,
+                "attempt": attempt,
+                "max_attempts": retry_policy.max_attempts,
+            }
+            return response
+
+        if last_error is None:
+            raise PipelineError(
+                message="REST request execution failed before a response was returned",
+                error_code="REST_REQUEST_FAILED",
+                error_category=ErrorCategory.unexpected_runtime_error,
+                retryable=False,
+                context={
+                    "source_name": self.config.source_name,
+                    "entity_name": self.config.entity_name,
+                    "method": request.method,
+                    "url": request.url,
+                },
+            )
+        raise last_error
+
+    def classify_timeout_error(
+        self,
+        *,
+        request: RestPreparedRequest,
+        attempt: int,
+        max_attempts: int,
+        error: TimeoutError,
+    ) -> PipelineError:
+        return PipelineError(
+            message=f"REST request timed out after {request.timeout_seconds} seconds",
+            error_code="REST_REQUEST_TIMEOUT",
+            error_category=ErrorCategory.processing_error,
+            retryable=True,
+            context={
+                "source_name": self.config.source_name,
+                "entity_name": self.config.entity_name,
+                "method": request.method,
+                "url": request.url,
+                "timeout_seconds": request.timeout_seconds,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "error_type": type(error).__name__,
+            },
+        )
+
+    def classify_runtime_error(
+        self,
+        *,
+        request: RestPreparedRequest,
+        attempt: int,
+        max_attempts: int,
+        error: Exception,
+    ) -> PipelineError:
+        return PipelineError(
+            message=f"REST request execution failed: {error}",
+            error_code="REST_REQUEST_FAILED",
+            error_category=ErrorCategory.unexpected_runtime_error,
+            retryable=False,
+            context={
+                "source_name": self.config.source_name,
+                "entity_name": self.config.entity_name,
+                "method": request.method,
+                "url": request.url,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "error_type": type(error).__name__,
+            },
+        )
+
+    def raise_for_response_status(
+        self,
+        *,
+        request: RestPreparedRequest,
+        response: RestResponse,
+        attempt: int,
+        max_attempts: int,
+    ) -> None:
+        retry_policy = self.config.request.retry
+        success_status_codes = set(retry_policy.success_status_codes or [])
+        if success_status_codes:
+            is_success = response.status_code in success_status_codes
+        else:
+            is_success = 200 <= response.status_code < 300
+        if is_success:
+            return
+
+        retryable_status_codes = set(retry_policy.retryable_status_codes)
+        non_retryable_status_codes = set(retry_policy.non_retryable_status_codes)
+        retryable = response.status_code in retryable_status_codes or (
+            response.status_code >= 500 and response.status_code not in non_retryable_status_codes
+        )
+        if response.status_code in non_retryable_status_codes:
+            retryable = False
+
+        raise PipelineError(
+            message=f"REST request returned unexpected HTTP status {response.status_code}",
+            error_code=(
+                "REST_HTTP_STATUS_RETRYABLE"
+                if retryable
+                else "REST_HTTP_STATUS_ERROR"
+            ),
+            error_category=_status_error_category(response.status_code),
+            retryable=retryable,
+            context={
+                "source_name": self.config.source_name,
+                "entity_name": self.config.entity_name,
+                "method": request.method,
+                "url": request.url,
+                "status_code": response.status_code,
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "content_type": response.content_type,
+            },
+        )
+
+    def sleep_before_retry(self, delay_seconds: float) -> None:
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    @staticmethod
+    def _compute_backoff_seconds(retry_policy: RestRetryPolicy, attempt: int) -> float:
+        if attempt <= 0 or retry_policy.initial_backoff_seconds <= 0:
+            return 0.0
+        delay_seconds = retry_policy.initial_backoff_seconds * (
+            retry_policy.backoff_multiplier ** (attempt - 1)
+        )
+        if retry_policy.max_backoff_seconds is not None:
+            delay_seconds = min(delay_seconds, retry_policy.max_backoff_seconds)
+        return delay_seconds
+
+    @staticmethod
+    def _should_retry(error: PipelineError, attempt: int, max_attempts: int) -> bool:
+        return error.retryable and attempt < max_attempts
+
     @abstractmethod
     def execute_request(self, request: RestPreparedRequest) -> RestResponse:
         """Execute a prepared REST request and return the raw response."""
@@ -517,7 +768,7 @@ class RestConnectorBase(ABC):
             manifests: list[Level1ArtifactManifest] = []
             responses: list[RestResponse] = []
             for request in requests:
-                response = self.execute_request(request)
+                response = self.send_request(request)
                 responses.append(response)
                 manifests.extend(
                     self.persist_response(
@@ -884,6 +1135,12 @@ def _resolve_response_path(
     return current
 
 
+def _status_error_category(status_code: int) -> ErrorCategory:
+    if 400 <= status_code < 500:
+        return ErrorCategory.input_contract_error
+    return ErrorCategory.processing_error
+
+
 __all__ = [
     "RestAuthConfig",
     "RestAuthStrategy",
@@ -892,6 +1149,7 @@ __all__ = [
     "RestPaginationConfig",
     "RestPaginationMode",
     "RestPreparedRequest",
+    "RestRetryPolicy",
     "RestRequestTemplate",
     "RestRequestWindow",
     "RestResolvedAuth",
