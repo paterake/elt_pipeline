@@ -112,13 +112,13 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 6: Level1 to Level2 Normalization
 
-- [ ] Implement normalization runner
-- [ ] Implement source-aligned relationalisation for REST-shaped payloads
-- [ ] Implement flattening of nested structures
-- [ ] Implement parent-child table generation
-- [ ] Implement `_row_id`, `_parent_row_id`, and `_array_index`
-- [ ] Implement table naming rules with hash fallback only
-- [ ] Implement mapping catalog lifecycle and persistence
+- [x] Implement normalization runner
+- [x] Implement source-aligned relationalisation for REST-shaped payloads
+- [x] Implement flattening of nested structures
+- [x] Implement parent-child table generation
+- [x] Implement `_row_id`, `_parent_row_id`, and `_array_index`
+- [x] Implement table naming rules with hash fallback only
+- [x] Implement mapping catalog lifecycle and persistence
 - [ ] Implement per-entity partition strategy
 - [ ] Implement lineage from level1 artifacts to level2 outputs
 - [ ] Implement low-cost output metrics via parquet metadata or Spark metrics
