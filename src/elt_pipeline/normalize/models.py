@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -41,3 +42,31 @@ class NormalizationResult(BaseModel):
     mapping_version: str
     tables: list[NormalizedTable] = Field(default_factory=list)
     mapping_catalog: MappingCatalog
+
+
+class Level2TableManifest(BaseModel):
+    manifest_version: str = "v1"
+    artifact_id: str
+    run_id: str
+    job_name: str
+    trigger_type: str
+    environment: str
+    source_name: str
+    entity_name: str
+    mapping_version: str
+    input_artifact_id: str
+    input_data_path: str
+    input_manifest_path: str
+    table_name: str
+    partition: dict[str, str] = Field(default_factory=dict)
+    normalize_started_at: datetime
+    normalize_completed_at: datetime
+    record_count: int
+    file_size_bytes: int
+    data_path: str
+    manifest_path: str
+
+
+class Level2WriteSummary(BaseModel):
+    mapping_catalog_path: str
+    table_manifests: list[Level2TableManifest] = Field(default_factory=list)

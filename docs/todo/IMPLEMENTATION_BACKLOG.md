@@ -119,9 +119,9 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement `_row_id`, `_parent_row_id`, and `_array_index`
 - [x] Implement table naming rules with hash fallback only
 - [x] Implement mapping catalog lifecycle and persistence
-- [ ] Implement per-entity partition strategy
-- [ ] Implement lineage from level1 artifacts to level2 outputs
-- [ ] Implement low-cost output metrics via parquet metadata or Spark metrics
+- [x] Implement per-entity partition strategy
+- [x] Implement lineage from level1 artifacts to level2 outputs
+- [x] Implement low-cost output metrics via parquet metadata or Spark metrics
 
 ### Phase 7: Next Connector Families
 
