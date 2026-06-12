@@ -10,7 +10,11 @@
 
 ## Background
 
-The existing ELT platforms under `mercell` and the user-described `camlot` solution both implement a multi-stage medallion architecture. Over time, these platforms accumulated a wide range of ingestion patterns, configuration approaches, orchestration styles, and stage-specific conventions.
+The founding principles for the platform are defined in [00-prd-platform-principles.md](00-prd-platform-principles.md).
+
+The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
+
+The existing ELT platforms under `legacy stack A` and the user-described `legacy stack B` solution both implement a multi-stage medallion architecture. Over time, these platforms accumulated a wide range of ingestion patterns, configuration approaches, orchestration styles, and stage-specific conventions.
 
 The new `elt_pipeline` solution will consolidate the useful patterns from both platforms into a single Python-based implementation with a simpler, more explicit architecture. This PRD defines the first stage: ingesting raw data from external and internal sources into `level1`.
 
@@ -232,7 +236,9 @@ All execution modes must produce the same run metadata and observability outputs
 
 ### FR10. Operational Metadata
 
-Every run shall emit structured metadata including:
+The shared observability, audit, and error-handling contract for all stages is defined in [00-prd-shared-observability-audit-and-error-handling.md](00-prd-shared-observability-audit-and-error-handling.md).
+
+For ingestion, every run shall emit structured metadata including:
 
 - run id,
 - source and entity,
@@ -247,7 +253,9 @@ Every run shall emit structured metadata including:
 
 ### FR11. Error Handling
 
-The framework shall distinguish:
+The shared error-handling contract is defined in [00-prd-shared-observability-audit-and-error-handling.md](00-prd-shared-observability-audit-and-error-handling.md).
+
+For ingestion, the framework shall distinguish:
 
 - transient errors that may be retried automatically,
 - configuration errors that must fail fast,
@@ -586,7 +594,7 @@ Required execution modes are:
 
 The same connector family may support multiple execution modes.
 
-The `event_driven` mode must explicitly support EventBridge-style orchestration in addition to S3-event, SQS, and Lambda-triggered execution, reflecting capabilities present in the Mercell solution but not in the older Camelot stack.
+The `event_driven` mode must explicitly support EventBridge-style orchestration in addition to S3-event, SQS, and Lambda-triggered execution, reflecting capabilities present in the Legacy Stack A solution but not in the older Legacy Stack B stack.
 
 ### FR33. Top-Level Pattern Admission Rule
 
@@ -806,7 +814,7 @@ This same architectural rule should be applied to other recurring concerns such 
 
 #### REST and HTTP Ingestion
 
-The first release should treat REST as a top-tier ingestion pattern because the discovered `mercell` implementation demonstrates meaningful maturity in:
+The first release should treat REST as a top-tier ingestion pattern because the discovered `legacy stack A` implementation demonstrates meaningful maturity in:
 
 - paginated extraction,
 - response-content targeting,
@@ -928,7 +936,7 @@ This metadata may be stored as:
 
 - The new platform will preserve a medallion-style architecture but simplify stage semantics.
 - `level1` remains the canonical immutable raw zone.
-- This document uses both the discovered `mercell` and `camelot` implementations as the current baseline, plus the user's design constraints about simplifying the future platform.
+- This document uses both the discovered `legacy stack A` and `legacy stack B` implementations as the current baseline, plus the user's design constraints about simplifying the future platform.
 
 ## Open Questions
 

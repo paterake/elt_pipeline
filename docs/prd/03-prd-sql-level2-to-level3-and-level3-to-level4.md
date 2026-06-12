@@ -10,7 +10,11 @@
 
 ## Background
 
-The existing platforms use SQL-driven transformation to promote source-aligned datasets into business-conformed models and then into consumer-facing or reporting-ready datasets. The discovered `mercell` implementation shows several durable ideas worth preserving:
+The founding principles for the platform are defined in [00-prd-platform-principles.md](00-prd-platform-principles.md).
+
+The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
+
+The existing platforms use SQL-driven transformation to promote source-aligned datasets into business-conformed models and then into consumer-facing or reporting-ready datasets. The discovered `legacy stack A` implementation shows several durable ideas worth preserving:
 
 - configuration-driven SQL files,
 - ordered execution for dependent entities,
@@ -208,7 +212,9 @@ Validation outcomes must be captured as part of the run record.
 
 ### FR8. Lineage and Auditability
 
-For each model execution, the system shall record:
+The shared observability, audit, and error-handling contract for all stages is defined in [00-prd-shared-observability-audit-and-error-handling.md](00-prd-shared-observability-audit-and-error-handling.md).
+
+For SQL model execution, the system shall record:
 
 - model name and version,
 - input models or source entities,
@@ -222,7 +228,9 @@ For each model execution, the system shall record:
 
 ### FR9. Failure Handling
 
-The runtime shall distinguish:
+The shared error-handling contract is defined in [00-prd-shared-observability-audit-and-error-handling.md](00-prd-shared-observability-audit-and-error-handling.md).
+
+For SQL execution, the runtime shall distinguish:
 
 - SQL compilation or parse errors,
 - missing dependency failures,
@@ -382,7 +390,7 @@ Each `level4` model must document:
 
 - `level3` is the conformed analytical layer and `level4` is the consumer-facing mart layer for the first release of `elt_pipeline`.
 - SQL remains the primary medium for these stages even though the execution framework moves to Python.
-- This document is informed by the discovered `mercell` implementation and the user-provided description of `camlot`, as no local `camlot` folder was found during authoring.
+- This document is informed by the discovered `legacy stack A` implementation and the user-provided description of `legacy stack B`, as no local `legacy stack B` folder was found during authoring.
 
 ## Open Questions
 

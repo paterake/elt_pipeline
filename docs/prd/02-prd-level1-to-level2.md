@@ -10,7 +10,11 @@
 
 ## Background
 
-The legacy platforms describe `level2` as the first structured and queryable layer. In practice, the discovered `mercell` implementation uses `level2` heavily for converting JSON, XML, CSV, and stream payloads into structured tables, while the user-described `camlot` implementation treats `level2` as largely redundant except when the source payload is nested or otherwise non-tabular.
+The founding principles for the platform are defined in [00-prd-platform-principles.md](00-prd-platform-principles.md).
+
+The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
+
+The legacy platforms describe `level2` as the first structured and queryable layer. In practice, the discovered `legacy stack A` implementation uses `level2` heavily for converting JSON, XML, CSV, and stream payloads into structured tables, while the user-described `legacy stack B` implementation treats `level2` as largely redundant except when the source payload is nested or otherwise non-tabular.
 
 The new `elt_pipeline` should preserve the useful role of `level2` without forcing every source through an unnecessary stage. This PRD defines `level2` as a normalization layer used only when it adds value.
 
@@ -162,6 +166,35 @@ The runtime shall support:
 - extraction of repeated nested objects into separate entities,
 - controlled naming conventions for derived tables and columns.
 
+### FR6a. Derived Table Naming and Identifier Limits
+
+The normalization runtime shall produce human-readable and deterministic derived table names.
+
+Hashing of derived table names must be a fallback only, and must trigger only when:
+
+- the derived name would exceed the configured maximum identifier length, or
+- the derived name would collide with an existing derived name.
+
+When hashing is applied, the system must emit a mapping artifact that links:
+
+- logical source path (e.g., JSONPath/XPath),
+- derived physical table name,
+- parent entity/table,
+- join key columns.
+
+### FR6b. Mapping Catalog Lifecycle
+
+The normalization runtime shall treat the table and column mapping catalog as a logical schema artifact, not as a per-partition write artifact.
+
+The runtime must:
+
+- emit a mapping catalog per source/entity/mapping version,
+- reuse the same mapping catalog across partitions and reruns when the logical structure has not changed,
+- create a new mapping version only when the extracted relational structure changes materially,
+- record the mapping version used by each normalization run in run metadata.
+
+The runtime must not create a new mapping catalog for every date partition by default.
+
 ### FR7. Source-Aligned Table Semantics
 
 `level2` outputs must remain source-aligned rather than business-conformed.
@@ -190,6 +223,27 @@ The framework shall support:
 - partitioning based on ingestion date, business date, or source-aligned keys,
 - physically efficient file/table output for downstream SQL use.
 
+### FR8a. Writer and Partition Strategy Separation
+
+The normalization runtime shall separate:
+
+- logical relational structure generation,
+- mapping catalog generation,
+- physical file/table writing,
+- partition layout decisions.
+
+Partitioning must be configurable per output entity or table.
+
+The writer contract must support:
+
+- no partitioning when appropriate,
+- ingestion-date partitioning,
+- business-date partitioning,
+- source-aligned key partitioning,
+- future extension to composite partition strategies.
+
+The physical partition strategy must not force regeneration of mapping catalogs when the logical mapping is unchanged.
+
 ### FR9. Error Isolation and Quarantine
 
 When parsing or typing fails, the system shall support:
@@ -208,6 +262,73 @@ Every `level2` record or partition must be traceable back to:
 - `level1` artifact path or manifest reference,
 - run id,
 - normalization mapping version.
+
+### FR10a. Lineage Event Standard (OpenLineage)
+
+The shared observability, audit, and error-handling contract for all stages is defined in [00-prd-shared-observability-audit-and-error-handling.md](00-prd-shared-observability-audit-and-error-handling.md).
+
+The normalization runtime shall emit lineage events in an OpenLineage-compatible format.
+
+- At minimum, events must capture: run id, job name, start/end timestamps, input dataset identifiers, output dataset identifiers, and run status.
+- The implementation may use a Spark OpenLineage agent or integration to avoid bespoke lineage event schemas.
+- Storing lineage events locally is acceptable in v1, but the event format must remain compatible with OpenLineage to enable later integration with a lineage backend.
+
+### FR10b. Low-Cost Output Metrics (Avoid Full Row Counts)
+
+The normalization runtime shall not rely on full-data scans, such as Spark `count()`, as the default mechanism to compute row counts for `level2` outputs.
+
+- If row counts are captured, the preferred method is to read row counts from Parquet footer or row-group metadata after write by summing `num_rows` across output files.
+- Alternatively, Spark execution or write metrics may be captured when available, without triggering extra actions that rescan the full dataset.
+- Any full-count behavior must be explicitly opt-in and documented as potentially expensive.
+
+### FR10c. Audit Record Per Run
+
+The normalization runtime shall emit one authoritative audit record per run.
+
+The audit record must capture at minimum:
+
+- `run_id`,
+- `stage`,
+- `job_name`,
+- `source_name`,
+- `entity_name`,
+- `trigger_type`,
+- `window_start` and `window_end`,
+- `started_at` and `completed_at`,
+- `status`,
+- `mapping_version`,
+- `config_version` or `schema_version`,
+- input `level1` artifacts consumed,
+- output `level2` tables or partitions produced,
+- metrics summary,
+- error summary when the run is not successful.
+
+The audit record is the authoritative run summary and must be stored independently of transient console output.
+
+### FR10d. Structured Execution and Error Logging
+
+The normalization runtime shall emit structured execution logs for each run.
+
+Execution logs must:
+
+- include `run_id` on every event,
+- use structured fields rather than free-form text only,
+- identify component or module, event type, severity, and timestamp,
+- capture important lifecycle events such as run start, mapping load, input discovery, write start, write completion, metrics capture, and run completion.
+
+Error logging must be structured and classified.
+
+Each error event must capture at minimum:
+
+- `run_id`,
+- `error_code`,
+- `error_category`,
+- human-readable message,
+- source, entity, and table context where available,
+- input artifact reference where available,
+- retryable versus non-retryable classification.
+
+The implementation may additionally retain Spark engine logs for low-level diagnostics, but Spark logs must not replace the runtime audit record or structured execution log.
 
 ### FR11. Replay and Backfill
 
@@ -276,6 +397,8 @@ Each source mapping should express:
 - entity extraction plan,
 - schema definitions,
 - table naming strategy,
+- mapping catalog policy,
+- physical partition strategy,
 - bypass policy.
 
 ### Stage Bypass Policy
@@ -305,6 +428,15 @@ Each `level2` entity must publish:
 - record counts,
 - error and quarantine counts.
 
+The mapping catalog for a normalized source/entity must publish:
+
+- mapping version,
+- logical source path,
+- physical table name,
+- parent table reference where applicable,
+- join key definitions,
+- logical-to-physical column mappings.
+
 ## Success Metrics
 
 - Teams can clearly decide whether `level2` is required for a source.
@@ -320,6 +452,8 @@ Each `level2` entity must publish:
 - The runtime records lineage from `level2` outputs back to `level1` artifacts.
 - At least one already-tabular source can be configured to bypass physical `level2` transformation.
 - Schema errors are surfaced with quarantine or explicit run failure semantics.
+- Mapping catalogs are versioned by logical structure and are not regenerated per partition by default.
+- At least two different partition strategies can be configured without changing logical mapping behavior.
 
 ## Migration Considerations
 
@@ -336,8 +470,8 @@ Each `level2` entity must publish:
 ## Assumptions
 
 - `level2` remains part of the architecture, but only as a technical normalization layer.
-- The user-described `camlot` insight is a core design constraint: `level2` should not exist as mandatory ceremony.
-- This document is informed by the discovered `mercell` implementation and the user-provided `camlot` behavior, since no `camlot` folder was present in the local archive.
+- The user-described `legacy stack B` insight is a core design constraint: `level2` should not exist as mandatory ceremony.
+- This document is informed by the discovered `legacy stack A` implementation and the user-provided `legacy stack B` behavior, since no `legacy stack B` folder was present in the local archive.
 
 ## Open Questions
 
