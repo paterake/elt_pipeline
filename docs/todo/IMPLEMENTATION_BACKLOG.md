@@ -137,7 +137,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement dependency graph build and deterministic topological execution
 - [x] Implement local materializations (full refresh, append, partition overwrite)
 - [x] Implement SQL-stage audit/log/lineage emission to local artifact store
-- [ ] Implement model validations and capture results in audit record
+- [x] Implement model validations and capture results in audit record
 - [x] Add minimal example SQL model package for local mode
 
 ### Phase 9: Pipeline CLI Commands
@@ -176,7 +176,7 @@ The next implementation session should aim to complete:
 The next implementation session should aim to complete:
 
 - [x] Implement SQL-stage audit/log/lineage emission to local artifact store
-- [ ] Implement model validations and capture results in audit record
+- [x] Implement model validations and capture results in audit record
 - [ ] Add validate-only / explain planning mode for SQL CLI execution
 
 ## Open Decisions Still Allowed During Implementation

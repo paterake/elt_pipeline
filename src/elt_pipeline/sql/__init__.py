@@ -11,6 +11,7 @@ from elt_pipeline.sql.models import (
     SqlExecutionResult,
     SqlLoadMode,
     SqlMaterializationType,
+    SqlModelValidationSummary,
     SqlModelManifest,
     SqlModelOwner,
     SqlModelStage,
@@ -18,6 +19,7 @@ from elt_pipeline.sql.models import (
     SqlQualityExpectations,
     SqlRunArtifacts,
     SqlStageRunResult,
+    SqlValidationResult,
 )
 from elt_pipeline.sql.runtime import run_sql_models_locally
 
@@ -29,6 +31,7 @@ __all__ = [
     "SqlExecutionResult",
     "SqlLoadMode",
     "SqlMaterializationType",
+    "SqlModelValidationSummary",
     "SqlModelManifest",
     "SqlModelOwner",
     "SqlModelStage",
@@ -36,6 +39,7 @@ __all__ = [
     "SqlQualityExpectations",
     "SqlRunArtifacts",
     "SqlStageRunResult",
+    "SqlValidationResult",
     "build_token_context",
     "compile_sql_model",
     "discover_sql_models",

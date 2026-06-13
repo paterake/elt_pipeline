@@ -10,6 +10,8 @@ from elt_pipeline.sql.models import (
     SqlExecutionRecord,
     SqlExecutionResult,
     SqlLoadMode,
+    SqlModelValidationSummary,
+    SqlValidationResult,
 )
 
 
@@ -31,32 +33,53 @@ class LocalSqlModelExecutor:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         execution_result = SqlExecutionResult(database_path=self.database_path)
         with sqlite3.connect(self.database_path) as connection:
-            for model in models:
-                try:
-                    row_count = self._execute_model(connection=connection, model=model)
-                except sqlite3.DatabaseError as exc:
-                    raise PipelineError(
-                        message=f"Failed to execute SQL model '{model.model_id}'",
-                        error_code="SQL_EXECUTION_FAILED",
-                        error_category=ErrorCategory.processing_error,
-                        retryable=False,
-                        context={
-                            "model_id": model.model_id,
-                            "target_table_name": model.target_table_name,
-                            "database_path": str(self.database_path),
-                        },
-                    ) from exc
+            try:
+                for model in models:
+                    try:
+                        row_count = self._execute_model(connection=connection, model=model)
+                    except sqlite3.DatabaseError as exc:
+                        raise PipelineError(
+                            message=f"Failed to execute SQL model '{model.model_id}'",
+                            error_code="SQL_EXECUTION_FAILED",
+                            error_category=ErrorCategory.processing_error,
+                            retryable=False,
+                            context={
+                                "model_id": model.model_id,
+                                "target_table_name": model.target_table_name,
+                                "database_path": str(self.database_path),
+                            },
+                        ) from exc
 
-                record = SqlExecutionRecord(
-                    model_id=model.model_id,
-                    target_table_name=model.target_table_name,
-                    load_mode=model.load_mode,
-                    row_count=row_count,
-                )
-                execution_result.executed_models.append(record)
-                if execution_observer is not None:
-                    execution_observer(model, record)
-            connection.commit()
+                    record = SqlExecutionRecord(
+                        model_id=model.model_id,
+                        target_table_name=model.target_table_name,
+                        load_mode=model.load_mode,
+                        row_count=row_count,
+                    )
+                    execution_result.executed_models.append(record)
+
+                    validation_summary = self._validate_model(
+                        connection=connection,
+                        model=model,
+                        row_count=row_count,
+                    )
+                    execution_result.model_validations.append(validation_summary)
+
+                    if execution_observer is not None:
+                        execution_observer(model, record)
+                connection.commit()
+            except PipelineError as exc:
+                validation_summary = exc.context.get("validation_results")
+                if validation_summary is not None:
+                    summary = SqlModelValidationSummary.model_validate(validation_summary)
+                    if all(
+                        existing.model_id != summary.model_id
+                        for existing in execution_result.model_validations
+                    ):
+                        execution_result.model_validations.append(summary)
+                if "execution_result" not in exc.context:
+                    exc.context["execution_result"] = execution_result.model_dump(mode="json")
+                raise
         return execution_result
 
     def _execute_model(self, *, connection: sqlite3.Connection, model: CompiledSqlModel) -> int:
@@ -128,6 +151,132 @@ class LocalSqlModelExecutor:
         target_table = _quote_identifier(model.target_table_name)
         where_sql = " and ".join(where_clauses)
         connection.execute(f"delete from {target_table} where {where_sql}", parameters)
+
+    def _validate_model(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        model: CompiledSqlModel,
+        row_count: int,
+    ) -> SqlModelValidationSummary:
+        validations: list[SqlValidationResult] = []
+        quality = model.quality
+
+        if quality.row_count_min is not None:
+            passed = row_count >= quality.row_count_min
+            validations.append(
+                SqlValidationResult(
+                    validation_type="row_count_min",
+                    passed=passed,
+                    observed_value=row_count,
+                    expected_value=quality.row_count_min,
+                    message=(
+                        None
+                        if passed
+                        else (
+                            f"Expected at least {quality.row_count_min} rows but observed {row_count}"
+                        )
+                    ),
+                )
+            )
+
+        for column in quality.unique_columns:
+            duplicate_count = self._count_duplicate_rows(
+                connection=connection,
+                table_name=model.target_table_name,
+                columns=[column],
+            )
+            passed = duplicate_count == 0
+            validations.append(
+                SqlValidationResult(
+                    validation_type="unique_columns",
+                    passed=passed,
+                    columns=[column],
+                    observed_value=duplicate_count,
+                    expected_value=0,
+                    message=(
+                        None
+                        if passed
+                        else f"Found {duplicate_count} duplicate rows for unique column '{column}'"
+                    ),
+                )
+            )
+
+        for column in quality.not_null_columns:
+            null_count = self._count_null_rows(
+                connection=connection,
+                table_name=model.target_table_name,
+                column=column,
+            )
+            passed = null_count == 0
+            validations.append(
+                SqlValidationResult(
+                    validation_type="not_null_columns",
+                    passed=passed,
+                    columns=[column],
+                    observed_value=null_count,
+                    expected_value=0,
+                    message=(
+                        None
+                        if passed
+                        else f"Found {null_count} null rows for required column '{column}'"
+                    ),
+                )
+            )
+
+        summary = SqlModelValidationSummary(
+            model_id=model.model_id,
+            target_table_name=model.target_table_name,
+            passed=all(result.passed for result in validations),
+            validations=validations,
+        )
+
+        failing_validations = [result for result in validations if not result.passed]
+        if failing_validations:
+            raise PipelineError(
+                message=f"SQL model validations failed for '{model.model_id}'",
+                error_code="SQL_MODEL_VALIDATION_FAILED",
+                error_category=ErrorCategory.validation_error,
+                retryable=False,
+                context={
+                    "model_id": model.model_id,
+                    "target_table_name": model.target_table_name,
+                    "validation_results": summary.model_dump(mode="json"),
+                },
+            )
+
+        return summary
+
+    def _count_duplicate_rows(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        table_name: str,
+        columns: list[str],
+    ) -> int:
+        quoted_columns = ", ".join(_quote_identifier(column) for column in columns)
+        cursor = connection.execute(
+            "select count(*) from ("
+            f"select {quoted_columns} from {_quote_identifier(table_name)} "
+            f"group by {quoted_columns} having count(*) > 1"
+            ")"
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    def _count_null_rows(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column: str,
+    ) -> int:
+        cursor = connection.execute(
+            f"select count(*) from {_quote_identifier(table_name)} "
+            f"where {_quote_identifier(column)} is null"
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
 
 
 def _count_rows(*, connection: sqlite3.Connection, table_name: str) -> int:

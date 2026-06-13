@@ -120,6 +120,7 @@ class CompiledSqlModel(BaseModel):
     compiled_sql: str
     token_values: dict[str, str] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+    quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
 
 
 class SqlExecutionRecord(BaseModel):
@@ -129,9 +130,26 @@ class SqlExecutionRecord(BaseModel):
     row_count: int
 
 
+class SqlValidationResult(BaseModel):
+    validation_type: str
+    passed: bool
+    columns: list[str] = Field(default_factory=list)
+    observed_value: int | None = None
+    expected_value: int | None = None
+    message: str | None = None
+
+
+class SqlModelValidationSummary(BaseModel):
+    model_id: str
+    target_table_name: str
+    passed: bool
+    validations: list[SqlValidationResult] = Field(default_factory=list)
+
+
 class SqlExecutionResult(BaseModel):
     database_path: Path
     executed_models: list[SqlExecutionRecord] = Field(default_factory=list)
+    model_validations: list[SqlModelValidationSummary] = Field(default_factory=list)
 
     @property
     def model_count(self) -> int:

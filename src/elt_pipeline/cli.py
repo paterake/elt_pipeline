@@ -204,6 +204,10 @@ def main(argv: list[str] | None = None) -> int:
                         record.model_dump(mode="json")
                         for record in result.execution_result.executed_models
                     ],
+                    "validation_results": [
+                        summary.model_dump(mode="json")
+                        for summary in result.execution_result.model_validations
+                    ],
                     "artifacts": {
                         "artifact_root": str(result.artifacts.artifact_root),
                         "run_dir": str(result.artifacts.run_dir),

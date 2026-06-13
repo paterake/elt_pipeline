@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -23,4 +24,5 @@ class AuditRecord(BaseModel):
     config_version: str | None = None
     metrics_summary: MetricsSummary = Field(default_factory=MetricsSummary)
     error_summary: dict[str, str] | None = None
+    validation_results: list[dict[str, Any]] = Field(default_factory=list)
     context: dict[str, str] = Field(default_factory=dict)

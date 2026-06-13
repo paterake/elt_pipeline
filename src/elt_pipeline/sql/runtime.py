@@ -107,6 +107,9 @@ def run_sql_models_locally(
         completed_at = datetime.now(tz=UTC)
         status = "failed"
         failure = exc
+        partial_execution_result = exc.context.get("execution_result")
+        if partial_execution_result is not None:
+            execution_result = SqlExecutionResult.model_validate(partial_execution_result)
         error_summary = {
             "error_code": exc.error_code,
             "error_category": exc.error_category.value,
@@ -129,6 +132,13 @@ def run_sql_models_locally(
             records_written=sum(record.row_count for record in execution_result.executed_models),
             extra={
                 "models_executed": execution_result.model_count,
+                "validation_models_evaluated": len(execution_result.model_validations),
+                "validation_failures": sum(
+                    1
+                    for summary in execution_result.model_validations
+                    for result in summary.validations
+                    if not result.passed
+                ),
                 "database_path": str(database_path),
             },
         )
@@ -149,6 +159,10 @@ def run_sql_models_locally(
                 config_version=None,
                 metrics_summary=metrics,
                 error_summary=error_summary,
+                validation_results=[
+                    summary.model_dump(mode="json")
+                    for summary in execution_result.model_validations
+                ],
                 context=_build_audit_context(
                     environment=environment,
                     package_path=package_path,

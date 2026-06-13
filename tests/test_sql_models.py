@@ -245,7 +245,183 @@ def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(tmp_path:
     )
 
 
-def _write_basic_sql_package(base_path: Path) -> Path:
+def test_run_sql_models_locally_captures_validation_results_in_audit(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(
+        tmp_path,
+        base_orders_quality="""
+quality:
+  row_count_min: 2
+  unique_columns:
+    - order_id
+  not_null_columns:
+    - order_id
+""",
+    )
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+
+    result = run_sql_models_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
+        environment="dev",
+        package_path=package_root,
+        database_path=database_path,
+        compiled_models=compiled,
+    )
+
+    assert len(result.execution_result.model_validations) == 2
+
+    audit_payload = json.loads(result.artifacts.audit_path.read_text(encoding="utf-8"))
+    base_orders_validation = next(
+        summary
+        for summary in audit_payload["validation_results"]
+        if summary["model_id"] == "level3.sales.base_orders"
+    )
+
+    assert audit_payload["metrics_summary"]["extra"]["validation_models_evaluated"] == 2
+    assert audit_payload["metrics_summary"]["extra"]["validation_failures"] == 0
+    assert base_orders_validation["passed"] is True
+    assert [result["validation_type"] for result in base_orders_validation["validations"]] == [
+        "row_count_min",
+        "unique_columns",
+        "not_null_columns",
+    ]
+
+
+def test_run_sql_models_locally_fails_on_validation_error_and_audits_results(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (1, 20, "2026-01-03"),
+                (None, 30, "2026-01-04"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(
+        tmp_path,
+        base_orders_quality="""
+quality:
+  unique_columns:
+    - order_id
+  not_null_columns:
+    - order_id
+""",
+    )
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+    run_context = new_run_context(stage=StageName.sql, job_name="sql-run")
+
+    with pytest.raises(PipelineError, match="SQL model validations failed"):
+        run_sql_models_locally(
+            root_path=tmp_path,
+            run_context=run_context,
+            environment="dev",
+            package_path=package_root,
+            database_path=database_path,
+            compiled_models=compiled,
+        )
+
+    audit_path = (
+        tmp_path
+        / "runs"
+        / "stage=sql"
+        / "environment=dev"
+        / "job=sql-run"
+        / f"run_id={run_context.run_id}"
+        / "audit.json"
+    )
+    error_path = audit_path.with_name("errors.jsonl")
+
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    error_lines = error_path.read_text(encoding="utf-8").strip().splitlines()
+    base_orders_validation = audit_payload["validation_results"][0]
+    failed_checks = [
+        result for result in base_orders_validation["validations"] if result["passed"] is False
+    ]
+
+    assert audit_payload["status"] == "failed"
+    assert audit_payload["error_summary"]["error_code"] == "SQL_MODEL_VALIDATION_FAILED"
+    assert audit_payload["metrics_summary"]["extra"]["models_executed"] == 1
+    assert audit_payload["metrics_summary"]["extra"]["validation_failures"] == 2
+    assert base_orders_validation["model_id"] == "level3.sales.base_orders"
+    assert {result["validation_type"] for result in failed_checks} == {
+        "unique_columns",
+        "not_null_columns",
+    }
+    assert json.loads(error_lines[0])["error_code"] == "SQL_MODEL_VALIDATION_FAILED"
+
+
+def _write_basic_sql_package(
+    base_path: Path,
+    *,
+    base_orders_quality: str = "",
+    order_summary_quality: str = "",
+) -> Path:
     package_root = base_path / "sql_models"
     base_orders_dir = package_root / "level3" / "sales" / "base_orders"
     base_orders_dir.mkdir(parents=True, exist_ok=True)
@@ -261,8 +437,9 @@ def _write_basic_sql_package(base_path: Path) -> Path:
               table_name: base_orders
             owner:
               name: platform
+            {base_orders_quality}
             """
-        ).strip(),
+        ).format(base_orders_quality=base_orders_quality.strip()).strip(),
         encoding="utf-8",
     )
     (base_orders_dir / "model.sql").write_text(
@@ -293,8 +470,9 @@ def _write_basic_sql_package(base_path: Path) -> Path:
               table_name: order_summary
             owner:
               name: platform
+            {order_summary_quality}
             """
-        ).strip(),
+        ).format(order_summary_quality=order_summary_quality.strip()).strip(),
         encoding="utf-8",
     )
     (order_summary_dir / "model.sql").write_text(

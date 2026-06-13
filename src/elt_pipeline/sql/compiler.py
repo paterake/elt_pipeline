@@ -38,6 +38,7 @@ def compile_sql_model(
         compiled_sql=compiled_sql,
         token_values=token_values,
         depends_on=model.manifest.depends_on,
+        quality=model.manifest.quality,
     )
 
 
