@@ -30,7 +30,7 @@ Consumers may either:
 - analyze queryable `level4` datamarts directly, or
 - consume static `level5` outputs when a file-based handoff is preferred.
 
-At the current repository state, implementation is complete through `level4`, and the `level5` publish/export contract is drafted in `docs/prd/06-prd-level4-to-level5-publish-and-export.md` for follow-on work.
+At the current repository state, implementation is complete through `level4`, and the approved `level5` publish/export contract is documented in `docs/prd/06-prd-level4-to-level5-publish-and-export.md` for follow-on work.
 
 ## Client Neutrality
 
@@ -50,7 +50,7 @@ Recommended starting points:
 
 - `docs/prd/00-prd-platform-principles.md`: product positioning and DAMA-DMBOK v2 alignment
 - `docs/prd/00-prd-architecture-levels-and-governance.md`: level model and governance boundaries
-- `docs/prd/06-prd-level4-to-level5-publish-and-export.md`: drafted `level5` publish/export contract
+- `docs/prd/06-prd-level4-to-level5-publish-and-export.md`: approved `level5` publish/export contract
 
 ## Install
 
@@ -134,7 +134,7 @@ The local runtime is organized as a staged filesystem workflow:
 4. `sql run` materializes downstream `level3/` and `level4/` models
 5. `schedule run` orchestrates the above commands in a deterministic local sequence
 
-This reflects the currently implemented runtime path through `level4`. The planned `level5` layer is reserved for transformed static outputs and canned deliverables that consumers can pick up directly after analytical shaping has been completed in `level4`.
+This reflects the currently implemented runtime path through `level4`. The approved `level5` layer is reserved for transformed static outputs and canned deliverables that consumers can pick up directly after analytical shaping has been completed in `level4`. The first implementation slice is limited to local file-based delivery with run-scoped manifests and CSV / `jsonl` export contracts.
 
 Runtime metadata is persisted under the selected root path, including:
 

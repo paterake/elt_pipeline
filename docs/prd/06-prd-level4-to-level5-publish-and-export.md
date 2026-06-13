@@ -2,11 +2,23 @@
 
 ## Document Status
 
-- Status: Draft v0
+- Status: Approved v1
 - Product area: `elt_pipeline`
 - Stages: `level4` -> `level5`
 - Proposed implementation language: Python
 - Proposed packaging and environment management: `uv`
+
+## Approval Summary
+
+The `level5` publish/export contract is approved for initial implementation with the following first-slice decisions:
+
+- `level4` remains the authoritative analytical datamart layer and `level5` remains the static delivery layer.
+- The first implementation supports local filesystem delivery only.
+- The first mandatory output formats are CSV and newline-delimited JSON (`jsonl`).
+- Parquet extracts, archive bundles, and canned report artifacts remain reserved follow-on capabilities.
+- A publish definition may either export an upstream `level4` dataset directly or use an adjacent declarative selection query.
+- Every run must write a run-scoped manifest and run-scoped artifact path even when a stable consumer-facing path is also maintained.
+- Required client-neutral delivery metadata includes owning domain, owner team, consumer label, and delivery purpose.
 
 ## Background
 
@@ -155,12 +167,15 @@ Each publish/export definition must declare at minimum:
 - publish name,
 - stage (`level5`),
 - source dataset or model reference from `level4`,
+- source selection mode (`direct` dataset export or declarative query-driven export),
 - output format,
 - destination target type,
 - delivery path template,
 - load or replacement mode,
 - partition or window strategy,
 - ownership metadata,
+- consumer label,
+- delivery purpose,
 - and optional packaging rules.
 
 ### FR2. Level Boundary Enforcement
@@ -186,7 +201,12 @@ The runtime shall support writing delivery artifacts such as:
 - static pre-rendered report artifacts where the consumer contract requires a canned deliverable,
 - and packaged bundles containing one or more related files plus metadata.
 
-Exact output format support may be phased, but the product contract must assume multiple file-oriented target types.
+For the first implementation phase, the mandatory supported output formats are:
+
+- CSV
+- newline-delimited JSON (`jsonl`)
+
+Parquet extracts, canned report artifacts, and archive bundles are explicitly reserved for follow-on phases after the core publish contract is proven.
 
 ### FR4. Delivery Metadata and Artifact Manifest
 
@@ -200,12 +220,17 @@ The manifest must capture at minimum:
 - execution window or partition scope,
 - output format,
 - artifact file paths,
+- stable delivery paths when different from run-scoped paths,
 - file sizes where available,
 - row counts where available at low cost,
 - content checksums where practical,
 - replacement mode used,
 - produced timestamp,
-- and owning domain or team metadata.
+- owning domain and owner team metadata,
+- consumer label,
+- delivery purpose,
+- validation results summary,
+- and references to superseded artifacts when replacement semantics require them.
 
 The manifest is the authoritative description of a `level5` delivery output.
 
@@ -221,6 +246,13 @@ Supported modes must include at minimum:
 - and versioned delivery where each run writes to a unique run-scoped location.
 
 Each publish definition must declare its default replacement behavior explicitly.
+
+For the first implementation:
+
+- `overwrite-in-place` updates a stable delivery path after a successful staged write and finalize step,
+- `append-new-artifact` writes an additional uniquely named artifact without mutating prior outputs,
+- `partition-replace` replaces only the targeted partition path while retaining untouched partitions,
+- and `versioned-delivery` always writes to a unique run-scoped delivery path while optionally updating a stable pointer or alias later.
 
 ### FR6. Windowing, Backfills, and Replay
 
@@ -286,6 +318,11 @@ Operators must be able to determine from audit artifacts whether a publish run:
 The Python package shall provide the execution engine, metadata handling, and CLI interface.
 
 Publish/export logic for standard workflows shall remain declarative wherever practical through adjacent manifests or similar metadata files, rather than requiring new Python code for each delivery.
+
+For the first implementation, publish definitions may use either:
+
+- direct export of a referenced upstream `level4` dataset, or
+- an adjacent declarative SQL selection file that reads from approved upstream tables and shapes only the final delivery projection.
 
 ### FR11. Packaging Rules
 
@@ -386,6 +423,7 @@ An illustrative pattern is:
 
 - `artifacts/level5/<domain>/<publish_name>/window=<...>/`
 - `artifacts/level5/<domain>/<publish_name>/run_id=<...>/manifest.json`
+- `artifacts/level5/<domain>/<publish_name>/current/` for stable consumer-facing outputs when the selected replacement mode requires one
 
 The final directory naming convention may vary, but it must preserve:
 
@@ -407,6 +445,13 @@ Each `level5` publish definition must document:
 - retention expectation,
 - validation expectations,
 - and ownership metadata.
+
+Required client-neutral metadata fields for the first implementation are:
+
+- `owning_domain`
+- `owner_team`
+- `consumer_label`
+- `delivery_purpose`
 
 ## Success Metrics
 
@@ -445,19 +490,19 @@ Each `level5` publish definition must document:
 - The first implementation target is local file-based export rather than network transport.
 - Shared audit, error, and lineage conventions remain authoritative for `level5` as they do for earlier stages.
 
-## Open Questions
+## Resolved First-Implementation Decisions
 
-- Which output formats are mandatory for the first implementation versus optional follow-on support?
-- Should publish definitions always include a query/select layer, or may some definitions export an upstream dataset directly?
-- What retention and cleanup policy should apply to superseded `level5` artifacts under each replacement mode?
-- Should versioned delivery paths be required by default even when the consumer-facing path is stable?
-- What metadata fields are mandatory for recipient or destination intent while keeping the platform client-neutral?
+- The first mandatory output formats are CSV and `jsonl`.
+- Publish definitions may either export an approved upstream dataset directly or provide an adjacent declarative query for final delivery shaping.
+- Superseded artifacts are retained in run-scoped history by default; stable delivery paths may be replaced according to the declared replacement mode, but manifest history must continue to reference both new and superseded artifacts where relevant.
+- Versioned run-scoped paths are required for every run even when a stable consumer-facing path is also maintained.
+- Required client-neutral delivery metadata is `owning_domain`, `owner_team`, `consumer_label`, and `delivery_purpose`.
 
 ## Delivery Recommendation
 
 Phase the `level5` product as follows:
 
-1. Approve this PRD and finalize the publish manifest contract.
-2. Implement discovery, validation, and explain-mode for publish definitions.
-3. Implement one representative local file-based export path with manifest generation.
-4. Add rerun, backfill, validation, and operator guidance before considering optional external delivery adapters.
+1. Implement publish definition discovery, manifest validation, and explain-mode for local definitions.
+2. Implement one representative local file-based export path with manifest generation, starting with CSV.
+3. Add `jsonl` export support, rerun and backfill handling, and replacement-mode enforcement.
+4. Add operator guidance, examples, and focused tests before considering optional external delivery adapters.

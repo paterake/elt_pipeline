@@ -176,9 +176,9 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 The implementation backlog for the approved v1 PRD scope is complete through `level4`, local scheduling, and operator documentation.
 
-The first post-v1 design step for `level5` is now drafted in `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
+The first post-v1 design step for `level5` has now been approved in `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
 
-The `level5` direction has been clarified for handoff purposes:
+The approved `level5` direction is:
 
 - `level1` is raw ingested data
 - `level2` is relationalized/parquet source-aligned data
@@ -195,7 +195,7 @@ The product positioning has also been clarified for handoff purposes:
 - that layer model is aligned to DAMA-DMBOK v2 concerns such as data architecture, integration, metadata, quality, security, and auditability
 - the docs should not imply that DAMA-DMBOK v2 prescribes these exact level names directly
 
-Further work should be treated as post-v1 continuation unless a PRD is expanded and approved first.
+Further work should be treated as post-v1 continuation and must remain within the approved `level5` contract unless the PRD is expanded first.
 
 ## Post-v1 Continuation Backlog
 
@@ -220,12 +220,18 @@ This phase requires PRD/design approval before implementation begins.
 
 ### Phase 15: `level5` Publish and Export Capability
 
-This phase requires PRD/design approval before implementation begins.
+This phase is now approved for initial implementation of local file-based delivery.
 
 - [x] Draft a PRD for `level5` publish/export outputs
-- [ ] Review and approve the `level5` PRD before implementation begins
-- [ ] Define publish/export artifact manifests, delivery metadata, and rerun semantics
+- [x] Review and approve the `level5` PRD before implementation begins
+- [x] Preserve the agreed boundary that `level4` remains queryable datamarts and `level5` remains static pickup outputs
+- [x] Preserve the agreed positioning that `elt_pipeline` is a governed data platform runtime aligned to DAMA-DMBOK v2 principles
+- [x] Define publish/export artifact manifests, delivery metadata, and rerun semantics
+- [x] Confirm the first local export formats and replacement modes for implementation
+- [x] Sequence the initial `level5` runtime and CLI work after PRD approval
 - [ ] Add a `publish` runtime package and CLI command structure aligned to the level boundary model
+- [ ] Implement publish definition discovery and manifest validation
+- [ ] Add `publish explain` / validation-first CLI behavior for local definitions
 - [ ] Implement local export targets for file-based delivery artifacts
 - [ ] Add audit, lineage, and operator guidance for `level5` delivery runs
 - [ ] Add focused tests and runnable examples for publish/export workflows
@@ -245,31 +251,32 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Review `docs/prd/06-prd-level4-to-level5-publish-and-export.md` and approve the `level5` contract
-- [ ] Preserve the agreed boundary that `level4` remains queryable datamarts and `level5` remains static pickup outputs
-- [ ] Preserve the agreed positioning that `elt_pipeline` is a governed data platform runtime aligned to DAMA-DMBOK v2 principles
-- [ ] Finalize publish/export artifact manifest fields, delivery metadata, and rerun semantics
-- [ ] Confirm the first local export formats and replacement modes for implementation
-- [ ] Sequence the initial `level5` runtime and CLI work after PRD approval
+- [ ] Add `src/elt_pipeline/publish/` package scaffolding and shared models
+- [ ] Extend shared stage/runtime contracts for `publish` execution artifacts
+- [ ] Add `elt-pipeline publish ...` CLI structure for validate, explain, and run flows
+- [ ] Implement publish definition discovery plus manifest schema validation
+- [ ] Implement one representative local CSV export path with run-scoped manifest generation
 
 ## Future Session Target
 
 A later session should aim to complete:
 
-- [ ] Implement the first approved `level5` local file-based export workflow
+- [ ] Add `jsonl` export support, replacement-mode enforcement, and rerun/backfill semantics
+- [ ] Add operator runbook updates, runnable examples, and focused publish/runtime tests
 
 ## Session Handoff Notes
 
 Use this when resuming in a new session:
 
 - Resume prompt: `from docs/todo/IMPLEMENTATION_BACKLOG.md continue with the next session target for level5`
-- The authoritative `level5` draft is `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
+- The authoritative `level5` PRD is `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
 - The key clarification is that `level4` is still the consumer datamart/table layer.
 - `level5` is not another datamart layer; it is for transformed static files or canned outputs a consumer picks up directly.
 - `elt_pipeline` should be described as a governed data platform runtime aligned to DAMA-DMBOK v2 principles.
 - The `level1` through `level5` structure is a platform-defined architecture model aligned to DAMA-DMBOK v2 concerns, not a claim that DAMA-DMBOK v2 prescribes those exact names.
-- The next session should review/approve the `level5` PRD before starting implementation work.
-- After approval, the first build slice should focus on local file-based delivery only, not external transports.
+- The approved first build slice should focus on local file-based delivery only, not external transports.
+- The first required export formats are CSV and `jsonl`, with CSV as the first representative implementation path.
+- Every publish run must produce run-scoped artifacts and a run-scoped manifest even if a stable consumer-facing path is also maintained.
 
 ## Open Decisions Still Allowed During Implementation
 
