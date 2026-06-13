@@ -1,0 +1,65 @@
+jobs:
+  - name: validate-config
+    argv:
+      - validate-config
+      - /absolute/path/to/pipeline.yaml
+      - --environment
+      - default
+
+  - name: ingest
+    argv:
+      - ingest
+      - run
+      - /absolute/path/to/pipeline.yaml
+      - --environment
+      - default
+      - --root-path
+      - /absolute/path/to/runtime
+      - --source
+      - my_source
+      - --entity
+      - my_entity
+
+  - name: normalize
+    argv:
+      - normalize
+      - run
+      - /absolute/path/to/pipeline.yaml
+      - --environment
+      - default
+      - --root-path
+      - /absolute/path/to/runtime
+      - --source
+      - my_source
+      - --entity
+      - my_entity
+
+  - name: sql-compile
+    argv:
+      - sql
+      - compile
+      - /absolute/path/to/sql-package
+      - --environment
+      - default
+      - --include-deps
+      - --start-date
+      - "2026-01-01"
+      - --end-date
+      - "2026-01-31"
+
+  - name: sql-run
+    argv:
+      - sql
+      - run
+      - /absolute/path/to/sql-package
+      - --database
+      - /absolute/path/to/warehouse.db
+      - --environment
+      - default
+      - --include-deps
+      - --start-date
+      - "2026-01-01"
+      - --end-date
+      - "2026-01-31"
+
+continue_on_error: false

@@ -162,6 +162,12 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Add structured error codes for SQL runtime aligned to shared taxonomy
 - [x] Add dry-run/explain mode for SQL stage execution planning
 
+### Phase 12: Documentation and Operator Enablement
+
+- [x] Expand `README.md` with install, CLI, and local workflow guidance
+- [x] Add example schedule plan under `examples/schedules/`
+- [x] Document end-to-end local usage from ingest through SQL execution
+
 ## First Session Target
 
 The next implementation session should aim to complete:
