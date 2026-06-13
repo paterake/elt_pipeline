@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +22,10 @@ from elt_pipeline.ingest import (
     ObjectStorageConnectorConfig,
     SqlConnectorConfig,
     RestConnectorConfig,
+    RestRequestWindow,
 )
 from elt_pipeline.ingest.models import Level1ArtifactManifest
+from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
@@ -37,6 +41,22 @@ from elt_pipeline.sql import (
     topologically_sort_sql_models,
 )
 from elt_pipeline.sql.models import SqlModelStage
+
+
+@dataclass(frozen=True)
+class _CliWindowSelection:
+    start: datetime | None = None
+    end: datetime | None = None
+    label: str | None = None
+
+    def to_rest_window(self) -> RestRequestWindow:
+        return RestRequestWindow(start=self.start, end=self.end, label=self.label)
+
+
+@dataclass(frozen=True)
+class _CheckpointOverride:
+    active: bool
+    value: dict[str, Any] | None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +101,23 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_run_parser.add_argument("--job-name", default="ingest-run")
     ingest_run_parser.add_argument("--trigger-type", default="manual")
     ingest_run_parser.add_argument(
+        "--window-start",
+        help="Optional ISO-8601 window start for bounded or backfill ingest runs.",
+    )
+    ingest_run_parser.add_argument(
+        "--window-end",
+        help="Optional ISO-8601 window end for bounded or backfill ingest runs.",
+    )
+    ingest_run_parser.add_argument(
+        "--window-label",
+        help="Optional stable label for the requested ingest window.",
+    )
+    ingest_run_parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Seed checkpoint state from prior history for the requested window.",
+    )
+    ingest_run_parser.add_argument(
         "--kafka-log-path",
         type=Path,
         help="Optional override for local Kafka replay log input.",
@@ -105,6 +142,23 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
     normalize_run_parser.add_argument("--job-name", default="normalize-run")
     normalize_run_parser.add_argument("--trigger-type", default="manual")
+    normalize_run_parser.add_argument(
+        "--window-start",
+        help="Optional ISO-8601 lower bound used to select level1 manifests for reruns.",
+    )
+    normalize_run_parser.add_argument(
+        "--window-end",
+        help="Optional ISO-8601 upper bound used to select level1 manifests for reruns.",
+    )
+    normalize_run_parser.add_argument(
+        "--window-label",
+        help="Optional stable label for the requested normalization window.",
+    )
+    normalize_run_parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Treat the normalization selection as a targeted historical rerun.",
+    )
     normalize_run_parser.add_argument(
         "--manifest-path",
         action="append",
@@ -186,6 +240,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "ingest":
             config = load_pipeline_config(args.config_path)
+            cli_window = _build_cli_window_selection(
+                window_start=args.window_start,
+                window_end=args.window_end,
+                window_label=args.window_label,
+                backfill=args.backfill,
+            )
             selected_entities = _resolve_entity_selections(
                 config,
                 environment=args.environment,
@@ -197,8 +257,13 @@ def main(argv: list[str] | None = None) -> int:
                     resolved_config=resolved_config,
                     root_path=args.root_path,
                     job_name=args.job_name,
-                    trigger_type=args.trigger_type,
+                    trigger_type=_resolve_trigger_type(
+                        trigger_type=args.trigger_type,
+                        backfill=args.backfill,
+                    ),
                     kafka_log_path=args.kafka_log_path,
+                    cli_window=cli_window,
+                    backfill=args.backfill,
                 )
                 for resolved_config in selected_entities
             ]
@@ -208,6 +273,10 @@ def main(argv: list[str] | None = None) -> int:
                 "selection": {
                     "source": args.source,
                     "entity": args.entity,
+                    "window_start": _serialize_datetime(cli_window.start),
+                    "window_end": _serialize_datetime(cli_window.end),
+                    "window_label": cli_window.label,
+                    "backfill": args.backfill,
                 },
                 "result_count": len(results),
                 "results": results,
@@ -217,12 +286,21 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "normalize":
             load_pipeline_config(args.config_path)
+            cli_window = _build_cli_window_selection(
+                window_start=args.window_start,
+                window_end=args.window_end,
+                window_label=args.window_label,
+                backfill=args.backfill,
+            )
             summaries = [
                 _run_normalize_manifest(
                     manifest=manifest,
                     root_path=args.root_path,
                     job_name=args.job_name,
-                    trigger_type=args.trigger_type,
+                    trigger_type=_resolve_trigger_type(
+                        trigger_type=args.trigger_type,
+                        backfill=args.backfill,
+                    ),
                     partition_strategy=PartitionStrategy(
                         mode=PartitionMode(args.partition_mode),
                         partition_key=args.partition_key,
@@ -235,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
                     source_name=args.source,
                     entity_name=args.entity,
                     explicit_manifest_paths=args.manifest_path,
+                    window_start=cli_window.start,
+                    window_end=cli_window.end,
                 )
             ]
             payload = {
@@ -244,6 +324,10 @@ def main(argv: list[str] | None = None) -> int:
                     "source": args.source,
                     "entity": args.entity,
                     "manifest_paths": [str(path) for path in args.manifest_path],
+                    "window_start": _serialize_datetime(cli_window.start),
+                    "window_end": _serialize_datetime(cli_window.end),
+                    "window_label": cli_window.label,
+                    "backfill": args.backfill,
                 },
                 "processed_count": len(summaries),
                 "results": summaries,
@@ -316,6 +400,15 @@ def main(argv: list[str] | None = None) -> int:
             if args.sql_command == "compile":
                 payload = {
                     "run_id": run_context.run_id,
+                    "selection": {
+                        "stage": args.stage,
+                        "domain": args.domain,
+                        "model": args.model,
+                        "include_dependencies": args.include_deps,
+                        "start_date": args.start_date,
+                        "end_date": args.end_date,
+                        "partitions": partition_values,
+                    },
                     "model_count": len(compiled_models),
                     "models": [
                         {
@@ -343,6 +436,15 @@ def main(argv: list[str] | None = None) -> int:
                     payload = {
                         "run_id": run_context.run_id,
                         "mode": "explain" if args.explain else "validate_only",
+                        "selection": {
+                            "stage": args.stage,
+                            "domain": args.domain,
+                            "model": args.model,
+                            "include_dependencies": args.include_deps,
+                            "start_date": args.start_date,
+                            "end_date": args.end_date,
+                            "partitions": partition_values,
+                        },
                         "database_path": str(planning_result.database_path),
                         "model_count": planning_result.model_count,
                         "execution_order": [
@@ -382,6 +484,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 payload = {
                     "run_id": run_context.run_id,
+                    "selection": {
+                        "stage": args.stage,
+                        "domain": args.domain,
+                        "model": args.model,
+                        "include_dependencies": args.include_deps,
+                        "start_date": args.start_date,
+                        "end_date": args.end_date,
+                        "partitions": partition_values,
+                    },
                     "database_path": str(result.execution_result.database_path),
                     "model_count": result.execution_result.model_count,
                     "executed_models": [
@@ -484,6 +595,67 @@ def _parse_partition_values(values: list[str]) -> dict[str, str]:
     return parsed
 
 
+def _parse_datetime_argument(*, field_name: str, raw_value: str | None) -> datetime | None:
+    if raw_value is None:
+        return None
+    normalized = raw_value.strip()
+    if not normalized:
+        raise ConfigValidationError(
+            message=f"{field_name} must not be empty",
+            context={field_name: raw_value},
+        )
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ConfigValidationError(
+            message=f"{field_name} must be an ISO-8601 date or datetime",
+            context={field_name: raw_value},
+        ) from exc
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _build_cli_window_selection(
+    *,
+    window_start: str | None,
+    window_end: str | None,
+    window_label: str | None,
+    backfill: bool,
+) -> _CliWindowSelection:
+    start = _parse_datetime_argument(field_name="window_start", raw_value=window_start)
+    end = _parse_datetime_argument(field_name="window_end", raw_value=window_end)
+    if start and end and end < start:
+        raise ConfigValidationError(
+            message="window_end must be greater than or equal to window_start",
+            context={
+                "window_start": window_start,
+                "window_end": window_end,
+            },
+        )
+    if backfill and start is None:
+        raise ConfigValidationError(
+            message="--backfill requires --window-start",
+            context={"window_start": window_start},
+        )
+    label = window_label.strip() if window_label else None
+    if label is None and (start is not None or end is not None):
+        start_fragment = start.date().isoformat() if start is not None else "open"
+        end_fragment = end.date().isoformat() if end is not None else "open"
+        label = f"{start_fragment}_to_{end_fragment}"
+    return _CliWindowSelection(start=start, end=end, label=label)
+
+
+def _serialize_datetime(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _resolve_trigger_type(*, trigger_type: str, backfill: bool) -> str:
+    if backfill and trigger_type == "manual":
+        return "backfill"
+    return trigger_type
+
+
 def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Path:
     try:
         common_root = os.path.commonpath([package_path.resolve(), database_path.resolve()])
@@ -545,6 +717,8 @@ def _run_ingest_entity(
     job_name: str,
     trigger_type: str,
     kafka_log_path: Path | None,
+    cli_window: _CliWindowSelection,
+    backfill: bool,
 ) -> dict[str, Any]:
     run_context = new_run_context(
         stage=StageName.ingest,
@@ -555,31 +729,47 @@ def _run_ingest_entity(
             "source_name": resolved_config.source_name,
             "entity_name": resolved_config.entity_name,
             "connector_type": resolved_config.connector_type,
+            "window_start": _serialize_datetime(cli_window.start),
+            "window_end": _serialize_datetime(cli_window.end),
+            "window_label": cli_window.label,
+            "backfill": backfill,
         },
     )
     connector_type = resolved_config.connector_type
     root_path = root_path.resolve()
+    checkpoint_override = _resolve_checkpoint_override(
+        root_path=root_path,
+        resolved_config=resolved_config,
+        window=cli_window,
+        backfill=backfill,
+    )
 
     if connector_type == "rest":
-        result = LocalRestConnector(
+        result = _CliLocalRestConnector(
             config=RestConnectorConfig.from_resolved_entity_config(resolved_config),
             run_context=run_context,
             root_path=root_path,
+            checkpoint_override=checkpoint_override,
+            window=cli_window,
         ).run()
     elif connector_type == "sql":
-        result = LocalSqlConnector(
+        result = _CliLocalSqlConnector(
             config=SqlConnectorConfig.from_resolved_entity_config(resolved_config),
             run_context=run_context,
             root_path=root_path,
+            checkpoint_override=checkpoint_override,
+            window=cli_window,
         ).run()
     elif connector_type == "object_storage":
-        result = LocalObjectStorageConnector(
+        result = _CliLocalObjectStorageConnector(
             config=ObjectStorageConnectorConfig.from_resolved_entity_config(resolved_config),
             run_context=run_context,
             root_path=root_path,
+            checkpoint_override=checkpoint_override,
+            window=cli_window,
         ).run()
     elif connector_type == "kafka":
-        result = LocalKafkaConnector(
+        result = _CliLocalKafkaConnector(
             config=KafkaConnectorConfig.from_resolved_entity_config(resolved_config),
             run_context=run_context,
             root_path=root_path,
@@ -587,6 +777,8 @@ def _run_ingest_entity(
                 resolved_config=resolved_config,
                 explicit_log_path=kafka_log_path,
             ),
+            checkpoint_override=checkpoint_override,
+            window=cli_window,
         ).run()
     else:
         raise ConfigValidationError(
@@ -605,6 +797,10 @@ def _run_ingest_entity(
         "source_name": resolved_config.source_name,
         "entity_name": resolved_config.entity_name,
         "connector_type": connector_type,
+        "window_start": _serialize_datetime(cli_window.start),
+        "window_end": _serialize_datetime(cli_window.end),
+        "window_label": cli_window.label,
+        "backfill": backfill,
         "result": result.model_dump(mode="json"),
     }
 
@@ -639,6 +835,8 @@ def _select_level1_manifests(
     source_name: str | None,
     entity_name: str | None,
     explicit_manifest_paths: list[Path],
+    window_start: datetime | None,
+    window_end: datetime | None,
 ) -> list[Level1ArtifactManifest]:
     if entity_name and not source_name:
         raise ConfigValidationError(
@@ -660,6 +858,11 @@ def _select_level1_manifests(
         if manifest.environment == environment
         and (source_name is None or manifest.source_name == source_name)
         and (entity_name is None or manifest.entity_name == entity_name)
+        and _manifest_matches_window(
+            manifest=manifest,
+            window_start=window_start,
+            window_end=window_end,
+        )
     ]
     if not filtered_manifests:
         raise ConfigValidationError(
@@ -670,6 +873,8 @@ def _select_level1_manifests(
                 "source": source_name,
                 "entity": entity_name,
                 "manifest_paths": [str(path) for path in explicit_manifest_paths],
+                "window_start": _serialize_datetime(window_start),
+                "window_end": _serialize_datetime(window_end),
             },
         )
     return filtered_manifests
@@ -739,3 +944,237 @@ def _run_normalize_manifest(
             table_manifest.model_dump(mode="json") for table_manifest in summary.table_manifests
         ],
     }
+
+
+def _manifest_matches_window(
+    *,
+    manifest: Level1ArtifactManifest,
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> bool:
+    if window_start is None and window_end is None:
+        return True
+
+    manifest_start = manifest.window_start or manifest.ingest_started_at
+    manifest_end = manifest.window_end or manifest.ingest_completed_at
+    if window_start is not None and manifest_end < window_start:
+        return False
+    if window_end is not None and manifest_start > window_end:
+        return False
+    return True
+
+
+def _resolve_checkpoint_override(
+    *,
+    root_path: Path,
+    resolved_config: ResolvedEntityConfig,
+    window: _CliWindowSelection,
+    backfill: bool,
+) -> _CheckpointOverride:
+    if not backfill:
+        return _CheckpointOverride(active=False, value=None)
+
+    checkpoint_store = LocalCheckpointStore(root_path)
+    seed_entry = checkpoint_store.resolve_backfill_seed(
+        environment=resolved_config.environment,
+        source_name=resolved_config.source_name,
+        entity_name=resolved_config.entity_name,
+        window_start=window.start,
+    )
+    return _CheckpointOverride(
+        active=True,
+        value=seed_entry.checkpoint_after if seed_entry is not None else None,
+    )
+
+
+class _CliCheckpointOverrideMixin:
+    def __init__(
+        self,
+        *,
+        checkpoint_override: _CheckpointOverride,
+        window: _CliWindowSelection,
+    ) -> None:
+        self._checkpoint_override = checkpoint_override
+        self._cli_window = window
+
+    def resolve_checkpoint_before(self) -> dict[str, Any] | None:
+        if self._checkpoint_override.active:
+            return self._checkpoint_override.value
+        return super().resolve_checkpoint_before()
+
+
+class _CliLocalRestConnector(_CliCheckpointOverrideMixin, LocalRestConnector):
+    def __init__(
+        self,
+        *,
+        config: RestConnectorConfig,
+        run_context,
+        root_path: Path,
+        checkpoint_override: _CheckpointOverride,
+        window: _CliWindowSelection,
+    ) -> None:
+        LocalRestConnector.__init__(
+            self,
+            config=config,
+            run_context=run_context,
+            root_path=root_path,
+        )
+        _CliCheckpointOverrideMixin.__init__(
+            self,
+            checkpoint_override=checkpoint_override,
+            window=window,
+        )
+
+    def resolve_window(self):
+        if self._cli_window.start is None and self._cli_window.end is None:
+            return super().resolve_window()
+        return self._cli_window.to_rest_window()
+
+
+class _CliLocalSqlConnector(_CliCheckpointOverrideMixin, LocalSqlConnector):
+    def __init__(
+        self,
+        *,
+        config: SqlConnectorConfig,
+        run_context,
+        root_path: Path,
+        checkpoint_override: _CheckpointOverride,
+        window: _CliWindowSelection,
+    ) -> None:
+        LocalSqlConnector.__init__(
+            self,
+            config=config,
+            run_context=run_context,
+            root_path=root_path,
+        )
+        _CliCheckpointOverrideMixin.__init__(
+            self,
+            checkpoint_override=checkpoint_override,
+            window=window,
+        )
+
+    def update_checkpoint(
+        self,
+        *,
+        checkpoint_before: dict[str, Any] | None,
+        checkpoint_after: dict[str, Any] | None,
+        manifests: list[Level1ArtifactManifest],
+    ) -> None:
+        if checkpoint_after is None or checkpoint_after == checkpoint_before:
+            return None
+        self.checkpoint_store.commit(
+            environment=self.config.environment,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+            run_id=self.run_context.run_id,
+            checkpoint_before=checkpoint_before,
+            checkpoint_after=checkpoint_after,
+            recorded_at=self.run_context.started_at,
+            window_start=self._cli_window.start,
+            window_end=self._cli_window.end,
+            window_label=self._cli_window.label,
+            manifest_paths=[manifest.manifest_path for manifest in manifests],
+            metadata={"connector_type": "sql"},
+        )
+        return None
+
+
+class _CliLocalObjectStorageConnector(
+    _CliCheckpointOverrideMixin,
+    LocalObjectStorageConnector,
+):
+    def __init__(
+        self,
+        *,
+        config: ObjectStorageConnectorConfig,
+        run_context,
+        root_path: Path,
+        checkpoint_override: _CheckpointOverride,
+        window: _CliWindowSelection,
+    ) -> None:
+        LocalObjectStorageConnector.__init__(
+            self,
+            config=config,
+            run_context=run_context,
+            root_path=root_path,
+        )
+        _CliCheckpointOverrideMixin.__init__(
+            self,
+            checkpoint_override=checkpoint_override,
+            window=window,
+        )
+
+    def update_checkpoint(
+        self,
+        *,
+        checkpoint_before: dict[str, Any] | None,
+        checkpoint_after: dict[str, Any] | None,
+        manifests: list[Level1ArtifactManifest],
+    ) -> None:
+        if checkpoint_after is None or checkpoint_after == checkpoint_before:
+            return None
+        self.checkpoint_store.commit(
+            environment=self.config.environment,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+            run_id=self.run_context.run_id,
+            checkpoint_before=checkpoint_before,
+            checkpoint_after=checkpoint_after,
+            recorded_at=self.run_context.started_at,
+            window_start=self._cli_window.start,
+            window_end=self._cli_window.end,
+            window_label=self._cli_window.label,
+            manifest_paths=[manifest.manifest_path for manifest in manifests],
+            metadata={"connector_type": "object_storage"},
+        )
+        return None
+
+
+class _CliLocalKafkaConnector(_CliCheckpointOverrideMixin, LocalKafkaConnector):
+    def __init__(
+        self,
+        *,
+        config: KafkaConnectorConfig,
+        run_context,
+        root_path: Path,
+        log_path: Path,
+        checkpoint_override: _CheckpointOverride,
+        window: _CliWindowSelection,
+    ) -> None:
+        LocalKafkaConnector.__init__(
+            self,
+            config=config,
+            run_context=run_context,
+            root_path=root_path,
+            log_path=log_path,
+        )
+        _CliCheckpointOverrideMixin.__init__(
+            self,
+            checkpoint_override=checkpoint_override,
+            window=window,
+        )
+
+    def update_checkpoint(
+        self,
+        *,
+        checkpoint_before: dict[str, Any] | None,
+        checkpoint_after: dict[str, Any] | None,
+        manifests: list[Level1ArtifactManifest],
+    ) -> None:
+        if checkpoint_after is None or checkpoint_after == checkpoint_before:
+            return None
+        self.checkpoint_store.commit(
+            environment=self.config.environment,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+            run_id=self.run_context.run_id,
+            checkpoint_before=checkpoint_before,
+            checkpoint_after=checkpoint_after,
+            recorded_at=self.run_context.started_at,
+            window_start=self._cli_window.start,
+            window_end=self._cli_window.end,
+            window_label=self._cli_window.label,
+            manifest_paths=[manifest.manifest_path for manifest in manifests],
+            metadata={"connector_type": "kafka"},
+        )
+        return None

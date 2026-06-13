@@ -1,8 +1,12 @@
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from textwrap import dedent
+
+from elt_pipeline.ingest import LocalCheckpointStore, LocalLevel1Writer
+from elt_pipeline.shared.runtime import RunContext, StageName
 
 
 def write_config(tmp_path: Path) -> Path:
@@ -143,6 +147,35 @@ def test_normalize_run_command(tmp_path: Path) -> None:
     assert all(Path(output_root / table["data_path"]).exists() for table in table_manifests)
 
 
+def test_normalize_run_command_filters_by_window(tmp_path: Path) -> None:
+    config_path, output_root, selected_manifest = write_normalize_window_fixture(tmp_path)
+
+    result = _run_cli(
+        [
+            "normalize",
+            "run",
+            str(config_path),
+            "--source",
+            "windowed_source",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+            "--window-start",
+            "2026-01-03T00:00:00+00:00",
+            "--window-end",
+            "2026-01-03T23:59:59+00:00",
+            "--backfill",
+        ]
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["selection"]["backfill"] is True
+    assert payload["processed_count"] == 1
+    assert payload["results"][0]["trigger_type"] == "backfill"
+    assert payload["results"][0]["input_artifact_id"] == selected_manifest.artifact_id
+
+
 def test_sql_compile_command(tmp_path: Path) -> None:
     package_root = write_sql_package(tmp_path)
     result = subprocess.run(
@@ -170,6 +203,10 @@ def test_sql_compile_command(tmp_path: Path) -> None:
         text=True,
     )
     payload = json.loads(result.stdout)
+    assert payload["selection"]["stage"] == "level3"
+    assert payload["selection"]["domain"] == "sales"
+    assert payload["selection"]["model"] == "base_orders"
+    assert payload["selection"]["include_dependencies"] is False
     assert payload["model_count"] == 1
     assert payload["models"][0]["model_id"] == "level3.sales.base_orders"
     assert "2026-01-31" in payload["models"][0]["compiled_sql"]
@@ -210,6 +247,60 @@ def test_sql_run_command(tmp_path: Path) -> None:
     assert Path(payload["artifacts"]["audit_path"]).exists()
     assert Path(payload["artifacts"]["log_path"]).exists()
     assert Path(payload["artifacts"]["lineage_path"]).exists()
+
+
+def test_ingest_run_command_supports_backfill_checkpoint_seed(tmp_path: Path) -> None:
+    config_path, output_root = write_sql_ingest_cli_fixture(tmp_path)
+    checkpoint_store = LocalCheckpointStore(output_root)
+    checkpoint_store.commit(
+        environment="default",
+        source_name="orders_db",
+        entity_name="orders",
+        run_id="run-1",
+        checkpoint_before=None,
+        checkpoint_after={"max_updated_at": "2026-01-02T00:00:00+00:00"},
+        recorded_at=datetime(2026, 1, 2, tzinfo=UTC),
+        window_start=datetime(2026, 1, 1, tzinfo=UTC),
+        window_end=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    checkpoint_store.commit(
+        environment="default",
+        source_name="orders_db",
+        entity_name="orders",
+        run_id="run-2",
+        checkpoint_before={"max_updated_at": "2026-01-02T00:00:00+00:00"},
+        checkpoint_after={"max_updated_at": "2026-01-03T00:00:00+00:00"},
+        recorded_at=datetime(2026, 1, 3, tzinfo=UTC),
+        window_start=datetime(2026, 1, 2, tzinfo=UTC),
+        window_end=datetime(2026, 1, 3, tzinfo=UTC),
+    )
+
+    result = _run_cli(
+        [
+            "ingest",
+            "run",
+            str(config_path),
+            "--source",
+            "orders_db",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+            "--window-start",
+            "2026-01-03T00:00:00+00:00",
+            "--window-end",
+            "2026-01-04T00:00:00+00:00",
+            "--backfill",
+        ]
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["selection"]["backfill"] is True
+    assert payload["result_count"] == 1
+    assert payload["results"][0]["trigger_type"] == "backfill"
+    assert payload["results"][0]["result"]["checkpoint_before"] == {
+        "max_updated_at": "2026-01-03T00:00:00+00:00"
+    }
 
 
 def test_sql_run_validate_only_command(tmp_path: Path) -> None:
@@ -360,6 +451,62 @@ def write_sql_package(tmp_path: Path) -> Path:
     return package_root
 
 
+def write_sql_ingest_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    database_path = tmp_path / "source.db"
+    output_root = tmp_path / "runtime"
+    config_path = tmp_path / "sql-ingest-pipeline.yaml"
+
+    import sqlite3
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                updated_at text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, updated_at) values (?, ?)",
+            [
+                (1, "2026-01-03T00:00:00+00:00"),
+                (2, "2026-01-05T00:00:00+00:00"),
+            ],
+        )
+        connection.commit()
+
+    config_path.write_text(
+        dedent(
+            f"""
+            schema_version: v1
+            environments:
+              default:
+                defaults: {{}}
+            sources:
+              - name: orders_db
+                connector_type: sql
+                entities:
+                  - name: orders
+                    extraction:
+                      mode: delta
+                      database: {database_path.as_posix()}
+                      query:
+                        sql: select order_id, updated_at from raw_orders where updated_at >= :watermark
+                        parameters:
+                          watermark: "{{watermark.value}}"
+                      watermark:
+                        column_name: updated_at
+                        checkpoint_key: max_updated_at
+                        parameter_name: watermark
+                        default_value: "2026-01-01T00:00:00+00:00"
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return config_path, output_root
+
+
 def _seed_sqlite_database(database_path: Path) -> None:
     import sqlite3
 
@@ -422,6 +569,72 @@ def write_object_storage_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     return config_path, output_root
+
+
+def write_normalize_window_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, object]:
+    output_root = tmp_path / "runtime"
+    writer = LocalLevel1Writer(output_root)
+    config_path = tmp_path / "normalize-window-pipeline.yaml"
+    config_path.write_text(
+        dedent(
+            """
+            schema_version: v1
+            environments:
+              default:
+                defaults: {}
+            sources:
+              - name: windowed_source
+                connector_type: rest
+                entities:
+                  - name: orders
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    first_run = RunContext(
+        run_id="run-window-1",
+        stage=StageName.ingest,
+        job_name="ingest-run",
+        trigger_type="scheduled_batch",
+        started_at=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+    )
+    writer.write_payload(
+        run_context=first_run,
+        environment="default",
+        source_name="windowed_source",
+        entity_name="orders",
+        payload='[{"order_id":"A-100","customer":{"name":"Alice"}}]',
+        payload_format="json",
+        extraction_mode="scheduled_batch",
+        artifact_name="orders-day-1",
+        window_start=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        window_end=datetime(2026, 1, 1, 23, 59, tzinfo=UTC),
+    )
+
+    second_run = RunContext(
+        run_id="run-window-2",
+        stage=StageName.ingest,
+        job_name="ingest-run",
+        trigger_type="scheduled_batch",
+        started_at=datetime(2026, 1, 3, 0, 0, tzinfo=UTC),
+    )
+    selected_manifest = writer.write_payload(
+        run_context=second_run,
+        environment="default",
+        source_name="windowed_source",
+        entity_name="orders",
+        payload='[{"order_id":"A-200","customer":{"name":"Bob"}}]',
+        payload_format="json",
+        extraction_mode="scheduled_batch",
+        artifact_name="orders-day-3",
+        window_start=datetime(2026, 1, 3, 0, 0, tzinfo=UTC),
+        window_end=datetime(2026, 1, 3, 23, 59, tzinfo=UTC),
+    )
+
+    return config_path, output_root, selected_manifest
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
