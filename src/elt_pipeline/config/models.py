@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from typing import Literal
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+Level2Mode = Literal["required_level2", "lightweight_level2", "bypass_level2"]
 
 
 class ConfigLayer(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     trigger_mode: str | None = None
+    level2_mode: Level2Mode = "required_level2"
     auth: dict[str, Any] = Field(default_factory=dict)
     extraction: dict[str, Any] = Field(default_factory=dict)
     persistence: dict[str, Any] = Field(default_factory=dict)
@@ -57,6 +61,7 @@ class ResolvedEntityConfig(BaseModel):
     entity_name: str
     connector_type: str
     trigger_mode: str | None = None
+    level2_mode: Level2Mode = "required_level2"
     auth: dict[str, Any] = Field(default_factory=dict)
     extraction: dict[str, Any] = Field(default_factory=dict)
     persistence: dict[str, Any] = Field(default_factory=dict)

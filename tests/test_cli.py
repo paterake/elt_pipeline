@@ -52,6 +52,7 @@ def test_validate_config_command(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["connector_type"] == "rest"
     assert payload["entity_name"] == "orders"
+    assert payload["level2_mode"] == "required_level2"
 
 
 def test_show_run_context_command() -> None:
@@ -141,6 +142,8 @@ def test_normalize_run_command(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["command"] == "normalize.run"
     assert payload["processed_count"] == 1
+    assert payload["results"][0]["level2_mode"] == "required_level2"
+    assert payload["results"][0]["bypassed"] is False
     assert Path(output_root / payload["results"][0]["mapping_catalog_path"]).exists()
     table_manifests = payload["results"][0]["table_manifests"]
     assert len(table_manifests) == 2
@@ -184,6 +187,59 @@ def test_normalize_run_command_supports_csv_level1_payloads(tmp_path: Path) -> N
     table_manifests = payload["results"][0]["table_manifests"]
     assert len(table_manifests) == 1
     assert Path(output_root / table_manifests[0]["data_path"]).exists()
+
+
+def test_normalize_run_command_supports_bypass_level2_mode(tmp_path: Path) -> None:
+    config_path, output_root = write_object_storage_csv_bypass_cli_fixture(tmp_path)
+    _run_cli(
+        [
+            "ingest",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+        ]
+    )
+
+    result = _run_cli(
+        [
+            "normalize",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+        ]
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["command"] == "normalize.run"
+    assert payload["processed_count"] == 1
+    assert payload["results"][0]["level2_mode"] == "bypass_level2"
+    assert payload["results"][0]["bypassed"] is True
+    assert payload["results"][0]["mapping_catalog_path"] is None
+    assert payload["results"][0]["table_manifests"] == []
+    assert Path(output_root / payload["results"][0]["source_data_path"]).exists()
+    assert not list(output_root.rglob("level2/**/*.jsonl"))
+    audit_path = (
+        output_root
+        / "runs"
+        / "stage=normalize"
+        / "environment=default"
+        / "job=normalize-run"
+        / f"run_id={payload['results'][0]['run_id']}"
+        / "audit.json"
+    )
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit_payload["context"]["bypassed"] == "true"
+    assert audit_payload["context"]["level2_mode"] == "bypass_level2"
 
 
 def test_normalize_run_command_filters_by_window(tmp_path: Path) -> None:
@@ -917,6 +973,40 @@ def write_object_storage_csv_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
                 connector_type: object_storage
                 entities:
                   - name: orders
+                    extraction:
+                      bucket_path: {bucket_path.as_posix()}
+                      payload_format: csv
+                      sync_mode: full
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return config_path, output_root
+
+
+def write_object_storage_csv_bypass_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    bucket_path = tmp_path / "bucket-csv-bypass"
+    bucket_path.mkdir()
+    (bucket_path / "orders.csv").write_text(
+        "order_id,amount,status\nA-100,10,open\nA-200,25,closed\n",
+        encoding="utf-8",
+    )
+
+    output_root = tmp_path / "runtime-csv-bypass"
+    config_path = tmp_path / "object-storage-csv-bypass-pipeline.yaml"
+    config_path.write_text(
+        dedent(
+            f"""
+            schema_version: v1
+            environments:
+              default:
+                defaults: {{}}
+            sources:
+              - name: local_files
+                connector_type: object_storage
+                entities:
+                  - name: orders
+                    level2_mode: bypass_level2
                     extraction:
                       bucket_path: {bucket_path.as_posix()}
                       payload_format: csv

@@ -66,6 +66,7 @@ def resolve_entity_config(
     )
 
     trigger_mode = merged_payload.pop("trigger_mode", None)
+    level2_mode = merged_payload.pop("level2_mode", "required_level2")
     auth = merged_payload.pop("auth", {})
     extraction = merged_payload.pop("extraction", {})
     persistence = merged_payload.pop("persistence", {})
@@ -79,6 +80,7 @@ def resolve_entity_config(
         entity_name=entity.name,
         connector_type=source.connector_type,
         trigger_mode=trigger_mode,
+        level2_mode=level2_mode,
         auth=auth,
         extraction=extraction,
         persistence=persistence,

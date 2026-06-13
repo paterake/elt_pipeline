@@ -123,6 +123,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement lineage from level1 artifacts to level2 outputs
 - [x] Implement low-cost output metrics via parquet metadata or Spark metrics
 - [x] Add CSV normalization support for source-aligned tabular level1 payloads
+- [x] Add explicit `level2_mode` config and `bypass_level2` handling for tabular sources
 
 ### Phase 7: Next Connector Families
 

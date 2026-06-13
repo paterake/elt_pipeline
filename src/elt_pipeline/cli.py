@@ -14,10 +14,11 @@ from typing import Any
 from pydantic import ValidationError
 
 from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_config
-from elt_pipeline.config.models import PipelineConfig, ResolvedEntityConfig
+from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntityConfig
 from elt_pipeline.ingest import (
     KafkaConnectorConfig,
     LocalKafkaConnector,
+    LocalArtifactStore,
     LocalObjectStorageConnector,
     LocalSqlConnector,
     LocalRestConnector,
@@ -30,8 +31,10 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
-from elt_pipeline.shared.audit import AuditRecord
+from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
+from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
+from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.runtime import (
     ExecutionWindow,
     StageName,
@@ -318,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "normalize":
-            load_pipeline_config(args.config_path)
+            config = load_pipeline_config(args.config_path)
             cli_window = _build_cli_window_selection(
                 window_start=args.window_start,
                 window_end=args.window_end,
@@ -350,6 +353,12 @@ def main(argv: list[str] | None = None) -> int:
             summaries = [
                 _run_normalize_manifest(
                     manifest=manifest,
+                    resolved_config=resolve_entity_config(
+                        config,
+                        environment=manifest.environment,
+                        source_name=manifest.source_name,
+                        entity_name=manifest.entity_name,
+                    ),
                     root_path=args.root_path,
                     job_name=args.job_name,
                     trigger_type=args.trigger_type,
@@ -1317,6 +1326,7 @@ def _load_json_object_dict(
 def _run_normalize_manifest(
     *,
     manifest: Level1ArtifactManifest,
+    resolved_config: ResolvedEntityConfig,
     root_path: Path,
     job_name: str,
     trigger_type: str,
@@ -1355,6 +1365,16 @@ def _run_normalize_manifest(
                 "input_artifact_id": manifest.artifact_id,
             },
         ) from exc
+    level2_mode = resolved_config.level2_mode
+    if level2_mode == "bypass_level2":
+        return _bypass_normalize_manifest(
+            manifest=manifest,
+            root_path=root_path.resolve(),
+            run_context=run_context,
+            rerun_run_id=rerun_run_id,
+            level2_mode=level2_mode,
+        )
+
     summary = normalize_level1_to_local_level2(
         root_path=root_path.resolve(),
         run_context=run_context,
@@ -1368,11 +1388,144 @@ def _run_normalize_manifest(
         "trigger_type": run_context.trigger_type,
         "source_name": manifest.source_name,
         "entity_name": manifest.entity_name,
+        "level2_mode": level2_mode,
+        "bypassed": False,
         "input_artifact_id": manifest.artifact_id,
         "mapping_catalog_path": summary.mapping_catalog_path,
         "table_manifests": [
             table_manifest.model_dump(mode="json") for table_manifest in summary.table_manifests
         ],
+    }
+
+
+def _bypass_normalize_manifest(
+    *,
+    manifest: Level1ArtifactManifest,
+    root_path: Path,
+    run_context,
+    rerun_run_id: str | None,
+    level2_mode: Level2Mode,
+) -> dict[str, Any]:
+    artifact_store = LocalArtifactStore(root_path)
+
+    artifact_store.append_log_event(
+        run_context=run_context,
+        environment=manifest.environment,
+        log_event=build_log_event(
+            run_context=run_context,
+            severity="INFO",
+            component="normalize",
+            event_type="normalize_bypassed",
+            message="Physical level2 normalization was bypassed by configuration",
+            details={
+                "source_name": manifest.source_name,
+                "entity_name": manifest.entity_name,
+                "level2_mode": level2_mode,
+                "input_artifact_id": manifest.artifact_id,
+            },
+        ),
+    )
+    artifact_store.append_lineage_event(
+        run_context=run_context,
+        environment=manifest.environment,
+        lineage_event=LineageEvent(
+            event_type="START",
+            run_id=run_context.run_id,
+            job_name=run_context.job_name,
+            inputs=[
+                DatasetRef(
+                    namespace="local",
+                    name=manifest.data_path,
+                    facets={
+                        "artifact_id": manifest.artifact_id,
+                        "content_hash": manifest.content_hash,
+                    },
+                )
+            ],
+        ),
+    )
+
+    audit = AuditRecord(
+        run_id=run_context.run_id,
+        stage=run_context.stage.value,
+        job_name=run_context.job_name,
+        trigger_type=run_context.trigger_type,
+        started_at=run_context.started_at,
+        completed_at=run_context.started_at,
+        status="success",
+        config_version=None,
+        metrics_summary=MetricsSummary(
+            records_read=manifest.record_count_estimate,
+            records_written=manifest.record_count_estimate,
+            files_written=0,
+            extra={
+                "level2_mode": level2_mode,
+                "bypassed_level2": "true",
+            },
+        ),
+        context={
+            "environment": manifest.environment,
+            "source_name": manifest.source_name,
+            "entity_name": manifest.entity_name,
+            "input_artifact_id": manifest.artifact_id,
+            "input_manifest_path": manifest.manifest_path,
+            "level2_mode": level2_mode,
+            "bypassed": "true",
+            "source_data_path": manifest.data_path,
+        },
+    )
+    if rerun_run_id:
+        audit.context["rerun_of_run_id"] = rerun_run_id
+    artifact_store.write_audit_record(
+        run_context=run_context,
+        environment=manifest.environment,
+        audit_record=audit,
+    )
+
+    artifact_store.append_lineage_event(
+        run_context=run_context,
+        environment=manifest.environment,
+        lineage_event=LineageEvent(
+            event_type="COMPLETE",
+            run_id=run_context.run_id,
+            job_name=run_context.job_name,
+            inputs=[
+                DatasetRef(
+                    namespace="local",
+                    name=manifest.data_path,
+                    facets={
+                        "artifact_id": manifest.artifact_id,
+                        "content_hash": manifest.content_hash,
+                    },
+                )
+            ],
+            outputs=[
+                DatasetRef(
+                    namespace="local",
+                    name=manifest.data_path,
+                    facets={
+                        "artifact_id": manifest.artifact_id,
+                        "level2_mode": level2_mode,
+                        "bypassed": True,
+                    },
+                )
+            ],
+        ),
+    )
+
+    return {
+        "run_id": run_context.run_id,
+        "job_name": run_context.job_name,
+        "trigger_type": run_context.trigger_type,
+        "source_name": manifest.source_name,
+        "entity_name": manifest.entity_name,
+        "level2_mode": level2_mode,
+        "bypassed": True,
+        "input_artifact_id": manifest.artifact_id,
+        "mapping_catalog_path": None,
+        "table_manifests": [],
+        "source_data_path": manifest.data_path,
+        "source_manifest_path": manifest.manifest_path,
     }
 
 
