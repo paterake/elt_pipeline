@@ -17,15 +17,15 @@ from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_conf
 from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntityConfig
 from elt_pipeline.ingest import (
     KafkaConnectorConfig,
-    LocalKafkaConnector,
     LocalArtifactStore,
+    LocalKafkaConnector,
     LocalObjectStorageConnector,
-    LocalSqlConnector,
     LocalRestConnector,
+    LocalSqlConnector,
     ObjectStorageConnectorConfig,
-    SqlConnectorConfig,
     RestConnectorConfig,
     RestRequestWindow,
+    SqlConnectorConfig,
 )
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
@@ -43,13 +43,13 @@ from elt_pipeline.shared.runtime import (
 )
 from elt_pipeline.shared.scheduler import SchedulePlan, load_schedule_plan, parse_schedule_payload
 from elt_pipeline.sql import (
+    LocalSqlModelExecutor,
     build_token_context,
     compile_sql_model,
     discover_sql_models,
     filter_sql_models,
-    LocalSqlModelExecutor,
-    run_sql_models_locally,
     resolve_selected_model_ids,
+    run_sql_models_locally,
     topologically_sort_sql_models,
 )
 from elt_pipeline.sql.models import SqlModelStage
@@ -857,7 +857,10 @@ def _validate_normalize_rerun_request(args: argparse.Namespace) -> None:
         conflicting_args.append("--environment")
     if conflicting_args:
         raise ConfigValidationError(
-            message="normalize reruns must not specify an explicit selection alongside --rerun-run-id",
+            message=(
+                "normalize reruns must not specify an explicit selection "
+                "alongside --rerun-run-id"
+            ),
             context={
                 "rerun_run_id": args.rerun_run_id,
                 "conflicting_args": conflicting_args,
@@ -900,7 +903,10 @@ def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Pa
         common_root = os.path.commonpath([package_path.resolve(), database_path.resolve()])
     except ValueError:
         return Path.cwd()
-    return Path(common_root)
+    resolved_root = Path(common_root)
+    if resolved_root == Path(resolved_root.anchor):
+        return Path.cwd()
+    return resolved_root
 
 
 def _resolve_entity_selections(

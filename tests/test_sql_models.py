@@ -16,8 +16,8 @@ from elt_pipeline.sql import (
     compile_sql_model,
     discover_sql_models,
     filter_sql_models,
-    run_sql_models_locally,
     resolve_selected_model_ids,
+    run_sql_models_locally,
     topologically_sort_sql_models,
 )
 
@@ -554,7 +554,9 @@ quality:
     ]
 
 
-def test_run_sql_models_locally_fails_on_validation_error_and_audits_results(tmp_path: Path) -> None:
+def test_run_sql_models_locally_fails_on_validation_error_and_audits_results(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "warehouse.db"
     with sqlite3.connect(database_path) as connection:
         connection.execute(

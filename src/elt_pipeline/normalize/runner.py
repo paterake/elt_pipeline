@@ -4,8 +4,8 @@ import csv
 import hashlib
 import json
 import re
-from io import StringIO
 from dataclasses import dataclass, field
+from io import StringIO
 from typing import Any
 from uuid import uuid4
 

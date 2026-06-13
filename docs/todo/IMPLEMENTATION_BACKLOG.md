@@ -183,10 +183,10 @@ Some items below are ready for implementation planning, while others require PRD
 
 ### Phase 13: Release Engineering and CI
 
-- [ ] Add repository CI to run `uv sync --extra dev`, `uv run ruff check .`, and `uv run pytest`
-- [ ] Add package build validation for source and wheel artifacts
-- [ ] Add smoke validation that bundled examples still parse and execute the documented happy paths
-- [ ] Document the supported local development and release workflow for maintainers
+- [x] Add repository CI to run `uv sync --extra dev`, `uv run ruff check .`, and `uv run pytest`
+- [x] Add package build validation for source and wheel artifacts
+- [x] Add smoke validation that bundled examples still parse and execute the documented happy paths
+- [x] Document the supported local development and release workflow for maintainers
 
 ### Phase 14: Optional Platform Integrations
 

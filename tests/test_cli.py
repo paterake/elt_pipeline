@@ -872,7 +872,10 @@ def write_sql_ingest_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
                       mode: delta
                       database: {database_path.as_posix()}
                       query:
-                        sql: select order_id, updated_at from raw_orders where updated_at >= :watermark
+                        sql: >
+                          select order_id, updated_at
+                          from raw_orders
+                          where updated_at >= :watermark
                         parameters:
                           watermark: "{{watermark.value}}"
                       watermark:

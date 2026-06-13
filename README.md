@@ -45,6 +45,7 @@ uv run elt-pipeline --help
 - `examples/sql/local_demo/`: example SQL model package for local execution
 - `examples/schedules/local_demo.yaml`: example schedule plan wiring the CLI stages together
 - `examples/README.md`: setup and command sequences for the bundled examples
+- `docs/maintainer/`: maintainer local development, CI, and release workflow guidance
 - `docs/operator/`: operator runbook and troubleshooting guidance for local execution
 - `docs/prd/`: approved product and architecture requirements
 
@@ -115,6 +116,8 @@ The repository now includes runnable local connector configs under `examples/con
 - `local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint served from `examples/data/rest_api/`
 
 See `examples/README.md` for setup commands and stage-by-stage usage. See `docs/operator/LOCAL_OPERATOR_RUNBOOK.md` and `docs/operator/TROUBLESHOOTING.md` for reruns, backfills, schedule execution, and artifact inspection guidance.
+
+Maintainers should also use `docs/maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md` for the local quality gates, smoke checks, packaging steps, and CI expectations.
 
 ## End-to-End Local Demo
 

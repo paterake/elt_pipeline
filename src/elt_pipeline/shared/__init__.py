@@ -4,8 +4,8 @@ from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import ErrorRecord, PipelineError
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.runtime import (
-    CheckpointMode,
     CheckpointDirective,
+    CheckpointMode,
     ExecutionWindow,
     JobRuntime,
     JobTarget,

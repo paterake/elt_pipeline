@@ -6,7 +6,12 @@ from elt_pipeline.shared.audit import AuditRecord
 from elt_pipeline.shared.errors import ErrorCategory, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
-from elt_pipeline.shared.runtime import ExecutionWindow, StageName, build_job_runtime, new_run_context
+from elt_pipeline.shared.runtime import (
+    ExecutionWindow,
+    StageName,
+    build_job_runtime,
+    new_run_context,
+)
 
 
 def test_new_run_context_generates_core_fields() -> None:

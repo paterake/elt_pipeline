@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Sync development dependencies
+        run: uv sync --extra dev
+
+      - name: Run Ruff
+        run: uv run ruff check .
+
+      - name: Run pytest
+        run: uv run pytest
+
+  package-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Build source and wheel artifacts
+        run: uv build
+
+      - name: Validate built artifacts
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          dist = Path("dist")
+          built_files = [path.name for path in dist.iterdir() if path.is_file()]
+          if not any(name.endswith(".whl") for name in built_files):
+              raise SystemExit("missing wheel artifact")
+          if not any(name.endswith(".tar.gz") for name in built_files):
+              raise SystemExit("missing source distribution artifact")
+          print("validated artifacts:", ", ".join(sorted(built_files)))
+          PY

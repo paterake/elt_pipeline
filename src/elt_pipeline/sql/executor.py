@@ -196,7 +196,8 @@ class LocalSqlModelExecutor:
                         None
                         if passed
                         else (
-                            f"Expected at least {quality.row_count_min} rows but observed {row_count}"
+                            "Expected at least "
+                            f"{quality.row_count_min} rows but observed {row_count}"
                         )
                     ),
                 )

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import http.server
 import json
+import sqlite3
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from textwrap import dedent
+from typing import Iterator
 
 from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_config
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE_CONFIGS = {
@@ -110,6 +115,142 @@ def test_kafka_example_runs_ingest(tmp_path: Path) -> None:
     assert payload["results"][0]["result"]["message_count"] == 2
 
 
+def test_sqlite_example_runs_ingest(tmp_path: Path) -> None:
+    database_path = tmp_path / "source.db"
+    _seed_example_source_database(database_path)
+    config_path = _write_modified_example_config(
+        tmp_path,
+        "examples/configs/local_sqlite_orders_delta.yaml",
+        {"examples/data/sql/source.db": database_path.as_posix()},
+    )
+
+    result = _run_cli(
+        [
+            "ingest",
+            "run",
+            str(config_path),
+            "--root-path",
+            str(tmp_path),
+        ]
+    )
+    payload = json.loads(result.stdout)
+    assert payload["result_count"] == 1
+    assert payload["results"][0]["connector_type"] == "sql"
+    assert payload["results"][0]["result"]["query_count"] == 1
+    assert payload["results"][0]["result"]["row_count"] == 3
+
+
+def test_rest_example_runs_ingest(tmp_path: Path) -> None:
+    with _serve_rest_example_api() as base_url:
+        config_path = _write_modified_example_config(
+            tmp_path,
+            "examples/configs/local_rest_orders.yaml",
+            {"http://127.0.0.1:8000": base_url},
+        )
+        result = _run_cli(
+            [
+                "ingest",
+                "run",
+                str(config_path),
+                "--root-path",
+                str(tmp_path),
+            ]
+        )
+
+    payload = json.loads(result.stdout)
+    assert payload["result_count"] == 1
+    assert payload["results"][0]["connector_type"] == "rest"
+    assert payload["results"][0]["result"]["request_count"] == 1
+    assert payload["results"][0]["result"]["response_count"] == 1
+
+
+def test_sql_example_package_compile_and_run(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    _seed_example_warehouse(database_path)
+
+    compile_result = _run_cli(
+        [
+            "sql",
+            "compile",
+            str(REPO_ROOT / "examples/sql/local_demo"),
+            "--environment",
+            "default",
+            "--include-deps",
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+        ]
+    )
+    compile_payload = json.loads(compile_result.stdout)
+    assert compile_payload["model_count"] == 2
+    assert [model["model_id"] for model in compile_payload["models"]] == [
+        "level3.sales.base_orders",
+        "level4.sales.order_summary",
+    ]
+
+    run_result = _run_cli(
+        [
+            "sql",
+            "run",
+            str(REPO_ROOT / "examples/sql/local_demo"),
+            "--database",
+            str(database_path),
+            "--environment",
+            "default",
+            "--include-deps",
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+        ]
+    )
+    run_payload = json.loads(run_result.stdout)
+    assert run_payload["model_count"] == 2
+    assert Path(run_payload["artifacts"]["audit_path"]).exists()
+
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "select order_date, total_amount from order_summary order by order_date"
+        ).fetchall()
+    assert rows == [("2026-01-01", 10), ("2026-01-02", 25)]
+
+
+def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    database_path = tmp_path / "warehouse.db"
+    _seed_example_warehouse(database_path)
+
+    schedule_path = _write_modified_example_schedule(
+        tmp_path,
+        replacements={
+            "/absolute/path/to/pipeline.yaml": (
+                REPO_ROOT / "examples/configs/local_object_storage_orders.yaml"
+            ).as_posix(),
+            "/absolute/path/to/runtime": runtime_root.as_posix(),
+            "my_source": "local_files",
+            "my_entity": "orders",
+            "/absolute/path/to/sql-package": (
+                REPO_ROOT / "examples/sql/local_demo"
+            ).as_posix(),
+            "/absolute/path/to/warehouse.db": database_path.as_posix(),
+        },
+    )
+
+    result = _run_cli(["schedule", "run", str(schedule_path)])
+    payload = json.loads(result.stdout)
+
+    assert payload["success"] is True
+    assert payload["executed_count"] == 5
+    assert [job["status"] for job in payload["jobs"]] == [
+        "success",
+        "success",
+        "success",
+        "success",
+        "success",
+    ]
+
+
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "elt_pipeline", *args],
@@ -118,3 +259,78 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def _seed_example_source_database(database_path: Path) -> None:
+    script = (REPO_ROOT / "examples/data/sql/source_init.sql").read_text(encoding="utf-8")
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(script)
+        connection.commit()
+
+
+def _seed_example_warehouse(database_path: Path) -> None:
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id text,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                ("A-100", 10, "2026-01-01"),
+                ("A-200", 25, "2026-01-02"),
+            ],
+        )
+        connection.commit()
+
+
+def _write_modified_example_config(
+    tmp_path: Path,
+    relative_path: str,
+    replacements: dict[str, str],
+) -> Path:
+    template = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    resolved = template
+    for source, target in replacements.items():
+        resolved = resolved.replace(source, target)
+    output_path = tmp_path / Path(relative_path).name
+    output_path.write_text(resolved, encoding="utf-8")
+    return output_path
+
+
+def _write_modified_example_schedule(tmp_path: Path, replacements: dict[str, str]) -> Path:
+    template = (REPO_ROOT / "examples/schedules/local_demo.yaml").read_text(encoding="utf-8")
+    resolved = dedent(template)
+    for source, target in replacements.items():
+        resolved = resolved.replace(source, target)
+    output_path = tmp_path / "local_demo_schedule.yaml"
+    output_path.write_text(resolved, encoding="utf-8")
+    return output_path
+
+
+@contextmanager
+def _serve_rest_example_api() -> Iterator[str]:
+    directory = REPO_ROOT / "examples/data/rest_api"
+
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        lambda *args, **kwargs: QuietHandler(*args, directory=str(directory), **kwargs),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
