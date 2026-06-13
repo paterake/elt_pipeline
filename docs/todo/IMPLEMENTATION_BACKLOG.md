@@ -167,6 +167,9 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Expand `README.md` with install, CLI, and local workflow guidance
 - [x] Add example schedule plan under `examples/schedules/`
 - [x] Document end-to-end local usage from ingest through SQL execution
+- [ ] Add runnable example pipeline configs under `examples/` for local connector workflows
+- [ ] Add operator runbook for rerun, backfill, and schedule-driven execution
+- [ ] Add troubleshooting guidance for local artifacts, checkpoints, and audit outputs
 
 ## First Session Target
 
@@ -183,8 +186,8 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [x] Add SQL transform runtime tests (discovery, graph, compile, materializations, validations)
-- [x] Add end-to-end local integration tests (ingest -> normalize -> SQL transforms)
+- [ ] Add runnable example pipeline configs under `examples/` for local connector workflows
+- [ ] Add operator runbook for rerun, backfill, and schedule-driven execution
 
 ## Open Decisions Still Allowed During Implementation
 
