@@ -149,7 +149,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 10: Orchestration (Scheduled and On-Demand v1)
 
-- [ ] Define job/trigger/window runtime contract feeding run context + checkpoints
+- [x] Define job/trigger/window runtime contract feeding run context + checkpoints
 - [ ] Implement local scheduler option that calls CLI deterministically
 - [ ] Implement selective rerun primitives for normalization and SQL stages
 

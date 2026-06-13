@@ -29,7 +29,12 @@ from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
-from elt_pipeline.shared.runtime import StageName, new_run_context
+from elt_pipeline.shared.runtime import (
+    ExecutionWindow,
+    StageName,
+    build_job_runtime,
+    new_run_context,
+)
 from elt_pipeline.sql import (
     build_token_context,
     compile_sql_model,
@@ -41,16 +46,6 @@ from elt_pipeline.sql import (
     topologically_sort_sql_models,
 )
 from elt_pipeline.sql.models import SqlModelStage
-
-
-@dataclass(frozen=True)
-class _CliWindowSelection:
-    start: datetime | None = None
-    end: datetime | None = None
-    label: str | None = None
-
-    def to_rest_window(self) -> RestRequestWindow:
-        return RestRequestWindow(start=self.start, end=self.end, label=self.label)
 
 
 @dataclass(frozen=True)
@@ -257,10 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                     resolved_config=resolved_config,
                     root_path=args.root_path,
                     job_name=args.job_name,
-                    trigger_type=_resolve_trigger_type(
-                        trigger_type=args.trigger_type,
-                        backfill=args.backfill,
-                    ),
+                    trigger_type=args.trigger_type,
                     kafka_log_path=args.kafka_log_path,
                     cli_window=cli_window,
                     backfill=args.backfill,
@@ -297,10 +289,8 @@ def main(argv: list[str] | None = None) -> int:
                     manifest=manifest,
                     root_path=args.root_path,
                     job_name=args.job_name,
-                    trigger_type=_resolve_trigger_type(
-                        trigger_type=args.trigger_type,
-                        backfill=args.backfill,
-                    ),
+                    trigger_type=args.trigger_type,
+                    backfill=args.backfill,
                     partition_strategy=PartitionStrategy(
                         mode=PartitionMode(args.partition_mode),
                         partition_key=args.partition_key,
@@ -622,38 +612,29 @@ def _build_cli_window_selection(
     window_end: str | None,
     window_label: str | None,
     backfill: bool,
-) -> _CliWindowSelection:
+) -> ExecutionWindow:
     start = _parse_datetime_argument(field_name="window_start", raw_value=window_start)
     end = _parse_datetime_argument(field_name="window_end", raw_value=window_end)
-    if start and end and end < start:
+    if backfill and start is None:
+        raise ConfigValidationError(
+            message="--backfill requires --window-start",
+            context={"window_start": window_start},
+        )
+    label = window_label.strip() if window_label and window_label.strip() else None
+    try:
+        return ExecutionWindow(start=start, end=end, label=label)
+    except ValidationError as exc:
         raise ConfigValidationError(
             message="window_end must be greater than or equal to window_start",
             context={
                 "window_start": window_start,
                 "window_end": window_end,
             },
-        )
-    if backfill and start is None:
-        raise ConfigValidationError(
-            message="--backfill requires --window-start",
-            context={"window_start": window_start},
-        )
-    label = window_label.strip() if window_label else None
-    if label is None and (start is not None or end is not None):
-        start_fragment = start.date().isoformat() if start is not None else "open"
-        end_fragment = end.date().isoformat() if end is not None else "open"
-        label = f"{start_fragment}_to_{end_fragment}"
-    return _CliWindowSelection(start=start, end=end, label=label)
+        ) from exc
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
-
-
-def _resolve_trigger_type(*, trigger_type: str, backfill: bool) -> str:
-    if backfill and trigger_type == "manual":
-        return "backfill"
-    return trigger_type
 
 
 def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Path:
@@ -717,24 +698,9 @@ def _run_ingest_entity(
     job_name: str,
     trigger_type: str,
     kafka_log_path: Path | None,
-    cli_window: _CliWindowSelection,
+    cli_window: ExecutionWindow,
     backfill: bool,
 ) -> dict[str, Any]:
-    run_context = new_run_context(
-        stage=StageName.ingest,
-        job_name=job_name,
-        trigger_type=trigger_type,
-        attributes={
-            "environment": resolved_config.environment,
-            "source_name": resolved_config.source_name,
-            "entity_name": resolved_config.entity_name,
-            "connector_type": resolved_config.connector_type,
-            "window_start": _serialize_datetime(cli_window.start),
-            "window_end": _serialize_datetime(cli_window.end),
-            "window_label": cli_window.label,
-            "backfill": backfill,
-        },
-    )
     connector_type = resolved_config.connector_type
     root_path = root_path.resolve()
     checkpoint_override = _resolve_checkpoint_override(
@@ -743,6 +709,32 @@ def _run_ingest_entity(
         window=cli_window,
         backfill=backfill,
     )
+    try:
+        run_context = build_job_runtime(
+            stage=StageName.ingest,
+            job_name=job_name,
+            environment=resolved_config.environment,
+            trigger_type=trigger_type,
+            source_name=resolved_config.source_name,
+            entity_name=resolved_config.entity_name,
+            window=cli_window,
+            backfill=backfill,
+            checkpoint_seed=checkpoint_override.value,
+            attributes={
+                "connector_type": connector_type,
+                "backfill": backfill,
+            },
+        ).to_run_context()
+    except ValueError as exc:
+        raise ConfigValidationError(
+            message=str(exc),
+            context={
+                "job_name": job_name,
+                "trigger_type": trigger_type,
+                "source_name": resolved_config.source_name,
+                "entity_name": resolved_config.entity_name,
+            },
+        ) from exc
 
     if connector_type == "rest":
         result = _CliLocalRestConnector(
@@ -912,19 +904,38 @@ def _run_normalize_manifest(
     root_path: Path,
     job_name: str,
     trigger_type: str,
+    backfill: bool,
     partition_strategy: PartitionStrategy,
 ) -> dict[str, Any]:
-    run_context = new_run_context(
-        stage=StageName.normalize,
-        job_name=job_name,
-        trigger_type=trigger_type,
-        attributes={
-            "environment": manifest.environment,
-            "source_name": manifest.source_name,
-            "entity_name": manifest.entity_name,
-            "input_artifact_id": manifest.artifact_id,
-        },
-    )
+    try:
+        run_context = build_job_runtime(
+            stage=StageName.normalize,
+            job_name=job_name,
+            environment=manifest.environment,
+            trigger_type=trigger_type,
+            source_name=manifest.source_name,
+            entity_name=manifest.entity_name,
+            window=ExecutionWindow(
+                start=manifest.window_start,
+                end=manifest.window_end,
+                label=manifest.window_label,
+            ),
+            backfill=backfill,
+            attributes={
+                "input_artifact_id": manifest.artifact_id,
+            },
+        ).to_run_context()
+    except ValueError as exc:
+        raise ConfigValidationError(
+            message=str(exc),
+            context={
+                "job_name": job_name,
+                "trigger_type": trigger_type,
+                "source_name": manifest.source_name,
+                "entity_name": manifest.entity_name,
+                "input_artifact_id": manifest.artifact_id,
+            },
+        ) from exc
     summary = normalize_level1_to_local_level2(
         root_path=root_path.resolve(),
         run_context=run_context,
@@ -968,7 +979,7 @@ def _resolve_checkpoint_override(
     *,
     root_path: Path,
     resolved_config: ResolvedEntityConfig,
-    window: _CliWindowSelection,
+    window: ExecutionWindow,
     backfill: bool,
 ) -> _CheckpointOverride:
     if not backfill:
@@ -992,7 +1003,7 @@ class _CliCheckpointOverrideMixin:
         self,
         *,
         checkpoint_override: _CheckpointOverride,
-        window: _CliWindowSelection,
+        window: ExecutionWindow,
     ) -> None:
         self._checkpoint_override = checkpoint_override
         self._cli_window = window
@@ -1011,7 +1022,7 @@ class _CliLocalRestConnector(_CliCheckpointOverrideMixin, LocalRestConnector):
         run_context,
         root_path: Path,
         checkpoint_override: _CheckpointOverride,
-        window: _CliWindowSelection,
+        window: ExecutionWindow,
     ) -> None:
         LocalRestConnector.__init__(
             self,
@@ -1028,7 +1039,11 @@ class _CliLocalRestConnector(_CliCheckpointOverrideMixin, LocalRestConnector):
     def resolve_window(self):
         if self._cli_window.start is None and self._cli_window.end is None:
             return super().resolve_window()
-        return self._cli_window.to_rest_window()
+        return RestRequestWindow(
+            start=self._cli_window.start,
+            end=self._cli_window.end,
+            label=self._cli_window.label,
+        )
 
 
 class _CliLocalSqlConnector(_CliCheckpointOverrideMixin, LocalSqlConnector):
@@ -1039,7 +1054,7 @@ class _CliLocalSqlConnector(_CliCheckpointOverrideMixin, LocalSqlConnector):
         run_context,
         root_path: Path,
         checkpoint_override: _CheckpointOverride,
-        window: _CliWindowSelection,
+        window: ExecutionWindow,
     ) -> None:
         LocalSqlConnector.__init__(
             self,
@@ -1090,7 +1105,7 @@ class _CliLocalObjectStorageConnector(
         run_context,
         root_path: Path,
         checkpoint_override: _CheckpointOverride,
-        window: _CliWindowSelection,
+        window: ExecutionWindow,
     ) -> None:
         LocalObjectStorageConnector.__init__(
             self,
@@ -1139,7 +1154,7 @@ class _CliLocalKafkaConnector(_CliCheckpointOverrideMixin, LocalKafkaConnector):
         root_path: Path,
         log_path: Path,
         checkpoint_override: _CheckpointOverride,
-        window: _CliWindowSelection,
+        window: ExecutionWindow,
     ) -> None:
         LocalKafkaConnector.__init__(
             self,
