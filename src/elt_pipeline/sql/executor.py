@@ -10,7 +10,10 @@ from elt_pipeline.sql.models import (
     SqlExecutionRecord,
     SqlExecutionResult,
     SqlLoadMode,
+    SqlModelPlan,
     SqlModelValidationSummary,
+    SqlPlanningResult,
+    SqlQueryPlanStep,
     SqlValidationResult,
 )
 
@@ -82,6 +85,36 @@ class LocalSqlModelExecutor:
                 raise
         return execution_result
 
+    def plan(
+        self,
+        models: list[CompiledSqlModel],
+        *,
+        include_query_plan: bool = False,
+    ) -> SqlPlanningResult:
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        planning_result = SqlPlanningResult(database_path=self.database_path)
+        with sqlite3.connect(self.database_path) as connection:
+            for model in models:
+                self._validate_partition_requirements(model=model)
+                query_plan = self._explain_model(
+                    connection=connection,
+                    model=model,
+                    include_query_plan=include_query_plan,
+                )
+                planning_result.planned_models.append(
+                    SqlModelPlan(
+                        model_id=model.model_id,
+                        target_table_name=model.target_table_name,
+                        load_mode=model.load_mode,
+                        depends_on=model.depends_on,
+                        token_values=model.token_values,
+                        validation_passed=True,
+                        query_plan=query_plan,
+                    )
+                )
+                self._register_temp_view(connection=connection, model=model)
+        return planning_result
+
     def _execute_model(self, *, connection: sqlite3.Connection, model: CompiledSqlModel) -> int:
         target_table = _quote_identifier(model.target_table_name)
         select_sql = model.compiled_sql.rstrip().rstrip(";")
@@ -129,19 +162,9 @@ class LocalSqlModelExecutor:
         connection: sqlite3.Connection,
         model: CompiledSqlModel,
     ) -> None:
-        partition_columns = model.partition_columns
-        missing_columns = sorted(
-            column for column in partition_columns if column not in self.partition_values
-        )
-        if missing_columns:
-            raise PipelineError(
-                message="Partition overwrite requires runtime partition values",
-                error_code="SQL_PARTITION_VALUE_MISSING",
-                error_category=ErrorCategory.config_error,
-                retryable=False,
-                context={"model_id": model.model_id, "missing_columns": missing_columns},
-            )
+        self._validate_partition_requirements(model=model)
 
+        partition_columns = model.partition_columns
         where_clauses: list[str] = []
         parameters: list[str] = []
         for column in partition_columns:
@@ -246,6 +269,68 @@ class LocalSqlModelExecutor:
             )
 
         return summary
+
+    def _validate_partition_requirements(self, *, model: CompiledSqlModel) -> None:
+        if model.load_mode != SqlLoadMode.partition_overwrite:
+            return
+        missing_columns = sorted(
+            column for column in model.partition_columns if column not in self.partition_values
+        )
+        if missing_columns:
+            raise PipelineError(
+                message="Partition overwrite requires runtime partition values",
+                error_code="SQL_PARTITION_VALUE_MISSING",
+                error_category=ErrorCategory.config_error,
+                retryable=False,
+                context={"model_id": model.model_id, "missing_columns": missing_columns},
+            )
+
+    def _explain_model(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        model: CompiledSqlModel,
+        include_query_plan: bool,
+    ) -> list[SqlQueryPlanStep]:
+        select_sql = model.compiled_sql.rstrip().rstrip(";")
+        try:
+            rows = connection.execute(f"EXPLAIN QUERY PLAN {select_sql}").fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise PipelineError(
+                message=f"Failed to validate SQL model '{model.model_id}'",
+                error_code="SQL_PLANNING_FAILED",
+                error_category=ErrorCategory.processing_error,
+                retryable=False,
+                context={
+                    "model_id": model.model_id,
+                    "target_table_name": model.target_table_name,
+                    "database_path": str(self.database_path),
+                },
+            ) from exc
+        if not include_query_plan:
+            return []
+        return [
+            SqlQueryPlanStep(
+                node_id=int(row[0]),
+                parent_id=int(row[1]),
+                detail=str(row[3]),
+            )
+            for row in rows
+        ]
+
+    def _register_temp_view(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        model: CompiledSqlModel,
+    ) -> None:
+        target_table = _quote_identifier(model.target_table_name)
+        select_sql = model.compiled_sql.rstrip().rstrip(";")
+        connection.execute(f"drop view if exists temp.{target_table}")
+        connection.execute(
+            f"create temp view {target_table} as "
+            f"select * from ({select_sql}) as planned_model where 1 = 0"
+        )
 
     def _count_duplicate_rows(
         self,

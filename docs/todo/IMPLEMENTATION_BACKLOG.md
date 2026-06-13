@@ -158,7 +158,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [ ] Add SQL transform runtime tests (discovery, graph, compile, materializations, validations)
 - [ ] Add end-to-end local integration tests (ingest -> normalize -> SQL transforms)
 - [ ] Add structured error codes for SQL runtime aligned to shared taxonomy
-- [ ] Add dry-run/explain mode for SQL stage execution planning
+- [x] Add dry-run/explain mode for SQL stage execution planning
 
 ## First Session Target
 
@@ -177,7 +177,7 @@ The next implementation session should aim to complete:
 
 - [x] Implement SQL-stage audit/log/lineage emission to local artifact store
 - [x] Implement model validations and capture results in audit record
-- [ ] Add validate-only / explain planning mode for SQL CLI execution
+- [x] Add validate-only / explain planning mode for SQL CLI execution
 
 ## Open Decisions Still Allowed During Implementation
 

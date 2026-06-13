@@ -17,6 +17,7 @@ from elt_pipeline.sql import (
     compile_sql_model,
     discover_sql_models,
     filter_sql_models,
+    LocalSqlModelExecutor,
     run_sql_models_locally,
     resolve_selected_model_ids,
     topologically_sort_sql_models,
@@ -71,6 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--database", type=Path, required=True)
     run_parser.add_argument("--job-name", default="sql-run")
     run_parser.add_argument("--trigger-type", default="manual")
+    run_parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="Validate compiled SQL against the target database without executing writes.",
+    )
+    run_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help="Include sqlite query plan details; implies a validate-only planning run.",
+    )
 
     return parser
 
@@ -184,6 +195,42 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.sql_command == "run":
+                if args.validate_only or args.explain:
+                    planning_result = LocalSqlModelExecutor(
+                        database_path=args.database,
+                        partition_values=partition_values,
+                    ).plan(
+                        compiled_models,
+                        include_query_plan=args.explain,
+                    )
+                    payload = {
+                        "run_id": run_context.run_id,
+                        "mode": "explain" if args.explain else "validate_only",
+                        "database_path": str(planning_result.database_path),
+                        "model_count": planning_result.model_count,
+                        "execution_order": [
+                            model_plan.model_id for model_plan in planning_result.planned_models
+                        ],
+                        "models": [
+                            {
+                                "model_id": model_plan.model_id,
+                                "target_table_name": model_plan.target_table_name,
+                                "load_mode": model_plan.load_mode.value,
+                                "depends_on": model_plan.depends_on,
+                                "token_values": model_plan.token_values,
+                                "validation_passed": model_plan.validation_passed,
+                                "validation_message": model_plan.validation_message,
+                                "query_plan": [
+                                    plan_step.model_dump(mode="json")
+                                    for plan_step in model_plan.query_plan
+                                ],
+                            }
+                            for model_plan in planning_result.planned_models
+                        ],
+                    }
+                    print(json.dumps(payload, indent=2))
+                    return 0
+
                 result = run_sql_models_locally(
                     root_path=_resolve_sql_artifact_root(
                         package_path=args.package_path,

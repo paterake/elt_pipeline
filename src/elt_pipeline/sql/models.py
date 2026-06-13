@@ -146,6 +146,23 @@ class SqlModelValidationSummary(BaseModel):
     validations: list[SqlValidationResult] = Field(default_factory=list)
 
 
+class SqlQueryPlanStep(BaseModel):
+    node_id: int
+    parent_id: int
+    detail: str
+
+
+class SqlModelPlan(BaseModel):
+    model_id: str
+    target_table_name: str
+    load_mode: SqlLoadMode
+    depends_on: list[str] = Field(default_factory=list)
+    token_values: dict[str, str] = Field(default_factory=dict)
+    validation_passed: bool
+    validation_message: str | None = None
+    query_plan: list[SqlQueryPlanStep] = Field(default_factory=list)
+
+
 class SqlExecutionResult(BaseModel):
     database_path: Path
     executed_models: list[SqlExecutionRecord] = Field(default_factory=list)
@@ -154,6 +171,15 @@ class SqlExecutionResult(BaseModel):
     @property
     def model_count(self) -> int:
         return len(self.executed_models)
+
+
+class SqlPlanningResult(BaseModel):
+    database_path: Path
+    planned_models: list[SqlModelPlan] = Field(default_factory=list)
+
+    @property
+    def model_count(self) -> int:
+        return len(self.planned_models)
 
 
 class SqlRunArtifacts(BaseModel):

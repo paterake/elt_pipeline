@@ -141,6 +141,89 @@ def test_sql_run_command(tmp_path: Path) -> None:
     assert Path(payload["artifacts"]["lineage_path"]).exists()
 
 
+def test_sql_run_validate_only_command(tmp_path: Path) -> None:
+    package_root = write_sql_package(tmp_path)
+    database_path = tmp_path / "warehouse.db"
+    _seed_sqlite_database(database_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "elt_pipeline",
+            "sql",
+            "run",
+            str(package_root),
+            "--model",
+            "order_summary",
+            "--include-deps",
+            "--database",
+            str(database_path),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+            "--validate-only",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "validate_only"
+    assert payload["model_count"] == 2
+    assert payload["execution_order"] == [
+        "level3.sales.base_orders",
+        "level4.sales.order_summary",
+    ]
+    assert all(model["validation_passed"] for model in payload["models"])
+
+    import sqlite3
+
+    with sqlite3.connect(database_path) as connection:
+        row = connection.execute(
+            "select name from sqlite_master where type = 'table' and name = 'order_summary'"
+        ).fetchone()
+    assert row is None
+
+
+def test_sql_run_explain_command(tmp_path: Path) -> None:
+    package_root = write_sql_package(tmp_path)
+    database_path = tmp_path / "warehouse.db"
+    _seed_sqlite_database(database_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "elt_pipeline",
+            "sql",
+            "run",
+            str(package_root),
+            "--model",
+            "order_summary",
+            "--include-deps",
+            "--database",
+            str(database_path),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+            "--explain",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "explain"
+    assert payload["model_count"] == 2
+    assert payload["models"][0]["query_plan"]
+    assert payload["models"][1]["query_plan"]
+
+
 def write_sql_package(tmp_path: Path) -> Path:
     package_root = tmp_path / "sql_models"
     base_orders_dir = package_root / "level3" / "sales" / "base_orders"
