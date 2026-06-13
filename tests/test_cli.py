@@ -176,6 +176,49 @@ def test_normalize_run_command_filters_by_window(tmp_path: Path) -> None:
     assert payload["results"][0]["input_artifact_id"] == selected_manifest.artifact_id
 
 
+def test_normalize_run_command_supports_rerun_run_id(tmp_path: Path) -> None:
+    config_path, output_root, selected_manifest = write_normalize_window_fixture(tmp_path)
+
+    initial_result = _run_cli(
+        [
+            "normalize",
+            "run",
+            str(config_path),
+            "--source",
+            "windowed_source",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+            "--window-start",
+            "2026-01-03T00:00:00+00:00",
+            "--window-end",
+            "2026-01-03T23:59:59+00:00",
+        ]
+    )
+    initial_payload = json.loads(initial_result.stdout)
+    prior_run_id = initial_payload["results"][0]["run_id"]
+
+    rerun_result = _run_cli(
+        [
+            "normalize",
+            "run",
+            str(config_path),
+            "--root-path",
+            str(output_root),
+            "--rerun-run-id",
+            prior_run_id,
+        ]
+    )
+    rerun_payload = json.loads(rerun_result.stdout)
+
+    assert rerun_payload["selection"]["rerun_run_id"] == prior_run_id
+    assert rerun_payload["selection"]["source"] == "windowed_source"
+    assert rerun_payload["selection"]["entity"] == "orders"
+    assert rerun_payload["processed_count"] == 1
+    assert rerun_payload["results"][0]["input_artifact_id"] == selected_manifest.artifact_id
+
+
 def test_schedule_run_command_executes_jobs_in_order(tmp_path: Path) -> None:
     config_path, output_root = write_object_storage_cli_fixture(tmp_path)
     schedule_path = write_schedule_plan(
@@ -348,6 +391,52 @@ def test_sql_run_command(tmp_path: Path) -> None:
     assert Path(payload["artifacts"]["audit_path"]).exists()
     assert Path(payload["artifacts"]["log_path"]).exists()
     assert Path(payload["artifacts"]["lineage_path"]).exists()
+
+
+def test_sql_run_command_supports_rerun_run_id(tmp_path: Path) -> None:
+    package_root = write_sql_package(tmp_path)
+    database_path = tmp_path / "warehouse.db"
+    _seed_sqlite_database(database_path)
+
+    initial_result = _run_cli(
+        [
+            "sql",
+            "run",
+            str(package_root),
+            "--model",
+            "order_summary",
+            "--include-deps",
+            "--database",
+            str(database_path),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+        ]
+    )
+    initial_payload = json.loads(initial_result.stdout)
+
+    rerun_result = _run_cli(
+        [
+            "sql",
+            "run",
+            str(package_root),
+            "--database",
+            str(database_path),
+            "--rerun-run-id",
+            initial_payload["run_id"],
+        ]
+    )
+    rerun_payload = json.loads(rerun_result.stdout)
+
+    assert rerun_payload["selection"]["rerun_run_id"] == initial_payload["run_id"]
+    assert rerun_payload["selection"]["start_date"] == "2026-01-01"
+    assert rerun_payload["selection"]["end_date"] == "2026-01-31"
+    assert rerun_payload["model_count"] == 2
+    assert [model["model_id"] for model in rerun_payload["executed_models"]] == [
+        "level3.sales.base_orders",
+        "level4.sales.order_summary",
+    ]
 
 
 def test_ingest_run_command_supports_backfill_checkpoint_seed(tmp_path: Path) -> None:

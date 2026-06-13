@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,11 @@ def run_sql_models_locally(
     database_path: Path,
     compiled_models: list[CompiledSqlModel],
     partition_values: dict[str, str] | None = None,
+    extra_values: dict[str, object] | None = None,
+    selection_stage: str | None = None,
+    selection_domain: str | None = None,
+    selection_model: str | None = None,
+    include_dependencies: bool = False,
 ) -> SqlStageRunResult:
     if run_context.stage != StageName.sql:
         raise build_sql_runtime_error(
@@ -174,6 +180,13 @@ def run_sql_models_locally(
                     database_path=database_path,
                     root_path=root_path,
                     compiled_models=compiled_models,
+                    partition_values=partition_values,
+                    extra_values=extra_values,
+                    selection_stage=selection_stage,
+                    selection_domain=selection_domain,
+                    selection_model=selection_model,
+                    include_dependencies=include_dependencies,
+                    run_context=run_context,
                 ),
             ),
         )
@@ -301,6 +314,13 @@ def _build_audit_context(
     database_path: Path,
     root_path: Path,
     compiled_models: list[CompiledSqlModel],
+    partition_values: dict[str, str] | None,
+    extra_values: dict[str, object] | None,
+    selection_stage: str | None,
+    selection_domain: str | None,
+    selection_model: str | None,
+    include_dependencies: bool,
+    run_context: RunContext,
 ) -> dict[str, str]:
     context = {
         "environment": environment,
@@ -309,7 +329,15 @@ def _build_audit_context(
         "artifact_root": str(root_path),
         "model_count": str(len(compiled_models)),
         "selected_models": ",".join(model.model_id for model in compiled_models),
+        "selection_stage": selection_stage or "",
+        "selection_domain": selection_domain or "",
+        "selection_model": selection_model or "",
+        "include_dependencies": json.dumps(include_dependencies),
     }
+    if partition_values:
+        context["partition_values"] = json.dumps(partition_values, sort_keys=True)
+    if extra_values:
+        context["extra_values"] = json.dumps(extra_values, sort_keys=True)
     start_date = next(
         (
             model.token_values["window.start_date"]
@@ -330,4 +358,7 @@ def _build_audit_context(
         context["window_start"] = start_date
     if end_date is not None:
         context["window_end"] = end_date
+    rerun_of_run_id = run_context.attributes.get("rerun_of_run_id")
+    if isinstance(rerun_of_run_id, str) and rerun_of_run_id:
+        context["rerun_of_run_id"] = rerun_of_run_id
     return context

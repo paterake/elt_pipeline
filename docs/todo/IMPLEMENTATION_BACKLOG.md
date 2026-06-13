@@ -151,7 +151,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 - [x] Define job/trigger/window runtime contract feeding run context + checkpoints
 - [x] Implement local scheduler option that calls CLI deterministically
-- [ ] Implement selective rerun primitives for normalization and SQL stages
+- [x] Implement selective rerun primitives for normalization and SQL stages
 
 ### Phase 11: Testing and Hardening
 
@@ -175,7 +175,6 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Implement selective rerun primitives for normalization and SQL stages
 - [ ] Add SQL transform runtime tests (discovery, graph, compile, materializations, validations)
 - [ ] Add end-to-end local integration tests (ingest -> normalize -> SQL transforms)
 

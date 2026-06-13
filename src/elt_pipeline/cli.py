@@ -30,6 +30,7 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
+from elt_pipeline.shared.audit import AuditRecord
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
 from elt_pipeline.shared.runtime import (
     ExecutionWindow,
@@ -55,6 +56,16 @@ from elt_pipeline.sql.models import SqlModelStage
 class _CheckpointOverride:
     active: bool
     value: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _SqlRerunSelection:
+    environment: str
+    model_ids: tuple[str, ...]
+    start_date: str | None
+    end_date: str | None
+    partition_values: dict[str, str]
+    extra_values: dict[str, Any]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -165,6 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit level1 manifest path to normalize. May be passed multiple times.",
     )
     normalize_run_parser.add_argument(
+        "--rerun-run-id",
+        help="Reuse the exact level1 artifact selected by a prior normalize run.",
+    )
+    normalize_run_parser.add_argument(
         "--partition-mode",
         choices=[mode.value for mode in PartitionMode],
         default=PartitionMode.ingest_date.value,
@@ -194,6 +209,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--database", type=Path, required=True)
     run_parser.add_argument("--job-name", default="sql-run")
     run_parser.add_argument("--trigger-type", default="manual")
+    run_parser.add_argument(
+        "--rerun-run-id",
+        help="Reuse the model/window/partition selection from a prior sql run.",
+    )
     run_parser.add_argument(
         "--validate-only",
         action="store_true",
@@ -306,20 +325,17 @@ def main(argv: list[str] | None = None) -> int:
                 window_label=args.window_label,
                 backfill=args.backfill,
             )
-            summaries = [
-                _run_normalize_manifest(
-                    manifest=manifest,
-                    root_path=args.root_path,
-                    job_name=args.job_name,
-                    trigger_type=args.trigger_type,
-                    backfill=args.backfill,
-                    partition_strategy=PartitionStrategy(
-                        mode=PartitionMode(args.partition_mode),
-                        partition_key=args.partition_key,
-                        metadata_key=args.metadata_key,
-                    ),
-                )
-                for manifest in _select_level1_manifests(
+            if args.rerun_run_id:
+                _validate_normalize_rerun_request(args)
+                manifests = [
+                    _resolve_normalize_rerun_manifest(
+                        root_path=args.root_path,
+                        rerun_run_id=args.rerun_run_id,
+                    )
+                ]
+                selected_environment = manifests[0].environment
+            else:
+                manifests = _select_level1_manifests(
                     root_path=args.root_path,
                     environment=args.environment,
                     source_name=args.source,
@@ -328,18 +344,41 @@ def main(argv: list[str] | None = None) -> int:
                     window_start=cli_window.start,
                     window_end=cli_window.end,
                 )
+                selected_environment = args.environment
+            selected_source = manifests[0].source_name if args.rerun_run_id else args.source
+            selected_entity = manifests[0].entity_name if args.rerun_run_id else args.entity
+            summaries = [
+                _run_normalize_manifest(
+                    manifest=manifest,
+                    root_path=args.root_path,
+                    job_name=args.job_name,
+                    trigger_type=args.trigger_type,
+                    backfill=args.backfill,
+                    rerun_run_id=args.rerun_run_id,
+                    partition_strategy=PartitionStrategy(
+                        mode=PartitionMode(args.partition_mode),
+                        partition_key=args.partition_key,
+                        metadata_key=args.metadata_key,
+                    ),
+                )
+                for manifest in manifests
             ]
             payload = {
                 "command": "normalize.run",
-                "environment": args.environment,
+                "environment": selected_environment,
                 "selection": {
-                    "source": args.source,
-                    "entity": args.entity,
-                    "manifest_paths": [str(path) for path in args.manifest_path],
+                    "source": selected_source,
+                    "entity": selected_entity,
+                    "manifest_paths": (
+                        [manifest.manifest_path for manifest in manifests]
+                        if args.rerun_run_id
+                        else [str(path) for path in args.manifest_path]
+                    ),
                     "window_start": _serialize_datetime(cli_window.start),
                     "window_end": _serialize_datetime(cli_window.end),
                     "window_label": cli_window.label,
                     "backfill": args.backfill,
+                    "rerun_run_id": args.rerun_run_id,
                 },
                 "processed_count": len(summaries),
                 "results": summaries,
@@ -348,60 +387,114 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "sql":
+            rerun_run_id = getattr(args, "rerun_run_id", None)
             discovered_models = discover_sql_models(args.package_path)
             ordered_models = topologically_sort_sql_models(discovered_models)
-            selected_models = filter_sql_models(
-                discovered_models,
-                stage=args.stage,
-                domain=args.domain,
-                model_name=args.model,
-            )
-            if not selected_models:
-                raise ConfigValidationError(
-                    message="No SQL models matched the requested selection",
-                    context={
-                        "package_path": str(args.package_path),
-                        "stage": args.stage,
-                        "domain": args.domain,
-                        "model": args.model,
-                    },
-                )
+            sql_environment = args.environment
+            selection_stage = args.stage
+            selection_domain = args.domain
+            selection_model = args.model
+            selection_include_dependencies = args.include_deps
+            selection_start_date = args.start_date
+            selection_end_date = args.end_date
+            rerun_selection: _SqlRerunSelection | None = None
 
-            selected_ids = resolve_selected_model_ids(
-                all_models=discovered_models,
-                selected_models=selected_models,
-                include_dependencies=args.include_deps,
-            )
-            models_to_process = [
-                model for model in ordered_models if model.model_id in selected_ids
-            ]
+            if args.sql_command == "run" and rerun_run_id:
+                _validate_sql_rerun_request(args)
+                rerun_selection = _resolve_sql_rerun_selection(
+                    root_path=_resolve_sql_artifact_root(
+                        package_path=args.package_path,
+                        database_path=args.database,
+                    ),
+                    rerun_run_id=rerun_run_id,
+                )
+                selected_ids = set(rerun_selection.model_ids)
+                models_to_process = [
+                    model for model in ordered_models if model.model_id in selected_ids
+                ]
+                missing_model_ids = sorted(
+                    model_id
+                    for model_id in selected_ids
+                    if all(model.model_id != model_id for model in ordered_models)
+                )
+                if missing_model_ids:
+                    raise ConfigValidationError(
+                        message="Rerun selection references SQL models that are not present",
+                        context={
+                            "package_path": str(args.package_path),
+                            "rerun_run_id": args.rerun_run_id,
+                            "missing_model_ids": missing_model_ids,
+                        },
+                    )
+                sql_environment = rerun_selection.environment
+                selection_stage = None
+                selection_domain = None
+                selection_model = None
+                selection_include_dependencies = False
+                selection_start_date = rerun_selection.start_date
+                selection_end_date = rerun_selection.end_date
+            else:
+                selected_models = filter_sql_models(
+                    discovered_models,
+                    stage=args.stage,
+                    domain=args.domain,
+                    model_name=args.model,
+                )
+                if not selected_models:
+                    raise ConfigValidationError(
+                        message="No SQL models matched the requested selection",
+                        context={
+                            "package_path": str(args.package_path),
+                            "stage": args.stage,
+                            "domain": args.domain,
+                            "model": args.model,
+                        },
+                    )
+
+                selected_ids = resolve_selected_model_ids(
+                    all_models=discovered_models,
+                    selected_models=selected_models,
+                    include_dependencies=args.include_deps,
+                )
+                models_to_process = [
+                    model for model in ordered_models if model.model_id in selected_ids
+                ]
 
             run_context = new_run_context(
                 stage=StageName.sql,
                 job_name=getattr(args, "job_name", "sql-compile"),
                 trigger_type=getattr(args, "trigger_type", "manual"),
                 attributes={
-                    "environment": args.environment,
+                    "environment": sql_environment,
                     "package_path": str(args.package_path),
-                    "stage_selection": args.stage or "",
-                    "domain_selection": args.domain or "",
-                    "model_selection": args.model or "",
+                    "stage_selection": selection_stage or "",
+                    "domain_selection": selection_domain or "",
+                    "model_selection": selection_model or "",
+                    "rerun_of_run_id": rerun_run_id or "",
                 },
             )
-            extra_values = _parse_vars_json(args.vars_json)
-            partition_values = _parse_partition_values(args.partition)
+            extra_values = (
+                rerun_selection.extra_values
+                if rerun_selection is not None
+                else _parse_vars_json(args.vars_json)
+            )
+            partition_values = (
+                rerun_selection.partition_values
+                if rerun_selection is not None
+                else _parse_partition_values(args.partition)
+            )
             compiled_models = [
                 compile_sql_model(
                     model,
                     token_context=build_token_context(
-                        environment=args.environment,
+                        environment=sql_environment,
                         run_id=run_context.run_id,
                         stage=model.manifest.stage.value,
                         domain=model.manifest.domain,
                         model_name=model.manifest.name,
                         target_table_name=model.manifest.target.table_name,
-                        start_date=args.start_date,
-                        end_date=args.end_date,
+                        start_date=selection_start_date,
+                        end_date=selection_end_date,
                         partition_values=partition_values,
                         extra_values=extra_values,
                     ),
@@ -413,13 +506,14 @@ def main(argv: list[str] | None = None) -> int:
                 payload = {
                     "run_id": run_context.run_id,
                     "selection": {
-                        "stage": args.stage,
-                        "domain": args.domain,
-                        "model": args.model,
-                        "include_dependencies": args.include_deps,
-                        "start_date": args.start_date,
-                        "end_date": args.end_date,
+                        "stage": selection_stage,
+                        "domain": selection_domain,
+                        "model": selection_model,
+                        "include_dependencies": selection_include_dependencies,
+                        "start_date": selection_start_date,
+                        "end_date": selection_end_date,
                         "partitions": partition_values,
+                        "rerun_run_id": rerun_run_id,
                     },
                     "model_count": len(compiled_models),
                     "models": [
@@ -449,13 +543,14 @@ def main(argv: list[str] | None = None) -> int:
                         "run_id": run_context.run_id,
                         "mode": "explain" if args.explain else "validate_only",
                         "selection": {
-                            "stage": args.stage,
-                            "domain": args.domain,
-                            "model": args.model,
-                            "include_dependencies": args.include_deps,
-                            "start_date": args.start_date,
-                            "end_date": args.end_date,
+                            "stage": selection_stage,
+                            "domain": selection_domain,
+                            "model": selection_model,
+                            "include_dependencies": selection_include_dependencies,
+                            "start_date": selection_start_date,
+                            "end_date": selection_end_date,
                             "partitions": partition_values,
+                            "rerun_run_id": rerun_run_id,
                         },
                         "database_path": str(planning_result.database_path),
                         "model_count": planning_result.model_count,
@@ -488,22 +583,28 @@ def main(argv: list[str] | None = None) -> int:
                         database_path=args.database,
                     ),
                     run_context=run_context,
-                    environment=args.environment,
+                    environment=sql_environment,
                     package_path=args.package_path,
                     database_path=args.database,
                     compiled_models=compiled_models,
                     partition_values=partition_values,
+                    extra_values=extra_values,
+                    selection_stage=selection_stage,
+                    selection_domain=selection_domain,
+                    selection_model=selection_model,
+                    include_dependencies=selection_include_dependencies,
                 )
                 payload = {
                     "run_id": run_context.run_id,
                     "selection": {
-                        "stage": args.stage,
-                        "domain": args.domain,
-                        "model": args.model,
-                        "include_dependencies": args.include_deps,
-                        "start_date": args.start_date,
-                        "end_date": args.end_date,
+                        "stage": selection_stage,
+                        "domain": selection_domain,
+                        "model": selection_model,
+                        "include_dependencies": selection_include_dependencies,
+                        "start_date": selection_start_date,
+                        "end_date": selection_end_date,
                         "partitions": partition_values,
+                        "rerun_run_id": rerun_run_id,
                     },
                     "database_path": str(result.execution_result.database_path),
                     "model_count": result.execution_result.model_count,
@@ -727,6 +828,62 @@ def _build_cli_window_selection(
 
 def _serialize_datetime(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _validate_normalize_rerun_request(args: argparse.Namespace) -> None:
+    conflicting_args = []
+    if args.source:
+        conflicting_args.append("--source")
+    if args.entity:
+        conflicting_args.append("--entity")
+    if args.manifest_path:
+        conflicting_args.append("--manifest-path")
+    if args.window_start:
+        conflicting_args.append("--window-start")
+    if args.window_end:
+        conflicting_args.append("--window-end")
+    if args.window_label:
+        conflicting_args.append("--window-label")
+    if args.environment != "default":
+        conflicting_args.append("--environment")
+    if conflicting_args:
+        raise ConfigValidationError(
+            message="normalize reruns must not specify an explicit selection alongside --rerun-run-id",
+            context={
+                "rerun_run_id": args.rerun_run_id,
+                "conflicting_args": conflicting_args,
+            },
+        )
+
+
+def _validate_sql_rerun_request(args: argparse.Namespace) -> None:
+    conflicting_args = []
+    if args.stage:
+        conflicting_args.append("--stage")
+    if args.domain:
+        conflicting_args.append("--domain")
+    if args.model:
+        conflicting_args.append("--model")
+    if args.include_deps:
+        conflicting_args.append("--include-deps")
+    if args.start_date:
+        conflicting_args.append("--start-date")
+    if args.end_date:
+        conflicting_args.append("--end-date")
+    if args.vars_json:
+        conflicting_args.append("--vars-json")
+    if args.partition:
+        conflicting_args.append("--partition")
+    if args.environment != "default":
+        conflicting_args.append("--environment")
+    if conflicting_args:
+        raise ConfigValidationError(
+            message="sql reruns must not specify an explicit selection alongside --rerun-run-id",
+            context={
+                "rerun_run_id": args.rerun_run_id,
+                "conflicting_args": conflicting_args,
+            },
+        )
 
 
 def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Path:
@@ -990,6 +1147,173 @@ def _read_level1_manifest(*, path: Path, root_path: Path) -> Level1ArtifactManif
         ) from exc
 
 
+def _resolve_normalize_rerun_manifest(
+    *,
+    root_path: Path,
+    rerun_run_id: str,
+) -> Level1ArtifactManifest:
+    audit = _load_stage_audit_record(
+        root_path=root_path,
+        stage=StageName.normalize,
+        rerun_run_id=rerun_run_id,
+    )
+    manifest_path = audit.context.get("input_manifest_path")
+    if manifest_path:
+        return _read_level1_manifest(path=Path(manifest_path), root_path=root_path)
+
+    artifact_id = audit.context.get("input_artifact_id")
+    if not artifact_id:
+        raise ConfigValidationError(
+            message="Normalize rerun audit is missing input_artifact_id",
+            context={"rerun_run_id": rerun_run_id},
+        )
+
+    for candidate_path in sorted((root_path / "level1").rglob("*.manifest.json")):
+        manifest = _read_level1_manifest(path=candidate_path, root_path=root_path)
+        if manifest.artifact_id == artifact_id:
+            return manifest
+
+    raise ConfigValidationError(
+        message="Normalize rerun could not resolve the prior level1 manifest",
+        context={"rerun_run_id": rerun_run_id, "input_artifact_id": artifact_id},
+    )
+
+
+def _resolve_sql_rerun_selection(
+    *,
+    root_path: Path,
+    rerun_run_id: str,
+) -> _SqlRerunSelection:
+    audit = _load_stage_audit_record(
+        root_path=root_path,
+        stage=StageName.sql,
+        rerun_run_id=rerun_run_id,
+    )
+    environment = audit.context.get("environment")
+    selected_models = [
+        model_id
+        for model_id in audit.context.get("selected_models", "").split(",")
+        if model_id
+    ]
+    if not environment or not selected_models:
+        raise ConfigValidationError(
+            message="SQL rerun audit is missing the required selection context",
+            context={"rerun_run_id": rerun_run_id},
+        )
+    return _SqlRerunSelection(
+        environment=environment,
+        model_ids=tuple(selected_models),
+        start_date=audit.context.get("window_start") or None,
+        end_date=audit.context.get("window_end") or None,
+        partition_values=_load_json_string_dict(
+            raw_value=audit.context.get("partition_values"),
+            field_name="partition_values",
+            rerun_run_id=rerun_run_id,
+        ),
+        extra_values=_load_json_object_dict(
+            raw_value=audit.context.get("extra_values"),
+            field_name="extra_values",
+            rerun_run_id=rerun_run_id,
+        ),
+    )
+
+
+def _load_stage_audit_record(
+    *,
+    root_path: Path,
+    stage: StageName,
+    rerun_run_id: str,
+) -> AuditRecord:
+    stage_root = root_path.resolve() / "runs" / f"stage={stage.value}"
+    if not stage_root.exists():
+        raise ConfigValidationError(
+            message="No run artifacts exist for the requested stage",
+            context={
+                "root_path": str(root_path.resolve()),
+                "stage": stage.value,
+                "rerun_run_id": rerun_run_id,
+            },
+        )
+    audit_paths = sorted(stage_root.rglob(f"run_id={rerun_run_id}/audit.json"))
+    if not audit_paths:
+        raise ConfigValidationError(
+            message="No prior run artifacts matched --rerun-run-id",
+            context={
+                "root_path": str(root_path.resolve()),
+                "stage": stage.value,
+                "rerun_run_id": rerun_run_id,
+            },
+        )
+    audit_path = audit_paths[0]
+    try:
+        payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(
+            message=f"Failed to parse audit artifact JSON: {exc}",
+            context={"audit_path": str(audit_path), "rerun_run_id": rerun_run_id},
+        ) from exc
+    try:
+        return AuditRecord.model_validate(payload)
+    except ValidationError as exc:
+        raise ConfigValidationError(
+            message="Audit artifact validation failed",
+            context={
+                "audit_path": str(audit_path),
+                "rerun_run_id": rerun_run_id,
+                "errors": exc.errors(include_url=False),
+            },
+        ) from exc
+
+
+def _load_json_string_dict(
+    *,
+    raw_value: str | None,
+    field_name: str,
+    rerun_run_id: str,
+) -> dict[str, str]:
+    if raw_value is None or not raw_value.strip():
+        return {}
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(
+            message=f"Rerun audit field '{field_name}' must contain valid JSON",
+            context={"rerun_run_id": rerun_run_id, field_name: raw_value},
+        ) from exc
+    if not isinstance(payload, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in payload.items()
+    ):
+        raise ConfigValidationError(
+            message=f"Rerun audit field '{field_name}' must decode to a string map",
+            context={"rerun_run_id": rerun_run_id, field_name: raw_value},
+        )
+    return payload
+
+
+def _load_json_object_dict(
+    *,
+    raw_value: str | None,
+    field_name: str,
+    rerun_run_id: str,
+) -> dict[str, Any]:
+    if raw_value is None or not raw_value.strip():
+        return {}
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(
+            message=f"Rerun audit field '{field_name}' must contain valid JSON",
+            context={"rerun_run_id": rerun_run_id, field_name: raw_value},
+        ) from exc
+    if not isinstance(payload, dict) or any(not isinstance(key, str) for key in payload):
+        raise ConfigValidationError(
+            message=f"Rerun audit field '{field_name}' must decode to an object",
+            context={"rerun_run_id": rerun_run_id, field_name: raw_value},
+        )
+    return payload
+
+
 def _run_normalize_manifest(
     *,
     manifest: Level1ArtifactManifest,
@@ -997,6 +1321,7 @@ def _run_normalize_manifest(
     job_name: str,
     trigger_type: str,
     backfill: bool,
+    rerun_run_id: str | None,
     partition_strategy: PartitionStrategy,
 ) -> dict[str, Any]:
     try:
@@ -1015,6 +1340,8 @@ def _run_normalize_manifest(
             backfill=backfill,
             attributes={
                 "input_artifact_id": manifest.artifact_id,
+                "input_manifest_path": manifest.manifest_path,
+                "rerun_of_run_id": rerun_run_id or "",
             },
         ).to_run_context()
     except ValueError as exc:

@@ -195,9 +195,13 @@ def normalize_level1_to_local_level2(
                 "source_name": manifest.source_name,
                 "entity_name": manifest.entity_name,
                 "input_artifact_id": manifest.artifact_id,
+                "input_manifest_path": manifest.manifest_path,
                 "mapping_version": mapping_version or "unknown",
             },
         )
+        rerun_of_run_id = run_context.attributes.get("rerun_of_run_id")
+        if isinstance(rerun_of_run_id, str) and rerun_of_run_id:
+            audit.context["rerun_of_run_id"] = rerun_of_run_id
         artifact_store.write_audit_record(
             run_context=run_context,
             environment=environment,
@@ -260,4 +264,3 @@ def normalize_level1_to_local_level2(
         mapping_catalog_path=mapping_catalog_path.relative_to(root_path).as_posix(),
         table_manifests=table_manifests,
     )
-
