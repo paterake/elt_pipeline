@@ -129,6 +129,37 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement object storage connector family
 - [x] Implement Kafka client-based connector family
 
+### Phase 8: SQL Transforms (Level2->Level3 and Level3->Level4)
+
+- [ ] Add SQL model package layout and discovery rules
+- [ ] Define model manifest schema and validation aligned to shared error taxonomy
+- [ ] Implement tokenization/parameterization and compile-only mode
+- [ ] Implement dependency graph build and deterministic topological execution
+- [ ] Implement local materializations (full refresh, append, partition overwrite)
+- [ ] Implement SQL-stage audit/log/lineage emission to local artifact store
+- [ ] Implement model validations and capture results in audit record
+- [ ] Add minimal example SQL model package for local mode
+
+### Phase 9: Pipeline CLI Commands
+
+- [ ] Add `elt-pipeline ingest ...` commands to run configured sources/entities
+- [ ] Add `elt-pipeline normalize ...` commands to run level1->level2 normalization
+- [ ] Add `elt-pipeline sql compile ...` and `elt-pipeline sql run ...` commands
+- [ ] Add CLI selection flags (stage/domain/model + deps, window/backfill, validate-only)
+
+### Phase 10: Orchestration (Scheduled and On-Demand v1)
+
+- [ ] Define job/trigger/window runtime contract feeding run context + checkpoints
+- [ ] Implement local scheduler option that calls CLI deterministically
+- [ ] Implement selective rerun primitives for normalization and SQL stages
+
+### Phase 11: Testing and Hardening
+
+- [ ] Add SQL transform runtime tests (discovery, graph, compile, materializations, validations)
+- [ ] Add end-to-end local integration tests (ingest -> normalize -> SQL transforms)
+- [ ] Add structured error codes for SQL runtime aligned to shared taxonomy
+- [ ] Add dry-run/explain mode for SQL stage execution planning
+
 ## First Session Target
 
 The next implementation session should aim to complete:
@@ -139,6 +170,14 @@ The next implementation session should aim to complete:
 - [x] config loader skeleton
 - [x] shared run context
 - [x] audit/logging/error framework skeleton
+
+## Next Session Target
+
+The next implementation session should aim to complete:
+
+- [ ] Choose and implement local SQL execution engine for level2/level3/level4 transforms
+- [ ] Implement SQL model discovery + manifest validation
+- [ ] Add `elt-pipeline sql compile` and `elt-pipeline sql run` CLI commands (minimal happy path)
 
 ## Open Decisions Still Allowed During Implementation
 
