@@ -7,7 +7,11 @@ from elt_pipeline.normalize.runner import NormalizationRunner
 from elt_pipeline.normalize.storage import LocalMappingCatalogStore
 
 
-def build_manifest(*, entity_name: str = "orders") -> Level1ArtifactManifest:
+def build_manifest(
+    *,
+    entity_name: str = "orders",
+    payload_format: str = "json",
+) -> Level1ArtifactManifest:
     return Level1ArtifactManifest(
         artifact_id="artifact-001",
         run_id="run-001",
@@ -19,11 +23,17 @@ def build_manifest(*, entity_name: str = "orders") -> Level1ArtifactManifest:
         extraction_mode="scheduled_batch",
         ingest_started_at=datetime(2026, 1, 1, tzinfo=UTC),
         ingest_completed_at=datetime(2026, 1, 1, tzinfo=UTC),
-        payload_format="json",
+        payload_format=payload_format,
         content_hash="abc123",
         file_size_bytes=128,
-        data_path="level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders.json",
-        manifest_path="level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders.json.manifest.json",
+        data_path=(
+            f"level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders."
+            f"{payload_format}"
+        ),
+        manifest_path=(
+            "level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/"
+            f"orders.{payload_format}.manifest.json"
+        ),
     )
 
 
@@ -111,3 +121,30 @@ def test_table_name_hash_fallback_only_applies_when_sanitized_names_collide() ->
     assert catalog_entries["$.line-items"].physical_table_name == "orders__line_items"
     assert catalog_entries["$.line_items"].physical_table_name.startswith("orders__line_items__")
     assert catalog_entries["$.line_items"].physical_table_name != "orders__line_items"
+
+
+def test_normalization_runner_supports_csv_payloads_as_single_source_aligned_table() -> None:
+    runner = NormalizationRunner()
+    payload = "order_id,amount,status\nA-100,10,open\nA-200,25,closed\n"
+
+    result = runner.normalize_level1(
+        manifest=build_manifest(payload_format="csv"),
+        payload=payload,
+    )
+
+    assert [table.logical_path for table in result.tables] == ["$"]
+    root_table = result.tables[0]
+    assert root_table.physical_name == "orders"
+    assert len(root_table.rows) == 2
+    assert root_table.rows[0]["order_id"] == "A-100"
+    assert root_table.rows[0]["amount"] == "10"
+    assert root_table.rows[1]["status"] == "closed"
+
+    catalog_entry = result.mapping_catalog.entries[0]
+    assert catalog_entry.logical_path == "$"
+    assert catalog_entry.parent_table_name is None
+    assert [mapping.physical_name for mapping in catalog_entry.column_mappings] == [
+        "amount",
+        "order_id",
+        "status",
+    ]

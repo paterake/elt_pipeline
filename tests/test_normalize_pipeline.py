@@ -8,7 +8,11 @@ from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.runtime import StageName, new_run_context
 
 
-def build_manifest(*, entity_name: str = "orders") -> Level1ArtifactManifest:
+def build_manifest(
+    *,
+    entity_name: str = "orders",
+    payload_format: str = "json",
+) -> Level1ArtifactManifest:
     return Level1ArtifactManifest(
         artifact_id="artifact-001",
         run_id="run-001",
@@ -20,11 +24,17 @@ def build_manifest(*, entity_name: str = "orders") -> Level1ArtifactManifest:
         extraction_mode="scheduled_batch",
         ingest_started_at=datetime(2026, 1, 1, tzinfo=UTC),
         ingest_completed_at=datetime(2026, 1, 1, tzinfo=UTC),
-        payload_format="json",
+        payload_format=payload_format,
         content_hash="abc123",
         file_size_bytes=128,
-        data_path="level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders.json",
-        manifest_path="level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders.json.manifest.json",
+        data_path=(
+            f"level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders."
+            f"{payload_format}"
+        ),
+        manifest_path=(
+            "level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/"
+            f"orders.{payload_format}.manifest.json"
+        ),
     )
 
 
@@ -92,3 +102,24 @@ def test_partition_strategy_supports_none_mode(tmp_path: Path) -> None:
 
     assert summary.table_manifests
     assert all("/ingest_date=" not in table.data_path for table in summary.table_manifests)
+
+
+def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest(payload_format="csv")
+    payload = "order_id,amount,status\nA-100,10,open\nA-200,25,closed\n"
+
+    summary = normalize_level1_to_local_level2(
+        root_path=tmp_path,
+        run_context=run_context,
+        manifest=manifest,
+        payload=payload,
+    )
+
+    assert len(summary.table_manifests) == 1
+    table_manifest = summary.table_manifests[0]
+    assert table_manifest.table_name == "orders"
+    data_path = tmp_path / table_manifest.data_path
+    written_rows = [json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["order_id"] for row in written_rows] == ["A-100", "A-200"]
+    assert [row["amount"] for row in written_rows] == ["10", "25"]

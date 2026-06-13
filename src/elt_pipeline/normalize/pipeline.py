@@ -86,7 +86,7 @@ def normalize_level1_to_local_level2(
     error_summary: dict[str, str] | None = None
 
     try:
-        normalized = runner.normalize_level1_json(manifest=manifest, payload=_load_payload(payload))
+        normalized = runner.normalize_level1(manifest=manifest, payload=_load_payload(payload))
         mapping_version = normalized.mapping_version
         mapping_catalog_path = mapping_store.write_catalog(normalized.mapping_catalog)
         artifact_store.append_log_event(

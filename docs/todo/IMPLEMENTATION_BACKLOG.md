@@ -122,6 +122,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement per-entity partition strategy
 - [x] Implement lineage from level1 artifacts to level2 outputs
 - [x] Implement low-cost output metrics via parquet metadata or Spark metrics
+- [x] Add CSV normalization support for source-aligned tabular level1 payloads
 
 ### Phase 7: Next Connector Families
 

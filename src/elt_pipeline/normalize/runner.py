@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import re
+from io import StringIO
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -91,6 +93,103 @@ class NormalizationRunner:
             tables=state.build_tables(),
             mapping_catalog=mapping_catalog,
         )
+
+    def normalize_level1(
+        self,
+        *,
+        manifest: Level1ArtifactManifest,
+        payload: str | bytes | dict[str, Any] | list[Any],
+    ) -> NormalizationResult:
+        payload_format = manifest.payload_format.strip().lower()
+        if payload_format == "csv":
+            return self.normalize_level1_csv(manifest=manifest, payload=payload)
+        return self.normalize_level1_json(manifest=manifest, payload=payload)
+
+    def normalize_level1_csv(
+        self,
+        *,
+        manifest: Level1ArtifactManifest,
+        payload: str | bytes,
+    ) -> NormalizationResult:
+        csv_text = self._load_text_payload(payload=payload, manifest=manifest)
+        try:
+            reader = csv.DictReader(StringIO(csv_text))
+        except csv.Error as exc:
+            raise PipelineError(
+                message=f"Failed to decode CSV payload for artifact {manifest.artifact_id}",
+                error_code="NORMALIZE_INVALID_CSV",
+                error_category=ErrorCategory.input_contract_error,
+                retryable=False,
+                context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+            ) from exc
+
+        if not reader.fieldnames:
+            raise PipelineError(
+                message="Normalization expects a CSV payload with a header row",
+                error_code="NORMALIZE_CSV_HEADER_REQUIRED",
+                error_category=ErrorCategory.input_contract_error,
+                retryable=False,
+                context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+            )
+
+        state = _RunnerState(
+            source_name=manifest.source_name,
+            entity_name=manifest.entity_name,
+            max_identifier_length=self.max_identifier_length,
+            separator=self.separator,
+            value_column_name=self.value_column_name,
+        )
+        root_table = state.get_or_create_table(
+            logical_path="$",
+            name_segments=[manifest.entity_name],
+            parent_table_name=None,
+        )
+        fieldnames = [fieldname or "" for fieldname in reader.fieldnames]
+        for fieldname in fieldnames:
+            physical_name = state.make_column_name([fieldname])
+            self._register_scalar_column(
+                table_state=root_table,
+                logical_path=f"$.{fieldname}",
+                physical_name=physical_name,
+            )
+
+        for source_row in reader:
+            row_id = str(uuid4())
+            row: dict[str, Any] = {"_row_id": row_id}
+            for fieldname in fieldnames:
+                physical_name = root_table.column_mappings[f"$.{fieldname}"]
+                row[physical_name] = source_row.get(fieldname)
+            root_table.rows.append(row)
+
+        mapping_catalog = state.build_mapping_catalog()
+        return NormalizationResult(
+            source_name=manifest.source_name,
+            entity_name=manifest.entity_name,
+            artifact_id=manifest.artifact_id,
+            data_path=manifest.data_path,
+            mapping_version=mapping_catalog.mapping_version,
+            tables=state.build_tables(),
+            mapping_catalog=mapping_catalog,
+        )
+
+    def _load_text_payload(
+        self,
+        *,
+        payload: str | bytes,
+        manifest: Level1ArtifactManifest,
+    ) -> str:
+        if isinstance(payload, bytes):
+            try:
+                return payload.decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise PipelineError(
+                    message=f"Failed to decode text payload for artifact {manifest.artifact_id}",
+                    error_code="NORMALIZE_TEXT_DECODE_FAILED",
+                    error_category=ErrorCategory.input_contract_error,
+                    retryable=False,
+                    context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+                ) from exc
+        return payload
 
     def _load_json_payload(
         self,
