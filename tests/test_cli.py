@@ -576,6 +576,87 @@ def test_sql_run_explain_command(tmp_path: Path) -> None:
     assert payload["models"][1]["query_plan"]
 
 
+def test_end_to_end_local_cli_flow_ingest_normalize_sql(tmp_path: Path) -> None:
+    config_path, output_root = write_end_to_end_cli_fixture(tmp_path)
+    database_path = tmp_path / "warehouse.db"
+    sql_package = write_level2_sql_package(tmp_path)
+
+    ingest_result = _run_cli(
+        [
+            "ingest",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+        ]
+    )
+    ingest_payload = json.loads(ingest_result.stdout)
+    assert ingest_payload["command"] == "ingest.run"
+    assert ingest_payload["result_count"] == 1
+
+    normalize_result = _run_cli(
+        [
+            "normalize",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+            "--partition-mode",
+            "none",
+        ]
+    )
+    normalize_payload = json.loads(normalize_result.stdout)
+    assert normalize_payload["command"] == "normalize.run"
+    assert normalize_payload["processed_count"] == 1
+
+    _load_level2_table_into_sqlite(
+        output_root=output_root,
+        table_manifest=normalize_payload["results"][0]["table_manifests"][0],
+        database_path=database_path,
+    )
+
+    sql_result = _run_cli(
+        [
+            "sql",
+            "run",
+            str(sql_package),
+            "--model",
+            "order_summary",
+            "--include-deps",
+            "--database",
+            str(database_path),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+        ]
+    )
+    sql_payload = json.loads(sql_result.stdout)
+
+    assert sql_payload["model_count"] == 2
+    assert [model["model_id"] for model in sql_payload["executed_models"]] == [
+        "level3.sales.base_orders",
+        "level4.sales.order_summary",
+    ]
+    assert Path(sql_payload["artifacts"]["audit_path"]).exists()
+
+    import sqlite3
+
+    with sqlite3.connect(database_path) as connection:
+        summary_rows = connection.execute(
+            "select order_date, total_amount from order_summary order by order_date"
+        ).fetchall()
+    assert summary_rows == [("2026-01-01", 10), ("2026-01-02", 35)]
+
+
 def write_sql_package(tmp_path: Path) -> Path:
     package_root = tmp_path / "sql_models"
     base_orders_dir = package_root / "level3" / "sales" / "base_orders"
@@ -775,6 +856,45 @@ def write_object_storage_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
     return config_path, output_root
 
 
+def write_end_to_end_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    bucket_path = tmp_path / "bucket-e2e"
+    bucket_path.mkdir()
+    (bucket_path / "orders.json").write_text(
+        json.dumps(
+            [
+                {"order_id": "A-100", "amount": 10, "order_date": "2026-01-01"},
+                {"order_id": "A-200", "amount": 20, "order_date": "2026-01-02"},
+                {"order_id": "A-201", "amount": 15, "order_date": "2026-01-02"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    output_root = tmp_path / "runtime-e2e"
+    config_path = tmp_path / "end-to-end-pipeline.yaml"
+    config_path.write_text(
+        dedent(
+            f"""
+            schema_version: v1
+            environments:
+              default:
+                defaults: {{}}
+            sources:
+              - name: local_files
+                connector_type: object_storage
+                entities:
+                  - name: orders
+                    extraction:
+                      bucket_path: {bucket_path.as_posix()}
+                      payload_format: json
+                      sync_mode: full
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return config_path, output_root
+
+
 def write_normalize_window_fixture(
     tmp_path: Path,
 ) -> tuple[Path, Path, object]:
@@ -849,3 +969,103 @@ def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
     )
+
+
+def write_level2_sql_package(tmp_path: Path) -> Path:
+    package_root = tmp_path / "level2_sql_models"
+    base_orders_dir = package_root / "level3" / "sales" / "base_orders"
+    base_orders_dir.mkdir(parents=True)
+    (base_orders_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: base_orders
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            target:
+              table_name: base_orders
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (base_orders_dir / "model.sql").write_text(
+        dedent(
+            """
+            select order_id, amount, order_date
+            from orders
+            where order_date >= '{{ window.start_date }}'
+              and order_date <= '{{ window.end_date }}'
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    order_summary_dir = package_root / "level4" / "sales" / "order_summary"
+    order_summary_dir.mkdir(parents=True)
+    (order_summary_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: order_summary
+            stage: level4
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            depends_on:
+              - level3.sales.base_orders
+            target:
+              table_name: order_summary
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (order_summary_dir / "model.sql").write_text(
+        dedent(
+            """
+            select order_date, sum(amount) as total_amount
+            from base_orders
+            group by order_date
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return package_root
+
+
+def _load_level2_table_into_sqlite(
+    *,
+    output_root: Path,
+    table_manifest: dict[str, object],
+    database_path: Path,
+) -> None:
+    data_path = output_root / str(table_manifest["data_path"])
+    rows = [
+        json.loads(line)
+        for line in data_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    import sqlite3
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table orders (
+                order_id text,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (row["order_id"], row["amount"], row["order_date"])
+                for row in rows
+            ],
+        )
+        connection.commit()

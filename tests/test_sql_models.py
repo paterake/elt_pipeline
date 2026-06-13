@@ -94,6 +94,27 @@ def test_compile_sql_model_fails_for_missing_token(tmp_path: Path) -> None:
         compile_sql_model(model, token_context={"environment": "dev"})
 
 
+def test_compile_sql_model_fails_for_non_scalar_token(tmp_path: Path) -> None:
+    package_root = _write_basic_sql_package(tmp_path)
+    model = discover_sql_models(package_root)[0]
+
+    with pytest.raises(PipelineError, match="non-scalar value"):
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+                extra_values={"window": {"start_date": {"nested": "bad"}}},
+            ),
+        )
+
+
 def test_topologically_sort_sql_models_orders_dependencies(tmp_path: Path) -> None:
     models = discover_sql_models(_write_basic_sql_package(tmp_path))
 
@@ -114,6 +135,42 @@ def test_topologically_sort_sql_models_orders_dependencies(tmp_path: Path) -> No
         "level4.sales.order_summary",
     ]
     assert selected == {"level3.sales.base_orders", "level4.sales.order_summary"}
+
+
+def test_topologically_sort_sql_models_resolves_shorthand_dependencies(tmp_path: Path) -> None:
+    models = discover_sql_models(_write_same_stage_dependency_sql_package(tmp_path))
+
+    ordered = topologically_sort_sql_models(models)
+    selected = resolve_selected_model_ids(
+        all_models=models,
+        selected_models=filter_sql_models(
+            models,
+            stage="level3",
+            domain="sales",
+            model_name="downstream_orders",
+        ),
+        include_dependencies=True,
+    )
+
+    assert [model.model_id for model in ordered] == [
+        "level3.sales.base_orders",
+        "level3.sales.downstream_orders",
+    ]
+    assert selected == {"level3.sales.base_orders", "level3.sales.downstream_orders"}
+
+
+def test_topologically_sort_sql_models_rejects_dependency_cycles(tmp_path: Path) -> None:
+    package_root = _write_cyclic_sql_package(tmp_path)
+
+    with pytest.raises(PipelineError, match="dependency cycle detected"):
+        topologically_sort_sql_models(discover_sql_models(package_root))
+
+
+def test_topologically_sort_sql_models_rejects_missing_dependencies(tmp_path: Path) -> None:
+    package_root = _write_missing_dependency_sql_package(tmp_path)
+
+    with pytest.raises(PipelineError, match="could not be resolved"):
+        topologically_sort_sql_models(discover_sql_models(package_root))
 
 
 def test_local_sql_model_executor_runs_models_in_sqlite(tmp_path: Path) -> None:
@@ -169,6 +226,178 @@ def test_local_sql_model_executor_runs_models_in_sqlite(tmp_path: Path) -> None:
 
     assert base_orders_count == 3
     assert summary_rows == [("2026-01-01", 10), ("2026-01-03", 20), ("2026-01-07", 30)]
+
+
+def test_local_sql_model_executor_plans_models_with_query_plan(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    models = discover_sql_models(_write_basic_sql_package(tmp_path))
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in topologically_sort_sql_models(models)
+    ]
+
+    planning_result = LocalSqlModelExecutor(database_path=database_path).plan(
+        compiled,
+        include_query_plan=True,
+    )
+
+    assert planning_result.model_count == 2
+    assert [model.model_id for model in planning_result.planned_models] == [
+        "level3.sales.base_orders",
+        "level4.sales.order_summary",
+    ]
+    assert planning_result.planned_models[0].query_plan
+    assert planning_result.planned_models[1].depends_on == ["level3.sales.base_orders"]
+
+
+def test_local_sql_model_executor_appends_rows_across_runs(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+                (3, 30, "2026-01-07"),
+            ],
+        )
+        connection.commit()
+
+    model = discover_sql_models(_write_append_sql_package(tmp_path))[0]
+    executor = LocalSqlModelExecutor(database_path=database_path)
+
+    first_run = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-123",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+            start_date="2026-01-01",
+            end_date="2026-01-03",
+        ),
+    )
+    second_run = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-124",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+            start_date="2026-01-04",
+            end_date="2026-01-31",
+        ),
+    )
+
+    first_result = executor.execute([first_run])
+    second_result = executor.execute([second_run])
+
+    assert first_result.executed_models[0].load_mode.value == "append"
+    assert second_result.executed_models[0].row_count == 3
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "select order_id, amount, order_date from appended_orders order by order_id"
+        ).fetchall()
+    assert rows == [
+        (1, 10, "2026-01-01"),
+        (2, 20, "2026-01-03"),
+        (3, 30, "2026-01-07"),
+    ]
+
+
+def test_local_sql_model_executor_partition_overwrite_replaces_selected_partition(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table daily_orders (
+                order_id integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into daily_orders (order_id, order_date) values (?, ?)",
+            [
+                (999, "2026-01-01"),
+                (200, "2026-01-02"),
+            ],
+        )
+        connection.commit()
+
+    model = discover_sql_models(_write_partition_overwrite_sql_package(tmp_path))[0]
+    compiled = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-123",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+        ),
+    )
+
+    result = LocalSqlModelExecutor(
+        database_path=database_path,
+        partition_values={"order_date": "2026-01-01"},
+    ).execute([compiled])
+
+    assert result.executed_models[0].load_mode.value == "partition_overwrite"
+    with sqlite3.connect(database_path) as connection:
+        rows = connection.execute(
+            "select order_id, order_date from daily_orders order by order_date, order_id"
+        ).fetchall()
+    assert rows == [
+        (1, "2026-01-01"),
+        (200, "2026-01-02"),
+    ]
 
 
 def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(tmp_path: Path) -> None:
@@ -473,6 +702,7 @@ def _write_basic_sql_package(
     *,
     base_orders_quality: str = "",
     order_summary_quality: str = "",
+    order_summary_depends_on: str = "",
 ) -> Path:
     package_root = base_path / "sql_models"
     base_orders_dir = package_root / "level3" / "sales" / "base_orders"
@@ -516,15 +746,22 @@ def _write_basic_sql_package(
             domain: sales
             materialization: table
             load_mode: full_refresh
-            depends_on:
-              - level3.sales.base_orders
+            {order_summary_depends_on}
             target:
               table_name: order_summary
             owner:
               name: platform
             {order_summary_quality}
             """
-        ).format(order_summary_quality=order_summary_quality.strip()).strip(),
+        )
+        .format(
+            order_summary_depends_on=(
+                order_summary_depends_on.strip()
+                or "depends_on:\n  - level3.sales.base_orders"
+            ),
+            order_summary_quality=order_summary_quality.strip(),
+        )
+        .strip(),
         encoding="utf-8",
     )
     (order_summary_dir / "model.sql").write_text(
@@ -535,6 +772,89 @@ def _write_basic_sql_package(
             group by order_date
             """
         ).strip(),
+        encoding="utf-8",
+    )
+    return package_root
+
+
+def _write_append_sql_package(base_path: Path) -> Path:
+    package_root = base_path / "append_sql_models"
+    model_dir = package_root / "level3" / "sales" / "appended_orders"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: appended_orders
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: append
+            target:
+              table_name: appended_orders
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (model_dir / "model.sql").write_text(
+        dedent(
+            """
+            select order_id, amount, order_date
+            from raw_orders
+            where order_date >= '{{ window.start_date }}'
+              and order_date <= '{{ window.end_date }}'
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return package_root
+
+
+def _write_same_stage_dependency_sql_package(base_path: Path) -> Path:
+    package_root = base_path / "same_stage_sql_models"
+    upstream_dir = package_root / "level3" / "sales" / "base_orders"
+    upstream_dir.mkdir(parents=True, exist_ok=True)
+    (upstream_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: base_orders
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            target:
+              table_name: base_orders
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (upstream_dir / "model.sql").write_text("select 1 as order_id", encoding="utf-8")
+
+    downstream_dir = package_root / "level3" / "sales" / "downstream_orders"
+    downstream_dir.mkdir(parents=True, exist_ok=True)
+    (downstream_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: downstream_orders
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            depends_on:
+              - base_orders
+            target:
+              table_name: downstream_orders
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (downstream_dir / "model.sql").write_text(
+        "select order_id from base_orders",
         encoding="utf-8",
     )
     return package_root
@@ -570,4 +890,78 @@ def _write_partition_overwrite_sql_package(base_path: Path) -> Path:
         ).strip(),
         encoding="utf-8",
     )
+    return package_root
+
+
+def _write_cyclic_sql_package(base_path: Path) -> Path:
+    package_root = base_path / "cyclic_sql_models"
+    first_dir = package_root / "level3" / "sales" / "first_model"
+    first_dir.mkdir(parents=True, exist_ok=True)
+    (first_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: first_model
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            depends_on:
+              - second_model
+            target:
+              table_name: first_model
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (first_dir / "model.sql").write_text("select 1 as value", encoding="utf-8")
+
+    second_dir = package_root / "level3" / "sales" / "second_model"
+    second_dir.mkdir(parents=True, exist_ok=True)
+    (second_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: second_model
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            depends_on:
+              - first_model
+            target:
+              table_name: second_model
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (second_dir / "model.sql").write_text("select 2 as value", encoding="utf-8")
+    return package_root
+
+
+def _write_missing_dependency_sql_package(base_path: Path) -> Path:
+    package_root = base_path / "missing_dependency_sql_models"
+    model_dir = package_root / "level3" / "sales" / "orphan_model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: orphan_model
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            depends_on:
+              - missing_model
+            target:
+              table_name: orphan_model
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (model_dir / "model.sql").write_text("select 1 as value", encoding="utf-8")
     return package_root
