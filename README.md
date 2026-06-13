@@ -118,6 +118,14 @@ uv run elt-pipeline sql run examples/sql/local_demo --database path/to/warehouse
 uv run elt-pipeline sql run examples/sql/local_demo --database path/to/warehouse.db --explain --stage level4
 ```
 
+Validate, explain, and run `level5` publish definitions:
+
+```bash
+uv run elt-pipeline publish validate path/to/publish_defs
+uv run elt-pipeline publish explain path/to/publish_defs --root-path path/to/runtime
+uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --database path/to/warehouse.db
+```
+
 Run a deterministic local schedule plan:
 
 ```bash
@@ -132,9 +140,10 @@ The local runtime is organized as a staged filesystem workflow:
 2. `normalize run` turns `level1` manifests into source-aligned `level2/` tables or records a bypass
 3. `sql compile` resolves tokens and validates model selection
 4. `sql run` materializes downstream `level3/` and `level4/` models
-5. `schedule run` orchestrates the above commands in a deterministic local sequence
+5. `publish run` exports approved `level4` datasets into run-scoped `level5` delivery artifacts
+6. `schedule run` orchestrates the above commands in a deterministic local sequence
 
-This reflects the currently implemented runtime path through `level4`. The approved `level5` layer is reserved for transformed static outputs and canned deliverables that consumers can pick up directly after analytical shaping has been completed in `level4`. The first implementation slice is limited to local file-based delivery with run-scoped manifests and CSV / `jsonl` export contracts.
+This reflects the currently implemented runtime path through `level5`. The first publish implementation slice supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, and CSV execution against sqlite-backed `level4` tables. The approved contract still reserves `jsonl`, broader replacement-mode enforcement, and additional delivery patterns for follow-on work.
 
 Runtime metadata is persisted under the selected root path, including:
 

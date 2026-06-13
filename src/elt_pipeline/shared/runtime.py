@@ -12,6 +12,7 @@ class StageName(str, Enum):
     ingest = "ingest"
     normalize = "normalize"
     sql = "sql"
+    publish = "publish"
     shared = "shared"
 
 

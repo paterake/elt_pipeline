@@ -229,12 +229,13 @@ This phase is now approved for initial implementation of local file-based delive
 - [x] Define publish/export artifact manifests, delivery metadata, and rerun semantics
 - [x] Confirm the first local export formats and replacement modes for implementation
 - [x] Sequence the initial `level5` runtime and CLI work after PRD approval
-- [ ] Add a `publish` runtime package and CLI command structure aligned to the level boundary model
-- [ ] Implement publish definition discovery and manifest validation
-- [ ] Add `publish explain` / validation-first CLI behavior for local definitions
-- [ ] Implement local export targets for file-based delivery artifacts
-- [ ] Add audit, lineage, and operator guidance for `level5` delivery runs
-- [ ] Add focused tests and runnable examples for publish/export workflows
+- [x] Add a `publish` runtime package and CLI command structure aligned to the level boundary model
+- [x] Implement publish definition discovery and manifest validation
+- [x] Add `publish explain` / validation-first CLI behavior for local definitions
+- [x] Implement one representative local CSV export target with run-scoped manifest generation
+- [x] Add stage-aware audit, log, and lineage emission for `level5` publish runs
+- [x] Add focused publish discovery, runtime, and CLI tests
+- [ ] Add operator guidance and runnable examples for publish/export workflows
 
 ## First Session Target
 
@@ -251,18 +252,18 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Add `src/elt_pipeline/publish/` package scaffolding and shared models
-- [ ] Extend shared stage/runtime contracts for `publish` execution artifacts
-- [ ] Add `elt-pipeline publish ...` CLI structure for validate, explain, and run flows
-- [ ] Implement publish definition discovery plus manifest schema validation
-- [ ] Implement one representative local CSV export path with run-scoped manifest generation
+- [ ] Add runnable `examples/publish/` definitions and local happy-path documentation
+- [ ] Add operator runbook guidance for `publish validate`, `publish explain`, and `publish run`
+- [ ] Extend publish runtime beyond CSV-only execution to include `jsonl`
+- [ ] Add first replacement-mode enforcement beyond `versioned_delivery` and `overwrite_in_place`
+- [ ] Define rerun/backfill semantics for publish runs using prior audit artifacts
 
 ## Future Session Target
 
 A later session should aim to complete:
 
-- [ ] Add `jsonl` export support, replacement-mode enforcement, and rerun/backfill semantics
-- [ ] Add operator runbook updates, runnable examples, and focused publish/runtime tests
+- [ ] Add packaging/archive support and broader file-based delivery formats
+- [ ] Add operator runbook updates, runnable examples, and focused publish/runtime tests for those additional modes
 
 ## Session Handoff Notes
 
@@ -277,6 +278,8 @@ Use this when resuming in a new session:
 - The approved first build slice should focus on local file-based delivery only, not external transports.
 - The first required export formats are CSV and `jsonl`, with CSV as the first representative implementation path.
 - Every publish run must produce run-scoped artifacts and a run-scoped manifest even if a stable consumer-facing path is also maintained.
+- The current implementation supports publish definition discovery, validation, explain-mode, and local CSV execution against sqlite-backed `level4` tables.
+- The current implementation supports `versioned_delivery` and `overwrite_in_place` as the first executable replacement behaviors.
 
 ## Open Decisions Still Allowed During Implementation
 

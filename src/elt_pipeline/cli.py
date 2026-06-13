@@ -31,6 +31,12 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
+from elt_pipeline.publish import (
+    discover_publish_definitions,
+    explain_publish_definitions,
+    filter_publish_definitions,
+    run_publish_definitions_locally,
+)
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
@@ -226,6 +232,46 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include sqlite query plan details; implies a validate-only planning run.",
     )
+
+    publish_parser = subparsers.add_parser(
+        "publish",
+        help="Discover, validate, explain, and run local level5 publish definitions.",
+    )
+    publish_subparsers = publish_parser.add_subparsers(
+        dest="publish_command",
+        required=True,
+    )
+
+    publish_validate_parser = publish_subparsers.add_parser(
+        "validate",
+        help="Validate a publish definition package without writing outputs.",
+    )
+    _add_publish_selection_arguments(publish_validate_parser)
+
+    publish_explain_parser = publish_subparsers.add_parser(
+        "explain",
+        help="Preview the artifacts a publish run would produce.",
+    )
+    _add_publish_selection_arguments(publish_explain_parser)
+    publish_explain_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    publish_explain_parser.add_argument("--job-name", default="publish-explain")
+    publish_explain_parser.add_argument("--trigger-type", default="manual")
+    publish_explain_parser.add_argument("--window-start")
+    publish_explain_parser.add_argument("--window-end")
+    publish_explain_parser.add_argument("--window-label")
+
+    publish_run_parser = publish_subparsers.add_parser(
+        "run",
+        help="Run publish definitions against a local sqlite database and write level5 outputs.",
+    )
+    _add_publish_selection_arguments(publish_run_parser)
+    publish_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    publish_run_parser.add_argument("--database", type=Path, required=True)
+    publish_run_parser.add_argument("--job-name", default="publish-run")
+    publish_run_parser.add_argument("--trigger-type", default="manual")
+    publish_run_parser.add_argument("--window-start")
+    publish_run_parser.add_argument("--window-end")
+    publish_run_parser.add_argument("--window-label")
 
     schedule_parser = subparsers.add_parser(
         "schedule",
@@ -641,6 +687,165 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2))
                 return 0
 
+        if args.command == "publish":
+            discovered_definitions = discover_publish_definitions(args.package_path)
+            selected_definitions = filter_publish_definitions(
+                discovered_definitions,
+                domain=args.domain,
+                publish_name=args.publish_name,
+            )
+            if not selected_definitions:
+                raise ConfigValidationError(
+                    message="No publish definitions matched the requested selection",
+                    context={
+                        "package_path": str(args.package_path),
+                        "domain": args.domain,
+                        "publish_name": args.publish_name,
+                    },
+                )
+
+            if args.publish_command == "validate":
+                payload = {
+                    "command": "publish.validate",
+                    "package_path": str(args.package_path),
+                    "selection": {
+                        "domain": args.domain,
+                        "publish_name": args.publish_name,
+                    },
+                    "publish_count": len(selected_definitions),
+                    "definitions": [
+                        {
+                            "publish_id": definition.publish_id,
+                            "manifest_path": str(definition.manifest_path),
+                            "query_path": (
+                                str(definition.query_path)
+                                if definition.query_path is not None
+                                else None
+                            ),
+                            "source_dataset": definition.manifest.source.dataset,
+                            "selection_mode": definition.manifest.source.selection_mode.value,
+                            "output_format": definition.manifest.delivery.output_format.value,
+                            "replacement_mode": definition.manifest.delivery.replacement_mode.value,
+                        }
+                        for definition in selected_definitions
+                    ],
+                }
+                print(json.dumps(payload, indent=2))
+                return 0
+
+            cli_window = _build_cli_window_selection(
+                window_start=args.window_start,
+                window_end=args.window_end,
+                window_label=args.window_label,
+                backfill=False,
+            )
+            run_context = new_run_context(
+                stage=StageName.publish,
+                job_name=getattr(args, "job_name", "publish-explain"),
+                trigger_type=getattr(args, "trigger_type", "manual"),
+                attributes={
+                    "environment": args.environment,
+                    "package_path": str(args.package_path),
+                    "domain_selection": args.domain or "",
+                    "publish_selection": args.publish_name or "",
+                    "window_start": _serialize_datetime(cli_window.start) or "",
+                    "window_end": _serialize_datetime(cli_window.end) or "",
+                    "window_label": cli_window.label or "",
+                },
+            )
+
+            if args.publish_command == "explain":
+                payload = {
+                    "command": "publish.explain",
+                    "run_id": run_context.run_id,
+                    "package_path": str(args.package_path),
+                    "selection": {
+                        "domain": args.domain,
+                        "publish_name": args.publish_name,
+                        "window_start": _serialize_datetime(cli_window.start),
+                        "window_end": _serialize_datetime(cli_window.end),
+                        "window_label": cli_window.label,
+                    },
+                    "publish_count": len(selected_definitions),
+                    "plans": explain_publish_definitions(
+                        root_path=args.root_path.resolve(),
+                        run_context=run_context,
+                        definitions=selected_definitions,
+                    ),
+                }
+                print(json.dumps(payload, indent=2))
+                return 0
+
+            if args.publish_command == "run":
+                result = run_publish_definitions_locally(
+                    root_path=args.root_path.resolve(),
+                    run_context=run_context,
+                    environment=args.environment,
+                    package_path=args.package_path,
+                    database_path=args.database,
+                    definitions=selected_definitions,
+                )
+                payload = {
+                    "command": "publish.run",
+                    "run_id": run_context.run_id,
+                    "package_path": str(args.package_path),
+                    "selection": {
+                        "domain": args.domain,
+                        "publish_name": args.publish_name,
+                        "window_start": _serialize_datetime(cli_window.start),
+                        "window_end": _serialize_datetime(cli_window.end),
+                        "window_label": cli_window.label,
+                    },
+                    "database_path": str(args.database),
+                    "publish_count": len(result.results),
+                    "results": [
+                        {
+                            "publish_id": publish_result.publish_id,
+                            "row_count": publish_result.row_count,
+                            "artifacts": [
+                                artifact.model_dump(mode="json")
+                                for artifact in publish_result.artifacts
+                            ],
+                            "validations": [
+                                validation.model_dump(mode="json")
+                                for validation in publish_result.validations
+                            ],
+                        }
+                        for publish_result in result.results
+                    ],
+                    "artifacts": {
+                        "artifact_root": str(result.artifacts.artifact_root),
+                        "run_dir": str(result.artifacts.run_dir),
+                        "export_manifest_path": (
+                            str(result.artifacts.export_manifest_path)
+                            if result.artifacts.export_manifest_path is not None
+                            else None
+                        ),
+                        "audit_path": (
+                            str(result.artifacts.audit_path)
+                            if result.artifacts.audit_path is not None
+                            else None
+                        ),
+                        "log_path": (
+                            str(result.artifacts.log_path)
+                            if result.artifacts.log_path is not None
+                            else None
+                        ),
+                        "lineage_path": (
+                            str(result.artifacts.lineage_path)
+                            if result.artifacts.lineage_path is not None
+                            else None
+                        ),
+                        "error_path": (
+                            str(result.artifacts.error_path)
+                            if result.artifacts.error_path is not None
+                            else None
+                        ),
+                    },
+                }
+                print(json.dumps(payload, indent=2))
+                return 0
+
         if args.command == "schedule":
             plan = load_schedule_plan(args.plan_path)
             continue_on_error = args.continue_on_error or plan.continue_on_error
@@ -695,6 +900,13 @@ def _add_sql_selection_arguments(parser: argparse.ArgumentParser) -> None:
         default=[],
         help="Partition override in key=value form. May be passed multiple times.",
     )
+
+
+def _add_publish_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("package_path", type=Path)
+    parser.add_argument("--domain")
+    parser.add_argument("--publish", dest="publish_name")
+    parser.add_argument("--environment", default="default")
 
 
 def _run_schedule_plan(
