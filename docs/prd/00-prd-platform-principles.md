@@ -18,7 +18,23 @@ All other platform and stage PRDs must be consistent with this document.
 
 `elt_pipeline` is a client-neutral, config-driven data pipeline framework designed to support DAMA-DMBOK v2-aligned data management principles.
 
-The platform is not only an ingestion and transformation engine. It is a governed runtime for moving data through explicit architectural levels with strong auditability, lineage, metadata discipline, replayability, and access-control boundaries.
+The platform is not only an ingestion and transformation engine. It is a governed data platform runtime for moving data through explicit architectural levels with strong auditability, lineage, metadata discipline, replayability, and access-control boundaries.
+
+`elt_pipeline` should be understood as:
+
+- a governed data platform with explicit level contracts,
+- a reusable runtime for ingestion, normalization, transformation, and publish/export flows,
+- a metadata-aware and audit-first operating model for local-first data movement,
+- and a client-neutral implementation pattern aligned to DAMA-DMBOK v2 principles.
+
+The platform does not claim that DAMA-DMBOK v2 mandates this exact `level1` through `level5` structure. Instead, `elt_pipeline` uses these levels as a product-specific architecture that aligns to DAMA-DMBOK v2 concerns such as:
+
+- data architecture,
+- data integration and interoperability,
+- metadata management,
+- data quality,
+- governance and security,
+- and operational auditability.
 
 ## Founding Principles
 
@@ -56,6 +72,14 @@ These levels exist to define:
 - how governance and access can be enforced cleanly
 
 The levels are not merely implementation steps. They are semantic and governance boundaries.
+
+Within `elt_pipeline`, those levels mean:
+
+- `level1`: raw landed source data,
+- `level2`: relationalized source-aligned structured data,
+- `level3`: canonical and standardized warehouse-style data,
+- `level4`: consumer-facing datamarts for direct analytical use,
+- `level5`: transformed static outputs or canned deliverables for consumer pickup.
 
 ### 4. Governance by Design
 
@@ -106,6 +130,7 @@ These principles imply the following:
 - source configuration is separated from runtime implementation
 - governance boundaries must remain visible in storage layout and runtime behavior
 - new capabilities should extend shared contracts rather than create ad hoc exceptions
+- the layer model is used to operationalize DAMA-DMBOK v2-aligned platform concerns rather than to mirror a named DAMA standard verbatim
 
 ## Out of Scope
 

@@ -1,6 +1,36 @@
 # elt_pipeline
 
-Shared runtime for a configuration-driven ELT pipeline.
+Client-neutral, configuration-driven runtime for a governed data platform.
+
+`elt_pipeline` is not only an ingestion and transformation tool. It is a governed data platform runtime for moving data through explicit architectural levels with strong auditability, lineage, metadata discipline, replayability, and access-control boundaries.
+
+The platform is designed to align with DAMA-DMBOK v2 principles for:
+
+- data architecture
+- data integration and interoperability
+- metadata management
+- data quality
+- governance and security
+- operational auditability
+
+The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` through `level5` naming used here. Instead, those levels are the platform's chosen architecture model for operationalizing DMBOK-aligned concerns in a concrete implementation.
+
+## Platform Model
+
+Within `elt_pipeline`, the levels mean:
+
+- `level1`: raw landed source data
+- `level2`: relationalized source-aligned structured data, typically persisted in parquet form for local workflows
+- `level3`: canonical and standardized warehouse-style data
+- `level4`: consumer-facing datamarts for direct analytical use
+- `level5`: transformed static outputs or canned deliverables for consumer pickup
+
+Consumers may either:
+
+- analyze queryable `level4` datamarts directly, or
+- consume static `level5` outputs when a file-based handoff is preferred.
+
+At the current repository state, implementation is complete through `level4`, and the `level5` publish/export contract is drafted in `docs/prd/06-prd-level4-to-level5-publish-and-export.md` for follow-on work.
 
 ## Client Neutrality
 
@@ -15,6 +45,12 @@ This repository must remain client-neutral.
 PRDs live in `docs/prd/` and define the target-state architecture.
 
 The implementation continuity backlog lives in `docs/todo/IMPLEMENTATION_BACKLOG.md`.
+
+Recommended starting points:
+
+- `docs/prd/00-prd-platform-principles.md`: product positioning and DAMA-DMBOK v2 alignment
+- `docs/prd/00-prd-architecture-levels-and-governance.md`: level model and governance boundaries
+- `docs/prd/06-prd-level4-to-level5-publish-and-export.md`: drafted `level5` publish/export contract
 
 ## Install
 
@@ -97,6 +133,8 @@ The local runtime is organized as a staged filesystem workflow:
 3. `sql compile` resolves tokens and validates model selection
 4. `sql run` materializes downstream `level3/` and `level4/` models
 5. `schedule run` orchestrates the above commands in a deterministic local sequence
+
+This reflects the currently implemented runtime path through `level4`. The planned `level5` layer is reserved for transformed static outputs and canned deliverables that consumers can pick up directly after analytical shaping has been completed in `level4`.
 
 Runtime metadata is persisted under the selected root path, including:
 

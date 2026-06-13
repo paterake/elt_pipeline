@@ -18,6 +18,8 @@ This document defines:
 
 Other PRDs must reference this document rather than duplicating level definitions.
 
+This level model is intended to align with DAMA-DMBOK v2 thinking around governed data architecture, integration, metadata, quality, security, and operational control. It is a platform-specific implementation pattern rather than a claim that DAMA-DMBOK v2 prescribes these exact level names.
+
 ## Medallion Mapping
 
 `elt_pipeline` uses five logical levels.
@@ -70,6 +72,14 @@ Even if `level2` to `level3` and `level3` to `level4/5` are implemented using Sp
 - a semantic contract for what logic belongs where,
 - clear operational boundaries for replay and backfill,
 - and governance boundaries for controlling access.
+
+They also help operationalize DAMA-DMBOK v2-aligned concerns in a concrete platform design:
+
+- `level1` supports source traceability, replay, and raw evidence retention,
+- `level2` supports structured integration and source-aligned normalization,
+- `level3` supports canonical enterprise modeling and standard definitions,
+- `level4` supports consumer-facing analytical serving,
+- `level5` supports controlled delivery and interoperability through static outbound artifacts.
 
 ## Governance and Access Control
 

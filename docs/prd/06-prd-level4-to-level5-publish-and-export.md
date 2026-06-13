@@ -24,6 +24,8 @@ The existing PRD set defines `level1` through `level4`, but intentionally stops 
 
 The architecture model already reserves `level5` for publish/export outputs and derived delivery artifacts. This PRD defines what that stage means in product terms without introducing external platform coupling.
 
+Within the broader product positioning, `elt_pipeline` is a governed data platform runtime aligned to DAMA-DMBOK v2 principles. The `level1` through `level5` structure used here is a platform-defined layering model that operationalizes governed data movement, metadata discipline, quality boundaries, and controlled delivery.
+
 ## Problem Statement
 
 Downstream consumers may either analyze queryable tables in `level4` or pick up static transformed outputs from `level5`. These outputs have different semantics from `level4` datasets:
@@ -47,6 +49,25 @@ For clarity, the intended level boundaries are:
 - `level5`: transformed static outputs or canned reports that a consumer can pick up directly
 
 This PRD only covers the `level4` to `level5` step.
+
+## DAMA-DMBOK v2 Alignment
+
+This `level5` stage aligns to DAMA-DMBOK v2-oriented platform concerns without claiming that DAMA-DMBOK v2 prescribes this exact naming model.
+
+In this architecture:
+
+- `level1` supports raw evidence retention and replay,
+- `level2` supports structured source-aligned integration,
+- `level3` supports canonical warehouse-style standardization,
+- `level4` supports consumer-facing analytical datamarts,
+- `level5` supports controlled delivery and interoperability through static outbound artifacts.
+
+The specific role of `level5` is to preserve a governed boundary between:
+
+- queryable analytical serving in `level4`, and
+- static outbound delivery for consumer pickup in `level5`.
+
+That separation strengthens metadata control, auditability, lineage, rerun semantics, and operational ownership for outbound artifacts.
 
 ## Product Vision
 
