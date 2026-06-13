@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from textwrap import dedent
@@ -7,12 +8,14 @@ from textwrap import dedent
 import pytest
 
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
+from elt_pipeline.shared.runtime import StageName, new_run_context
 from elt_pipeline.sql import (
     LocalSqlModelExecutor,
     build_token_context,
     compile_sql_model,
     discover_sql_models,
     filter_sql_models,
+    run_sql_models_locally,
     resolve_selected_model_ids,
     topologically_sort_sql_models,
 )
@@ -165,6 +168,81 @@ def test_local_sql_model_executor_runs_models_in_sqlite(tmp_path: Path) -> None:
 
     assert base_orders_count == 3
     assert summary_rows == [("2026-01-01", 10), ("2026-01-03", 20), ("2026-01-07", 30)]
+
+
+def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(tmp_path)
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+
+    result = run_sql_models_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
+        environment="dev",
+        package_path=package_root,
+        database_path=database_path,
+        compiled_models=compiled,
+    )
+
+    assert result.execution_result.model_count == 2
+    assert result.artifacts.audit_path is not None
+    assert result.artifacts.log_path is not None
+    assert result.artifacts.lineage_path is not None
+    assert result.artifacts.audit_path.exists()
+    assert result.artifacts.log_path.exists()
+    assert result.artifacts.lineage_path.exists()
+
+    audit_payload = json.loads(result.artifacts.audit_path.read_text(encoding="utf-8"))
+    log_lines = result.artifacts.log_path.read_text(encoding="utf-8").strip().splitlines()
+    lineage_lines = result.artifacts.lineage_path.read_text(encoding="utf-8").strip().splitlines()
+
+    assert audit_payload["status"] == "success"
+    assert audit_payload["metrics_summary"]["extra"]["models_executed"] == 2
+    assert audit_payload["context"]["environment"] == "dev"
+    assert any(json.loads(line)["event_type"] == "sql_model_executed" for line in log_lines)
+    assert any(
+        any(
+            output.get("facets", {}).get("model_id") == "level4.sales.order_summary"
+            for output in json.loads(line).get("outputs", [])
+        )
+        for line in lineage_lines
+    )
 
 
 def _write_basic_sql_package(base_path: Path) -> Path:

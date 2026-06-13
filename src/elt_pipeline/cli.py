@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,11 +13,11 @@ from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_conf
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
 from elt_pipeline.shared.runtime import StageName, new_run_context
 from elt_pipeline.sql import (
-    LocalSqlModelExecutor,
     build_token_context,
     compile_sql_model,
     discover_sql_models,
     filter_sql_models,
+    run_sql_models_locally,
     resolve_selected_model_ids,
     topologically_sort_sql_models,
 )
@@ -135,6 +136,13 @@ def main(argv: list[str] | None = None) -> int:
                 stage=StageName.sql,
                 job_name=getattr(args, "job_name", "sql-compile"),
                 trigger_type=getattr(args, "trigger_type", "manual"),
+                attributes={
+                    "environment": args.environment,
+                    "package_path": str(args.package_path),
+                    "stage_selection": args.stage or "",
+                    "domain_selection": args.domain or "",
+                    "model_selection": args.model or "",
+                },
             )
             extra_values = _parse_vars_json(args.vars_json)
             partition_values = _parse_partition_values(args.partition)
@@ -176,18 +184,38 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.sql_command == "run":
-                executor = LocalSqlModelExecutor(
+                result = run_sql_models_locally(
+                    root_path=_resolve_sql_artifact_root(
+                        package_path=args.package_path,
+                        database_path=args.database,
+                    ),
+                    run_context=run_context,
+                    environment=args.environment,
+                    package_path=args.package_path,
                     database_path=args.database,
+                    compiled_models=compiled_models,
                     partition_values=partition_values,
                 )
-                result = executor.execute(compiled_models)
                 payload = {
                     "run_id": run_context.run_id,
-                    "database_path": str(result.database_path),
-                    "model_count": result.model_count,
+                    "database_path": str(result.execution_result.database_path),
+                    "model_count": result.execution_result.model_count,
                     "executed_models": [
-                        record.model_dump(mode="json") for record in result.executed_models
+                        record.model_dump(mode="json")
+                        for record in result.execution_result.executed_models
                     ],
+                    "artifacts": {
+                        "artifact_root": str(result.artifacts.artifact_root),
+                        "run_dir": str(result.artifacts.run_dir),
+                        "audit_path": str(result.artifacts.audit_path),
+                        "log_path": str(result.artifacts.log_path),
+                        "lineage_path": str(result.artifacts.lineage_path),
+                        "error_path": (
+                            str(result.artifacts.error_path)
+                            if result.artifacts.error_path is not None
+                            else None
+                        ),
+                    },
                 }
                 print(json.dumps(payload, indent=2))
                 return 0
@@ -266,3 +294,11 @@ def _parse_partition_values(values: list[str]) -> dict[str, str]:
             )
         parsed[key.strip()] = raw_partition_value
     return parsed
+
+
+def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Path:
+    try:
+        common_root = os.path.commonpath([package_path.resolve(), database_path.resolve()])
+    except ValueError:
+        return Path.cwd()
+    return Path(common_root)

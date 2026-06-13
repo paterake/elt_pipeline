@@ -136,3 +136,17 @@ class SqlExecutionResult(BaseModel):
     @property
     def model_count(self) -> int:
         return len(self.executed_models)
+
+
+class SqlRunArtifacts(BaseModel):
+    artifact_root: Path
+    run_dir: Path
+    audit_path: Path | None = None
+    log_path: Path | None = None
+    lineage_path: Path | None = None
+    error_path: Path | None = None
+
+
+class SqlStageRunResult(BaseModel):
+    execution_result: SqlExecutionResult
+    artifacts: SqlRunArtifacts

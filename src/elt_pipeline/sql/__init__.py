@@ -16,7 +16,10 @@ from elt_pipeline.sql.models import (
     SqlModelStage,
     SqlModelTarget,
     SqlQualityExpectations,
+    SqlRunArtifacts,
+    SqlStageRunResult,
 )
+from elt_pipeline.sql.runtime import run_sql_models_locally
 
 __all__ = [
     "CompiledSqlModel",
@@ -31,10 +34,13 @@ __all__ = [
     "SqlModelStage",
     "SqlModelTarget",
     "SqlQualityExpectations",
+    "SqlRunArtifacts",
+    "SqlStageRunResult",
     "build_token_context",
     "compile_sql_model",
     "discover_sql_models",
     "filter_sql_models",
+    "run_sql_models_locally",
     "resolve_selected_model_ids",
     "topologically_sort_sql_models",
 ]

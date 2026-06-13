@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from elt_pipeline.shared.errors import ErrorCategory, PipelineError
@@ -22,7 +23,11 @@ class LocalSqlModelExecutor:
         self.database_path = Path(database_path)
         self.partition_values = partition_values or {}
 
-    def execute(self, models: list[CompiledSqlModel]) -> SqlExecutionResult:
+    def execute(
+        self,
+        models: list[CompiledSqlModel],
+        execution_observer: Callable[[CompiledSqlModel, SqlExecutionRecord], None] | None = None,
+    ) -> SqlExecutionResult:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         execution_result = SqlExecutionResult(database_path=self.database_path)
         with sqlite3.connect(self.database_path) as connection:
@@ -42,14 +47,15 @@ class LocalSqlModelExecutor:
                         },
                     ) from exc
 
-                execution_result.executed_models.append(
-                    SqlExecutionRecord(
-                        model_id=model.model_id,
-                        target_table_name=model.target_table_name,
-                        load_mode=model.load_mode,
-                        row_count=row_count,
-                    )
+                record = SqlExecutionRecord(
+                    model_id=model.model_id,
+                    target_table_name=model.target_table_name,
+                    load_mode=model.load_mode,
+                    row_count=row_count,
                 )
+                execution_result.executed_models.append(record)
+                if execution_observer is not None:
+                    execution_observer(model, record)
             connection.commit()
         return execution_result
 

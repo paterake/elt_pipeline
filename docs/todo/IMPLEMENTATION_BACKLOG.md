@@ -136,7 +136,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Implement tokenization/parameterization and compile-only mode
 - [x] Implement dependency graph build and deterministic topological execution
 - [x] Implement local materializations (full refresh, append, partition overwrite)
-- [ ] Implement SQL-stage audit/log/lineage emission to local artifact store
+- [x] Implement SQL-stage audit/log/lineage emission to local artifact store
 - [ ] Implement model validations and capture results in audit record
 - [x] Add minimal example SQL model package for local mode
 
@@ -175,7 +175,7 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Implement SQL-stage audit/log/lineage emission to local artifact store
+- [x] Implement SQL-stage audit/log/lineage emission to local artifact store
 - [ ] Implement model validations and capture results in audit record
 - [ ] Add validate-only / explain planning mode for SQL CLI execution
 

@@ -136,6 +136,9 @@ def test_sql_run_command(tmp_path: Path) -> None:
     assert payload["model_count"] == 2
     assert payload["executed_models"][0]["model_id"] == "level3.sales.base_orders"
     assert payload["executed_models"][1]["model_id"] == "level4.sales.order_summary"
+    assert Path(payload["artifacts"]["audit_path"]).exists()
+    assert Path(payload["artifacts"]["log_path"]).exists()
+    assert Path(payload["artifacts"]["lineage_path"]).exists()
 
 
 def write_sql_package(tmp_path: Path) -> Path:
