@@ -171,6 +171,44 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - [x] Add operator runbook for rerun, backfill, and schedule-driven execution
 - [x] Add troubleshooting guidance for local artifacts, checkpoints, and audit outputs
 
+## Current Status
+
+The implementation backlog for the approved v1 PRD scope is complete through `level4`, local scheduling, and operator documentation.
+
+Further work should be treated as post-v1 continuation unless a PRD is expanded and approved first.
+
+## Post-v1 Continuation Backlog
+
+Some items below are ready for implementation planning, while others require PRD/design approval before build work begins.
+
+### Phase 13: Release Engineering and CI
+
+- [ ] Add repository CI to run `uv sync --extra dev`, `uv run ruff check .`, and `uv run pytest`
+- [ ] Add package build validation for source and wheel artifacts
+- [ ] Add smoke validation that bundled examples still parse and execute the documented happy paths
+- [ ] Document the supported local development and release workflow for maintainers
+
+### Phase 14: Optional Platform Integrations
+
+This phase requires PRD/design approval before implementation begins.
+
+- [ ] Define adapter boundaries for optional lineage backend emission while preserving local-first runtime behavior
+- [ ] Add one reference lineage backend integration aligned to the OpenLineage-compatible event contract
+- [ ] Define adapter boundaries for optional orchestration wrappers while keeping the CLI contract authoritative
+- [ ] Add one reference orchestration integration that invokes the existing CLI entrypoints without redefining runtime contracts
+- [ ] Define optional data-quality hook points around normalization and SQL stage outputs
+
+### Phase 15: `level5` Publish and Export Capability
+
+This phase requires PRD/design approval before implementation begins.
+
+- [ ] Draft and approve a PRD for `level5` publish/export outputs before implementation begins
+- [ ] Define publish/export artifact manifests, delivery metadata, and rerun semantics
+- [ ] Add a `publish` runtime package and CLI command structure aligned to the level boundary model
+- [ ] Implement local export targets for file-based delivery artifacts
+- [ ] Add audit, lineage, and operator guidance for `level5` delivery runs
+- [ ] Add focused tests and runnable examples for publish/export workflows
+
 ## First Session Target
 
 The next implementation session should aim to complete:
@@ -186,9 +224,16 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [x] Add runnable example pipeline configs under `examples/` for local connector workflows
-- [x] Add operator runbook for rerun, backfill, and schedule-driven execution
-- [x] Add troubleshooting guidance for local artifacts, checkpoints, and audit outputs
+- [ ] Add repository CI to run linting and tests on every change
+- [ ] Add package build validation for distributable artifacts
+- [ ] Add a smoke test pass over bundled examples and documented CLI workflows
+- [ ] Document the maintainer release workflow
+
+## Future Session Target
+
+A later session should aim to complete:
+
+- [ ] Draft the `level5` publish/export PRD so implementation can begin in a later session
 
 ## Open Decisions Still Allowed During Implementation
 
