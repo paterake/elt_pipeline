@@ -4,7 +4,8 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
-from elt_pipeline.shared.errors import ErrorCategory, PipelineError
+from elt_pipeline.shared.errors import PipelineError
+from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.models import (
     CompiledSqlModel,
     SqlExecutionRecord,
@@ -41,10 +42,9 @@ class LocalSqlModelExecutor:
                     try:
                         row_count = self._execute_model(connection=connection, model=model)
                     except sqlite3.DatabaseError as exc:
-                        raise PipelineError(
+                        raise build_sql_runtime_error(
                             message=f"Failed to execute SQL model '{model.model_id}'",
-                            error_code="SQL_EXECUTION_FAILED",
-                            error_category=ErrorCategory.processing_error,
+                            code=SqlRuntimeErrorCode.execution_failed,
                             retryable=False,
                             context={
                                 "model_id": model.model_id,
@@ -135,10 +135,9 @@ class LocalSqlModelExecutor:
             connection.execute(f"insert into {target_table} {select_sql}")
             return _count_rows(connection=connection, table_name=model.target_table_name)
 
-        raise PipelineError(
+        raise build_sql_runtime_error(
             message=f"Unsupported SQL load mode '{model.load_mode.value}'",
-            error_code="SQL_LOAD_MODE_UNSUPPORTED",
-            error_category=ErrorCategory.config_error,
+            code=SqlRuntimeErrorCode.load_mode_unsupported,
             retryable=False,
             context={"model_id": model.model_id, "load_mode": model.load_mode.value},
         )
@@ -256,10 +255,9 @@ class LocalSqlModelExecutor:
 
         failing_validations = [result for result in validations if not result.passed]
         if failing_validations:
-            raise PipelineError(
+            raise build_sql_runtime_error(
                 message=f"SQL model validations failed for '{model.model_id}'",
-                error_code="SQL_MODEL_VALIDATION_FAILED",
-                error_category=ErrorCategory.validation_error,
+                code=SqlRuntimeErrorCode.model_validation_failed,
                 retryable=False,
                 context={
                     "model_id": model.model_id,
@@ -277,10 +275,9 @@ class LocalSqlModelExecutor:
             column for column in model.partition_columns if column not in self.partition_values
         )
         if missing_columns:
-            raise PipelineError(
+            raise build_sql_runtime_error(
                 message="Partition overwrite requires runtime partition values",
-                error_code="SQL_PARTITION_VALUE_MISSING",
-                error_category=ErrorCategory.config_error,
+                code=SqlRuntimeErrorCode.partition_value_missing,
                 retryable=False,
                 context={"model_id": model.model_id, "missing_columns": missing_columns},
             )
@@ -296,10 +293,9 @@ class LocalSqlModelExecutor:
         try:
             rows = connection.execute(f"EXPLAIN QUERY PLAN {select_sql}").fetchall()
         except sqlite3.DatabaseError as exc:
-            raise PipelineError(
+            raise build_sql_runtime_error(
                 message=f"Failed to validate SQL model '{model.model_id}'",
-                error_code="SQL_PLANNING_FAILED",
-                error_category=ErrorCategory.processing_error,
+                code=SqlRuntimeErrorCode.planning_failed,
                 retryable=False,
                 context={
                     "model_id": model.model_id,
@@ -374,10 +370,9 @@ def _quote_identifier(identifier: str) -> str:
     if not identifier or not all(
         character.isalnum() or character == "_" for character in identifier
     ):
-        raise PipelineError(
+        raise build_sql_runtime_error(
             message=f"Unsupported SQL identifier '{identifier}'",
-            error_code="SQL_IDENTIFIER_INVALID",
-            error_category=ErrorCategory.config_error,
+            code=SqlRuntimeErrorCode.identifier_invalid,
             retryable=False,
             context={"identifier": identifier},
         )

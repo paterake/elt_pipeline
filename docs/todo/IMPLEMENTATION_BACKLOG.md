@@ -157,7 +157,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 - [ ] Add SQL transform runtime tests (discovery, graph, compile, materializations, validations)
 - [ ] Add end-to-end local integration tests (ingest -> normalize -> SQL transforms)
-- [ ] Add structured error codes for SQL runtime aligned to shared taxonomy
+- [x] Add structured error codes for SQL runtime aligned to shared taxonomy
 - [x] Add dry-run/explain mode for SQL stage execution planning
 
 ## First Session Target

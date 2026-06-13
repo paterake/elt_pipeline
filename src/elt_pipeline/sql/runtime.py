@@ -10,6 +10,7 @@ from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.runtime import RunContext, StageName
+from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.executor import LocalSqlModelExecutor
 from elt_pipeline.sql.models import (
     CompiledSqlModel,
@@ -31,7 +32,11 @@ def run_sql_models_locally(
     partition_values: dict[str, str] | None = None,
 ) -> SqlStageRunResult:
     if run_context.stage != StageName.sql:
-        raise ValueError("run_sql_models_locally requires a sql stage RunContext")
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.run_context_invalid,
+            message="run_sql_models_locally requires a sql stage RunContext",
+            context={"stage": run_context.stage.value},
+        )
 
     artifact_store = LocalArtifactStore(root_path)
     artifacts = SqlRunArtifacts(

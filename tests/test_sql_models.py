@@ -11,6 +11,7 @@ from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
 from elt_pipeline.shared.runtime import StageName, new_run_context
 from elt_pipeline.sql import (
     LocalSqlModelExecutor,
+    SqlRuntimeErrorCode,
     build_token_context,
     compile_sql_model,
     discover_sql_models,
@@ -413,7 +414,58 @@ quality:
         "unique_columns",
         "not_null_columns",
     }
-    assert json.loads(error_lines[0])["error_code"] == "SQL_MODEL_VALIDATION_FAILED"
+    assert json.loads(error_lines[0])["error_code"] == SqlRuntimeErrorCode.model_validation_failed
+
+
+def test_local_sql_model_executor_returns_structured_planning_error_code(
+    tmp_path: Path,
+) -> None:
+    package_root = _write_basic_sql_package(tmp_path)
+    model = discover_sql_models(package_root)[0]
+    compiled = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-123",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+            start_date="2026-01-01",
+            end_date="2026-01-31",
+        ),
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        LocalSqlModelExecutor(database_path=tmp_path / "warehouse.db").plan([compiled])
+
+    assert exc_info.value.error_code == SqlRuntimeErrorCode.planning_failed
+    assert exc_info.value.error_category.value == "processing_error"
+
+
+def test_local_sql_model_executor_returns_structured_partition_error_code(
+    tmp_path: Path,
+) -> None:
+    model = discover_sql_models(
+        _write_partition_overwrite_sql_package(tmp_path),
+    )[0]
+    compiled = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-123",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+        ),
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        LocalSqlModelExecutor(database_path=tmp_path / "warehouse.db").execute([compiled])
+
+    assert exc_info.value.error_code == SqlRuntimeErrorCode.partition_value_missing
+    assert exc_info.value.error_category.value == "config_error"
 
 
 def _write_basic_sql_package(
@@ -481,6 +533,39 @@ def _write_basic_sql_package(
             select order_date, sum(amount) as total_amount
             from base_orders
             group by order_date
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return package_root
+
+
+def _write_partition_overwrite_sql_package(base_path: Path) -> Path:
+    package_root = base_path / "partition_sql_models"
+    model_dir = package_root / "level3" / "sales" / "daily_orders"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: daily_orders
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: partition_overwrite
+            target:
+              table_name: daily_orders
+              partition_columns:
+                - order_date
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (model_dir / "model.sql").write_text(
+        dedent(
+            """
+            select 1 as order_id, '2026-01-01' as order_date
             """
         ).strip(),
         encoding="utf-8",
