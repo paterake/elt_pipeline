@@ -55,11 +55,12 @@ These levels map cleanly onto common medallion language:
 
 - Consumer-optimized outputs.
 - Denormalized and aggregated datasets aligned to use cases.
-- Intended for broad analytic consumption.
+- Intended for broad analytic consumption through queryable tables.
 
 ### `level5` (Publish/Exports)
 
-- Delivery-oriented outputs (exports, extracts, feeds).
+- Delivery-oriented static outputs such as exports, extracts, canned reports, and feeds.
+- Intended for consumer pickup when a file-based handoff is preferred over direct table access.
 - Acknowledges different operational semantics from tables (delivery cadence, file formats, packaging).
 
 ## Why Levels Matter Even When Compute Is the Same

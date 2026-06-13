@@ -26,6 +26,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 - `03-prd-sql-level2-to-level3-and-level3-to-level4.md`
 - `04-ingestion-inventory-legacy-baseline.md`
 - `05-ingestion-technique-deep-dive.md`
+- `06-prd-level4-to-level5-publish-and-export.md`
 
 ## Confirmed v1 Decisions
 
@@ -175,6 +176,8 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 The implementation backlog for the approved v1 PRD scope is complete through `level4`, local scheduling, and operator documentation.
 
+The first post-v1 design step for `level5` is now drafted in `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
+
 Further work should be treated as post-v1 continuation unless a PRD is expanded and approved first.
 
 ## Post-v1 Continuation Backlog
@@ -202,7 +205,8 @@ This phase requires PRD/design approval before implementation begins.
 
 This phase requires PRD/design approval before implementation begins.
 
-- [ ] Draft and approve a PRD for `level5` publish/export outputs before implementation begins
+- [x] Draft a PRD for `level5` publish/export outputs
+- [ ] Review and approve the `level5` PRD before implementation begins
 - [ ] Define publish/export artifact manifests, delivery metadata, and rerun semantics
 - [ ] Add a `publish` runtime package and CLI command structure aligned to the level boundary model
 - [ ] Implement local export targets for file-based delivery artifacts
@@ -224,16 +228,16 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Add repository CI to run linting and tests on every change
-- [ ] Add package build validation for distributable artifacts
-- [ ] Add a smoke test pass over bundled examples and documented CLI workflows
-- [ ] Document the maintainer release workflow
+- [ ] Review `docs/prd/06-prd-level4-to-level5-publish-and-export.md` and approve the `level5` contract
+- [ ] Finalize publish/export artifact manifest fields, delivery metadata, and rerun semantics
+- [ ] Confirm the first local export formats and replacement modes for implementation
+- [ ] Sequence the initial `level5` runtime and CLI work after PRD approval
 
 ## Future Session Target
 
 A later session should aim to complete:
 
-- [ ] Draft the `level5` publish/export PRD so implementation can begin in a later session
+- [ ] Implement the first approved `level5` local file-based export workflow
 
 ## Open Decisions Still Allowed During Implementation
 

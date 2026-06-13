@@ -61,7 +61,7 @@ It is responsible for:
 
 ### Level 4
 
-`level4` is the consumer/publish-facing analytical serving layer for this phase of the platform.
+`level4` is the consumer-facing analytical serving and datamart layer for this phase of the platform.
 
 It is responsible for:
 
@@ -70,7 +70,9 @@ It is responsible for:
 - performance-oriented aggregations,
 - mart-style outputs aligned to business use cases.
 
-This PRD intentionally stops at `level4`. External file exports and other downstream publish mechanics can be defined later if needed.
+Consumers may analyze data directly from `level4` tables.
+
+This PRD intentionally stops at `level4`. Static file outputs, canned reports, and other downstream publish/export mechanics belong in `level5` and are defined separately.
 
 ## Goals
 
