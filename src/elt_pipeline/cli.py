@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +37,7 @@ from elt_pipeline.shared.runtime import (
     build_job_runtime,
     new_run_context,
 )
+from elt_pipeline.shared.scheduler import SchedulePlan, load_schedule_plan, parse_schedule_payload
 from elt_pipeline.sql import (
     build_token_context,
     compile_sql_model,
@@ -200,6 +203,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--explain",
         action="store_true",
         help="Include sqlite query plan details; implies a validate-only planning run.",
+    )
+
+    schedule_parser = subparsers.add_parser(
+        "schedule",
+        help="Execute ordered local schedule plans by calling existing CLI commands.",
+    )
+    schedule_subparsers = schedule_parser.add_subparsers(
+        dest="schedule_command",
+        required=True,
+    )
+    schedule_run_parser = schedule_subparsers.add_parser(
+        "run",
+        help="Run a validated local schedule plan in deterministic job order.",
+    )
+    schedule_run_parser.add_argument("plan_path", type=Path)
+    schedule_run_parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue running remaining jobs after a job failure.",
     )
 
     return parser
@@ -508,6 +530,17 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 print(json.dumps(payload, indent=2))
                 return 0
+
+        if args.command == "schedule":
+            plan = load_schedule_plan(args.plan_path)
+            continue_on_error = args.continue_on_error or plan.continue_on_error
+            payload, exit_code = _run_schedule_plan(
+                plan=plan,
+                plan_path=args.plan_path.resolve(),
+                continue_on_error=continue_on_error,
+            )
+            print(json.dumps(payload, indent=2))
+            return exit_code
     except (ConfigValidationError, ValidationError) as exc:
         error_record = build_error_record(
             run_id="unassigned",
@@ -552,6 +585,65 @@ def _add_sql_selection_arguments(parser: argparse.ArgumentParser) -> None:
         default=[],
         help="Partition override in key=value form. May be passed multiple times.",
     )
+
+
+def _run_schedule_plan(
+    *,
+    plan: SchedulePlan,
+    plan_path: Path,
+    continue_on_error: bool,
+) -> tuple[dict[str, Any], int]:
+    job_results: list[dict[str, Any]] = []
+    overall_exit_code = 0
+
+    for position, job in enumerate(plan.jobs, start=1):
+        exit_code, stdout_text, stderr_text = _invoke_cli_job(job.argv)
+        job_results.append(
+            {
+                "name": job.name,
+                "position": position,
+                "argv": job.argv,
+                "status": "success" if exit_code == 0 else "failed",
+                "exit_code": exit_code,
+                "output": parse_schedule_payload(stdout_text),
+                "error": parse_schedule_payload(stderr_text),
+            }
+        )
+        if exit_code != 0:
+            overall_exit_code = exit_code
+            if not continue_on_error:
+                break
+
+    return (
+        {
+            "command": "schedule.run",
+            "plan_path": str(plan_path),
+            "job_count": len(plan.jobs),
+            "executed_count": len(job_results),
+            "continue_on_error": continue_on_error,
+            "success": overall_exit_code == 0,
+            "jobs": job_results,
+        },
+        overall_exit_code,
+    )
+
+
+def _invoke_cli_job(argv: list[str]) -> tuple[int, str, str]:
+    stdout_buffer = io.StringIO()
+    stderr_buffer = io.StringIO()
+    exit_code = 0
+    try:
+        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+            exit_code = main(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            exit_code = exc.code
+        else:
+            exit_code = 1
+    except Exception as exc:  # pragma: no cover - defensive containment for schedule runs
+        exit_code = 1
+        stderr_buffer.write(str(exc))
+    return exit_code, stdout_buffer.getvalue().strip(), stderr_buffer.getvalue().strip()
 
 
 def _parse_vars_json(raw_value: str | None) -> dict[str, Any]:

@@ -176,6 +176,107 @@ def test_normalize_run_command_filters_by_window(tmp_path: Path) -> None:
     assert payload["results"][0]["input_artifact_id"] == selected_manifest.artifact_id
 
 
+def test_schedule_run_command_executes_jobs_in_order(tmp_path: Path) -> None:
+    config_path, output_root = write_object_storage_cli_fixture(tmp_path)
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: ingest-orders
+            argv:
+              - ingest
+              - run
+              - __CONFIG_PATH__
+              - --source
+              - local_files
+              - --entity
+              - orders
+              - --root-path
+              - __OUTPUT_ROOT__
+          - name: normalize-orders
+            argv:
+              - normalize
+              - run
+              - __CONFIG_PATH__
+              - --source
+              - local_files
+              - --entity
+              - orders
+              - --root-path
+              - __OUTPUT_ROOT__
+        """,
+        replacements={
+            "__CONFIG_PATH__": str(config_path),
+            "__OUTPUT_ROOT__": str(output_root),
+        },
+    )
+
+    result = _run_cli(["schedule", "run", str(schedule_path)])
+    payload = json.loads(result.stdout)
+
+    assert payload["command"] == "schedule.run"
+    assert payload["job_count"] == 2
+    assert payload["executed_count"] == 2
+    assert payload["success"] is True
+    assert [job["name"] for job in payload["jobs"]] == [
+        "ingest-orders",
+        "normalize-orders",
+    ]
+    assert [job["status"] for job in payload["jobs"]] == ["success", "success"]
+    assert payload["jobs"][0]["output"]["command"] == "ingest.run"
+    assert payload["jobs"][1]["output"]["command"] == "normalize.run"
+    mapping_catalog_path = payload["jobs"][1]["output"]["results"][0]["mapping_catalog_path"]
+    assert Path(output_root / mapping_catalog_path).exists()
+
+
+def test_schedule_run_command_stops_on_first_failure(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: validate-known-config
+            argv:
+              - validate-config
+              - __CONFIG_PATH__
+          - name: validate-missing-config
+            argv:
+              - validate-config
+              - __MISSING_CONFIG__
+          - name: should-not-run
+            argv:
+              - show-run-context
+              - --stage
+              - ingest
+              - --job-name
+              - skipped-job
+        """,
+        replacements={
+            "__CONFIG_PATH__": str(config_path),
+            "__MISSING_CONFIG__": str(tmp_path / "missing.yaml"),
+        },
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "elt_pipeline", "schedule", "run", str(schedule_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload["success"] is False
+    assert payload["executed_count"] == 2
+    assert [job["name"] for job in payload["jobs"]] == [
+        "validate-known-config",
+        "validate-missing-config",
+    ]
+    assert payload["jobs"][1]["status"] == "failed"
+    assert payload["jobs"][1]["error"]["error_code"] == "CONFIG_VALIDATION_FAILED"
+
+
 def test_sql_compile_command(tmp_path: Path) -> None:
     package_root = write_sql_package(tmp_path)
     result = subprocess.run(
@@ -449,6 +550,20 @@ def write_sql_package(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return package_root
+
+
+def write_schedule_plan(
+    tmp_path: Path,
+    plan_text: str,
+    *,
+    replacements: dict[str, str],
+) -> Path:
+    schedule_path = tmp_path / "schedule.yaml"
+    resolved_plan = dedent(plan_text).strip()
+    for source, target in replacements.items():
+        resolved_plan = resolved_plan.replace(source, target)
+    schedule_path.write_text(resolved_plan, encoding="utf-8")
+    return schedule_path
 
 
 def write_sql_ingest_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:

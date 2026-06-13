@@ -150,7 +150,7 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 ### Phase 10: Orchestration (Scheduled and On-Demand v1)
 
 - [x] Define job/trigger/window runtime contract feeding run context + checkpoints
-- [ ] Implement local scheduler option that calls CLI deterministically
+- [x] Implement local scheduler option that calls CLI deterministically
 - [ ] Implement selective rerun primitives for normalization and SQL stages
 
 ### Phase 11: Testing and Hardening
@@ -175,9 +175,9 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [x] Implement SQL-stage audit/log/lineage emission to local artifact store
-- [x] Implement model validations and capture results in audit record
-- [x] Add validate-only / explain planning mode for SQL CLI execution
+- [ ] Implement selective rerun primitives for normalization and SQL stages
+- [ ] Add SQL transform runtime tests (discovery, graph, compile, materializations, validations)
+- [ ] Add end-to-end local integration tests (ingest -> normalize -> SQL transforms)
 
 ## Open Decisions Still Allowed During Implementation
 
