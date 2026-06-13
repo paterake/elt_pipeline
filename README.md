@@ -30,7 +30,7 @@ Consumers may either:
 - analyze queryable `level4` datamarts directly, or
 - consume static `level5` outputs when a file-based handoff is preferred.
 
-At the current repository state, implementation is complete through `level4`, and the approved `level5` publish/export contract is documented in `docs/prd/06-prd-level4-to-level5-publish-and-export.md` for follow-on work.
+At the current repository state, implementation includes the first local `level5` publish/export slice described in `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
 
 ## Client Neutrality
 
@@ -78,6 +78,7 @@ uv run elt-pipeline --help
 - `tests/`: automated coverage for connectors, normalization, SQL, and CLI flows
 - `examples/configs/`: runnable local connector configs for object storage, SQL, Kafka, and REST demos
 - `examples/data/`: bundled sample inputs for local connector workflows
+- `examples/publish/local_demo/`: example `level5` publish definitions for local file-based exports
 - `examples/sql/local_demo/`: example SQL model package for local execution
 - `examples/schedules/local_demo.yaml`: example schedule plan wiring the CLI stages together
 - `examples/README.md`: setup and command sequences for the bundled examples
@@ -162,19 +163,22 @@ The repository now includes runnable local connector configs under `examples/con
 - `local_kafka_orders_replay.yaml`: Kafka replay ingest from `examples/data/kafka/orders-events.jsonl`
 - `local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint served from `examples/data/rest_api/`
 
+It also includes a runnable publish package under `examples/publish/local_demo/` for local `level4 -> level5` CSV export workflows against the bundled SQL demo warehouse.
+
 See `examples/README.md` for setup commands and stage-by-stage usage. See `docs/operator/LOCAL_OPERATOR_RUNBOOK.md` and `docs/operator/TROUBLESHOOTING.md` for reruns, backfills, schedule execution, and artifact inspection guidance.
 
 Maintainers should also use `docs/maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md` for the local quality gates, smoke checks, packaging steps, and CI expectations.
 
 ## End-to-End Local Demo
 
-The repository includes an example SQL package under `examples/sql/local_demo/`. A typical local workflow looks like this:
+The repository includes an example SQL package under `examples/sql/local_demo/` and a matching publish package under `examples/publish/local_demo/`. A typical local workflow looks like this:
 
 1. Create or point to a pipeline YAML file for a local source.
 2. Run `ingest run` into a writable runtime root.
 3. Run `normalize run` against the same runtime root.
 4. Load or expose `level2` outputs to a local sqlite database when preparing SQL-stage inputs.
 5. Run `sql compile` or `sql run` against `examples/sql/local_demo/`.
+6. Run `publish validate`, `publish explain`, or `publish run` against `examples/publish/local_demo/`.
 
 Example command sequence:
 
@@ -201,6 +205,18 @@ uv run elt-pipeline sql run examples/sql/local_demo \
   --include-deps \
   --start-date 2026-01-01 \
   --end-date 2026-01-31
+
+uv run elt-pipeline publish validate examples/publish/local_demo
+
+uv run elt-pipeline publish explain examples/publish/local_demo \
+  --root-path path/to/runtime \
+  --window-label 2026-01
+
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path path/to/runtime \
+  --database path/to/warehouse.db \
+  --publish daily_order_export \
+  --window-label 2026-01
 ```
 
 ## Schedule Plans

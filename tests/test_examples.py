@@ -216,6 +216,76 @@ def test_sql_example_package_compile_and_run(tmp_path: Path) -> None:
     assert rows == [("2026-01-01", 10), ("2026-01-02", 25)]
 
 
+def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    runtime_root = tmp_path / "runtime"
+    _seed_example_warehouse(database_path)
+
+    _run_cli(
+        [
+            "sql",
+            "run",
+            str(REPO_ROOT / "examples/sql/local_demo"),
+            "--database",
+            str(database_path),
+            "--environment",
+            "default",
+            "--include-deps",
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-31",
+        ]
+    )
+
+    validate_result = _run_cli(
+        [
+            "publish",
+            "validate",
+            str(REPO_ROOT / "examples/publish/local_demo"),
+        ]
+    )
+    validate_payload = json.loads(validate_result.stdout)
+    assert validate_payload["publish_count"] == 2
+
+    explain_result = _run_cli(
+        [
+            "publish",
+            "explain",
+            str(REPO_ROOT / "examples/publish/local_demo"),
+            "--root-path",
+            str(runtime_root),
+            "--window-label",
+            "2026-01",
+        ]
+    )
+    explain_payload = json.loads(explain_result.stdout)
+    assert explain_payload["publish_count"] == 2
+    assert all("run_id=" in plan["run_scoped_path"] for plan in explain_payload["plans"])
+
+    run_result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(REPO_ROOT / "examples/publish/local_demo"),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--publish",
+            "daily_order_export",
+            "--window-label",
+            "2026-01",
+        ]
+    )
+    run_payload = json.loads(run_result.stdout)
+    assert run_payload["publish_count"] == 1
+    assert run_payload["results"][0]["publish_id"] == "sales.daily_order_export"
+    assert Path(run_payload["artifacts"]["audit_path"]).exists()
+    assert Path(run_payload["artifacts"]["export_manifest_path"]).exists()
+    assert Path(run_payload["results"][0]["artifacts"][0]["run_scoped_path"]).exists()
+
+
 def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     database_path = tmp_path / "warehouse.db"

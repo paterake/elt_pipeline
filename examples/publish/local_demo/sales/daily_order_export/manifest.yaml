@@ -1,0 +1,26 @@
+name: daily_order_export
+stage: level5
+domain: sales
+version: v1
+description: Export the level4 order summary datamart as a consumer-facing daily CSV.
+source:
+  stage: level4
+  dataset: order_summary
+  selection_mode: direct
+delivery:
+  target_type: local_filesystem
+  output_format: csv
+  path_template: exports/{domain}/{publish_name}/window={window_label}/daily_order_export.{output_extension}
+  replacement_mode: overwrite_in_place
+owner:
+  owning_domain: sales
+  owner_team: analytics_platform
+consumer_label: finance_consumer
+delivery_purpose: daily_summary
+columns:
+  - order_date
+  - total_amount
+validation:
+  required_columns:
+    - order_date
+    - total_amount

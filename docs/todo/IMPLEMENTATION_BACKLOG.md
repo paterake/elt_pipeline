@@ -235,7 +235,7 @@ This phase is now approved for initial implementation of local file-based delive
 - [x] Implement one representative local CSV export target with run-scoped manifest generation
 - [x] Add stage-aware audit, log, and lineage emission for `level5` publish runs
 - [x] Add focused publish discovery, runtime, and CLI tests
-- [ ] Add operator guidance and runnable examples for publish/export workflows
+- [x] Add operator guidance and runnable examples for publish/export workflows
 
 ## First Session Target
 
@@ -252,8 +252,8 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Add runnable `examples/publish/` definitions and local happy-path documentation
-- [ ] Add operator runbook guidance for `publish validate`, `publish explain`, and `publish run`
+- [x] Add runnable `examples/publish/` definitions and local happy-path documentation
+- [x] Add operator runbook guidance for `publish validate`, `publish explain`, and `publish run`
 - [ ] Extend publish runtime beyond CSV-only execution to include `jsonl`
 - [ ] Add first replacement-mode enforcement beyond `versioned_delivery` and `overwrite_in_place`
 - [ ] Define rerun/backfill semantics for publish runs using prior audit artifacts

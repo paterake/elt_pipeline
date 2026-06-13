@@ -46,6 +46,24 @@ uv run elt-pipeline sql run examples/sql/local_demo \
   --end-date 2026-01-31
 ```
 
+Validate, explain, or run downstream `level5` publish definitions:
+
+```bash
+uv run elt-pipeline publish validate examples/publish/local_demo
+
+uv run elt-pipeline publish explain examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --environment default \
+  --window-label 2026-01
+
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --database .tmp/warehouse.db \
+  --environment default \
+  --publish daily_order_export \
+  --window-label 2026-01
+```
+
 ## Backfill Runs
 
 Use backfill mode when you want a historical ingest or normalization run to seed checkpoint state from prior history.
@@ -116,11 +134,31 @@ Operator guidance:
 - Use the plan-level `continue_on_error` setting for deterministic defaults.
 - Use the CLI flag `--continue-on-error` only when you intentionally want to override the plan.
 
+## Publish Operator Guidance
+
+Use `publish validate` when reviewing new or changed publish packages before touching runtime outputs.
+
+- It confirms discovery, manifest schema, directory naming, and query-file presence.
+- It is safe to run in CI or before a release because it does not read the warehouse or write artifacts.
+
+Use `publish explain` when you want a dry preview of the paths a publish run would target.
+
+- Pass the same `--root-path`, selection filters, and optional `--window-label` that you expect to use in `publish run`.
+- Review `run_scoped_path` for the immutable history location and `stable_delivery_path` when the publish definition uses `overwrite_in_place`.
+
+Use `publish run` only after the upstream `level4` table already exists in the target sqlite database.
+
+- The current implementation supports CSV outputs only.
+- The current implementation supports `versioned_delivery` and `overwrite_in_place`.
+- A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
+- Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.
+
 ## Audit And State Locations
 
 A local runtime root persists these operator-visible directories:
 
 - `level1/`: landed payloads and manifest metadata
 - `level2/`: normalized outputs and mapping catalogs
+- `artifacts/level5/`: publish/export delivery artifacts and run-scoped manifests
 - `runs/`: stage-scoped audit, logs, lineage, and rerun metadata
 - `state/`: checkpoint history used for incremental runs and backfills
