@@ -1,0 +1,14 @@
+schema_version: v1
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: local_files
+    connector_type: object_storage
+    entities:
+      - name: orders
+        level2_mode: bypass_level2
+        extraction:
+          bucket_path: examples/data/object_storage_csv
+          payload_format: csv
+          sync_mode: full

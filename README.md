@@ -40,8 +40,12 @@ uv run elt-pipeline --help
 
 - `src/elt_pipeline/`: runtime implementation
 - `tests/`: automated coverage for connectors, normalization, SQL, and CLI flows
+- `examples/configs/`: runnable local connector configs for object storage, SQL, Kafka, and REST demos
+- `examples/data/`: bundled sample inputs for local connector workflows
 - `examples/sql/local_demo/`: example SQL model package for local execution
 - `examples/schedules/local_demo.yaml`: example schedule plan wiring the CLI stages together
+- `examples/README.md`: setup and command sequences for the bundled examples
+- `docs/operator/`: operator runbook and troubleshooting guidance for local execution
 - `docs/prd/`: approved product and architecture requirements
 
 ## CLI Overview
@@ -99,6 +103,18 @@ Runtime metadata is persisted under the selected root path, including:
 - `level2/`: normalized output tables and mapping catalogs
 - `runs/`: audit, structured logs, lineage, and stage-scoped rerun artifacts
 - `state/`: local checkpoint history
+
+## Runnable Examples
+
+The repository now includes runnable local connector configs under `examples/configs/`:
+
+- `local_object_storage_orders.yaml`: JSON object storage ingest plus normalization
+- `local_object_storage_orders_csv_bypass.yaml`: CSV ingest with `bypass_level2`
+- `local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `examples/data/sql/source.db`
+- `local_kafka_orders_replay.yaml`: Kafka replay ingest from `examples/data/kafka/orders-events.jsonl`
+- `local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint served from `examples/data/rest_api/`
+
+See `examples/README.md` for setup commands and stage-by-stage usage. See `docs/operator/LOCAL_OPERATOR_RUNBOOK.md` and `docs/operator/TROUBLESHOOTING.md` for reruns, backfills, schedule execution, and artifact inspection guidance.
 
 ## End-to-End Local Demo
 

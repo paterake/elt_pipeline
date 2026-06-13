@@ -1,0 +1,16 @@
+schema_version: v1
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: events
+    connector_type: kafka
+    entities:
+      - name: orders
+        extraction:
+          topic: orders-events
+          partition: 0
+          starting_position: earliest
+          max_messages: 100
+          payload_format: json
+          log_path: examples/data/kafka/orders-events.jsonl

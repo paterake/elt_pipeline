@@ -1,0 +1,22 @@
+schema_version: v1
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: orders_db
+    connector_type: sql
+    entities:
+      - name: orders
+        extraction:
+          mode: delta
+          database: examples/data/sql/source.db
+          query:
+            sql: select order_id, updated_at, amount, status from raw_orders where updated_at >= :watermark order by updated_at
+            parameters:
+              watermark: "{watermark.value}"
+            artifact_name: orders-delta
+          watermark:
+            column_name: updated_at
+            checkpoint_key: max_updated_at
+            parameter_name: watermark
+            default_value: "2026-01-01T00:00:00+00:00"

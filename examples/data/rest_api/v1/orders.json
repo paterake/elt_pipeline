@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "order_id": "A-100",
+      "order_date": "2026-01-01",
+      "amount": 10
+    },
+    {
+      "order_id": "A-200",
+      "order_date": "2026-01-02",
+      "amount": 25
+    }
+  ]
+}

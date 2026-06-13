@@ -1,0 +1,19 @@
+schema_version: v1
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: local_api
+    connector_type: rest
+    entities:
+      - name: orders
+        extraction:
+          base_url: http://127.0.0.1:8000
+          request:
+            method: GET
+            path: /v1/orders.json
+            headers:
+              Accept: application/json
+            payload_format: json
+            artifact_name: orders
+            response_items_path: items

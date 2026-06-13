@@ -1,0 +1,13 @@
+schema_version: v1
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: local_files
+    connector_type: object_storage
+    entities:
+      - name: orders
+        extraction:
+          bucket_path: examples/data/object_storage
+          payload_format: json
+          sync_mode: full
