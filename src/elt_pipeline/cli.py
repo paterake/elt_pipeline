@@ -10,6 +10,20 @@ from typing import Any
 from pydantic import ValidationError
 
 from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_config
+from elt_pipeline.config.models import PipelineConfig, ResolvedEntityConfig
+from elt_pipeline.ingest import (
+    KafkaConnectorConfig,
+    LocalKafkaConnector,
+    LocalObjectStorageConnector,
+    LocalSqlConnector,
+    LocalRestConnector,
+    ObjectStorageConnectorConfig,
+    SqlConnectorConfig,
+    RestConnectorConfig,
+)
+from elt_pipeline.ingest.models import Level1ArtifactManifest
+from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
+from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
 from elt_pipeline.shared.runtime import StageName, new_run_context
 from elt_pipeline.sql import (
@@ -49,6 +63,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_context_parser.add_argument("--job-name", required=True)
     run_context_parser.add_argument("--trigger-type", default="manual")
+
+    ingest_parser = subparsers.add_parser(
+        "ingest",
+        help="Run configured ingestion sources and entities in local mode.",
+    )
+    ingest_subparsers = ingest_parser.add_subparsers(dest="ingest_command", required=True)
+    ingest_run_parser = ingest_subparsers.add_parser(
+        "run",
+        help="Run one or more configured source entities and persist raw level1 artifacts.",
+    )
+    ingest_run_parser.add_argument("config_path", type=Path)
+    ingest_run_parser.add_argument("--environment", default="default")
+    ingest_run_parser.add_argument("--source")
+    ingest_run_parser.add_argument("--entity")
+    ingest_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    ingest_run_parser.add_argument("--job-name", default="ingest-run")
+    ingest_run_parser.add_argument("--trigger-type", default="manual")
+    ingest_run_parser.add_argument(
+        "--kafka-log-path",
+        type=Path,
+        help="Optional override for local Kafka replay log input.",
+    )
+
+    normalize_parser = subparsers.add_parser(
+        "normalize",
+        help="Run local level1 to level2 normalization.",
+    )
+    normalize_subparsers = normalize_parser.add_subparsers(
+        dest="normalize_command",
+        required=True,
+    )
+    normalize_run_parser = normalize_subparsers.add_parser(
+        "run",
+        help="Normalize level1 manifests into local level2 tables.",
+    )
+    normalize_run_parser.add_argument("config_path", type=Path)
+    normalize_run_parser.add_argument("--environment", default="default")
+    normalize_run_parser.add_argument("--source")
+    normalize_run_parser.add_argument("--entity")
+    normalize_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    normalize_run_parser.add_argument("--job-name", default="normalize-run")
+    normalize_run_parser.add_argument("--trigger-type", default="manual")
+    normalize_run_parser.add_argument(
+        "--manifest-path",
+        action="append",
+        default=[],
+        type=Path,
+        help="Explicit level1 manifest path to normalize. May be passed multiple times.",
+    )
+    normalize_run_parser.add_argument(
+        "--partition-mode",
+        choices=[mode.value for mode in PartitionMode],
+        default=PartitionMode.ingest_date.value,
+    )
+    normalize_run_parser.add_argument("--partition-key")
+    normalize_run_parser.add_argument("--metadata-key")
 
     sql_parser = subparsers.add_parser(
         "sql",
@@ -112,6 +182,73 @@ def main(argv: list[str] | None = None) -> int:
                 trigger_type=args.trigger_type,
             )
             print(json.dumps(context.model_dump(mode="json"), indent=2))
+            return 0
+
+        if args.command == "ingest":
+            config = load_pipeline_config(args.config_path)
+            selected_entities = _resolve_entity_selections(
+                config,
+                environment=args.environment,
+                source_name=args.source,
+                entity_name=args.entity,
+            )
+            results = [
+                _run_ingest_entity(
+                    resolved_config=resolved_config,
+                    root_path=args.root_path,
+                    job_name=args.job_name,
+                    trigger_type=args.trigger_type,
+                    kafka_log_path=args.kafka_log_path,
+                )
+                for resolved_config in selected_entities
+            ]
+            payload = {
+                "command": "ingest.run",
+                "environment": args.environment,
+                "selection": {
+                    "source": args.source,
+                    "entity": args.entity,
+                },
+                "result_count": len(results),
+                "results": results,
+            }
+            print(json.dumps(payload, indent=2))
+            return 0
+
+        if args.command == "normalize":
+            load_pipeline_config(args.config_path)
+            summaries = [
+                _run_normalize_manifest(
+                    manifest=manifest,
+                    root_path=args.root_path,
+                    job_name=args.job_name,
+                    trigger_type=args.trigger_type,
+                    partition_strategy=PartitionStrategy(
+                        mode=PartitionMode(args.partition_mode),
+                        partition_key=args.partition_key,
+                        metadata_key=args.metadata_key,
+                    ),
+                )
+                for manifest in _select_level1_manifests(
+                    root_path=args.root_path,
+                    environment=args.environment,
+                    source_name=args.source,
+                    entity_name=args.entity,
+                    explicit_manifest_paths=args.manifest_path,
+                )
+            ]
+            payload = {
+                "command": "normalize.run",
+                "environment": args.environment,
+                "selection": {
+                    "source": args.source,
+                    "entity": args.entity,
+                    "manifest_paths": [str(path) for path in args.manifest_path],
+                },
+                "processed_count": len(summaries),
+                "results": summaries,
+            }
+            print(json.dumps(payload, indent=2))
             return 0
 
         if args.command == "sql":
@@ -353,3 +490,252 @@ def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Pa
     except ValueError:
         return Path.cwd()
     return Path(common_root)
+
+
+def _resolve_entity_selections(
+    config: PipelineConfig,
+    *,
+    environment: str,
+    source_name: str | None,
+    entity_name: str | None,
+) -> list[ResolvedEntityConfig]:
+    if entity_name and not source_name:
+        raise ConfigValidationError(
+            message="--entity requires --source",
+            context={"entity_name": entity_name},
+        )
+
+    if source_name:
+        try:
+            source = config.get_source(source_name)
+        except LookupError as exc:
+            raise ConfigValidationError(
+                message=str(exc),
+                context={"source_name": source_name},
+            ) from exc
+        entities = [entity.name for entity in source.entities]
+        if entity_name is not None:
+            entities = [entity_name]
+        return [
+            resolve_entity_config(
+                config,
+                environment=environment,
+                source_name=source_name,
+                entity_name=selected_entity_name,
+            )
+            for selected_entity_name in entities
+        ]
+
+    return [
+        resolve_entity_config(
+            config,
+            environment=environment,
+            source_name=source.name,
+            entity_name=entity.name,
+        )
+        for source in config.sources
+        for entity in source.entities
+    ]
+
+
+def _run_ingest_entity(
+    *,
+    resolved_config: ResolvedEntityConfig,
+    root_path: Path,
+    job_name: str,
+    trigger_type: str,
+    kafka_log_path: Path | None,
+) -> dict[str, Any]:
+    run_context = new_run_context(
+        stage=StageName.ingest,
+        job_name=job_name,
+        trigger_type=trigger_type,
+        attributes={
+            "environment": resolved_config.environment,
+            "source_name": resolved_config.source_name,
+            "entity_name": resolved_config.entity_name,
+            "connector_type": resolved_config.connector_type,
+        },
+    )
+    connector_type = resolved_config.connector_type
+    root_path = root_path.resolve()
+
+    if connector_type == "rest":
+        result = LocalRestConnector(
+            config=RestConnectorConfig.from_resolved_entity_config(resolved_config),
+            run_context=run_context,
+            root_path=root_path,
+        ).run()
+    elif connector_type == "sql":
+        result = LocalSqlConnector(
+            config=SqlConnectorConfig.from_resolved_entity_config(resolved_config),
+            run_context=run_context,
+            root_path=root_path,
+        ).run()
+    elif connector_type == "object_storage":
+        result = LocalObjectStorageConnector(
+            config=ObjectStorageConnectorConfig.from_resolved_entity_config(resolved_config),
+            run_context=run_context,
+            root_path=root_path,
+        ).run()
+    elif connector_type == "kafka":
+        result = LocalKafkaConnector(
+            config=KafkaConnectorConfig.from_resolved_entity_config(resolved_config),
+            run_context=run_context,
+            root_path=root_path,
+            log_path=_resolve_kafka_log_path(
+                resolved_config=resolved_config,
+                explicit_log_path=kafka_log_path,
+            ),
+        ).run()
+    else:
+        raise ConfigValidationError(
+            message="Unsupported connector type for local ingest CLI",
+            context={
+                "source_name": resolved_config.source_name,
+                "entity_name": resolved_config.entity_name,
+                "connector_type": connector_type,
+            },
+        )
+
+    return {
+        "run_id": run_context.run_id,
+        "job_name": run_context.job_name,
+        "trigger_type": run_context.trigger_type,
+        "source_name": resolved_config.source_name,
+        "entity_name": resolved_config.entity_name,
+        "connector_type": connector_type,
+        "result": result.model_dump(mode="json"),
+    }
+
+
+def _resolve_kafka_log_path(
+    *,
+    resolved_config: ResolvedEntityConfig,
+    explicit_log_path: Path | None,
+) -> Path:
+    if explicit_log_path is not None:
+        return explicit_log_path.resolve()
+    candidate = (
+        resolved_config.extraction.get("log_path")
+        or resolved_config.settings.get("log_path")
+        or resolved_config.state.get("log_path")
+    )
+    if not candidate:
+        raise ConfigValidationError(
+            message="Kafka local ingest requires log_path in config or --kafka-log-path",
+            context={
+                "source_name": resolved_config.source_name,
+                "entity_name": resolved_config.entity_name,
+            },
+        )
+    return Path(str(candidate)).resolve()
+
+
+def _select_level1_manifests(
+    *,
+    root_path: Path,
+    environment: str,
+    source_name: str | None,
+    entity_name: str | None,
+    explicit_manifest_paths: list[Path],
+) -> list[Level1ArtifactManifest]:
+    if entity_name and not source_name:
+        raise ConfigValidationError(
+            message="--entity requires --source",
+            context={"entity_name": entity_name},
+        )
+
+    manifests = [
+        _read_level1_manifest(path=manifest_path, root_path=root_path)
+        for manifest_path in (
+            explicit_manifest_paths
+            if explicit_manifest_paths
+            else sorted((root_path / "level1").rglob("*.manifest.json"))
+        )
+    ]
+    filtered_manifests = [
+        manifest
+        for manifest in manifests
+        if manifest.environment == environment
+        and (source_name is None or manifest.source_name == source_name)
+        and (entity_name is None or manifest.entity_name == entity_name)
+    ]
+    if not filtered_manifests:
+        raise ConfigValidationError(
+            message="No level1 manifests matched the requested selection",
+            context={
+                "root_path": str(root_path),
+                "environment": environment,
+                "source": source_name,
+                "entity": entity_name,
+                "manifest_paths": [str(path) for path in explicit_manifest_paths],
+            },
+        )
+    return filtered_manifests
+
+
+def _read_level1_manifest(*, path: Path, root_path: Path) -> Level1ArtifactManifest:
+    manifest_path = path if path.is_absolute() else root_path / path
+    if not manifest_path.exists():
+        raise ConfigValidationError(
+            message="Level1 manifest path does not exist",
+            context={"manifest_path": str(manifest_path)},
+        )
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigValidationError(
+            message=f"Failed to parse level1 manifest JSON: {exc}",
+            context={"manifest_path": str(manifest_path)},
+        ) from exc
+    try:
+        return Level1ArtifactManifest.model_validate(payload)
+    except ValidationError as exc:
+        raise ConfigValidationError(
+            message="Level1 manifest validation failed",
+            context={
+                "manifest_path": str(manifest_path),
+                "errors": exc.errors(include_url=False),
+            },
+        ) from exc
+
+
+def _run_normalize_manifest(
+    *,
+    manifest: Level1ArtifactManifest,
+    root_path: Path,
+    job_name: str,
+    trigger_type: str,
+    partition_strategy: PartitionStrategy,
+) -> dict[str, Any]:
+    run_context = new_run_context(
+        stage=StageName.normalize,
+        job_name=job_name,
+        trigger_type=trigger_type,
+        attributes={
+            "environment": manifest.environment,
+            "source_name": manifest.source_name,
+            "entity_name": manifest.entity_name,
+            "input_artifact_id": manifest.artifact_id,
+        },
+    )
+    summary = normalize_level1_to_local_level2(
+        root_path=root_path.resolve(),
+        run_context=run_context,
+        manifest=manifest,
+        payload=(root_path / manifest.data_path).resolve(),
+        partition_strategy=partition_strategy,
+    )
+    return {
+        "run_id": run_context.run_id,
+        "job_name": run_context.job_name,
+        "trigger_type": run_context.trigger_type,
+        "source_name": manifest.source_name,
+        "entity_name": manifest.entity_name,
+        "input_artifact_id": manifest.artifact_id,
+        "mapping_catalog_path": summary.mapping_catalog_path,
+        "table_manifests": [
+            table_manifest.model_dump(mode="json") for table_manifest in summary.table_manifests
+        ],
+    }

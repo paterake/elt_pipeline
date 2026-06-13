@@ -142,8 +142,8 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 9: Pipeline CLI Commands
 
-- [ ] Add `elt-pipeline ingest ...` commands to run configured sources/entities
-- [ ] Add `elt-pipeline normalize ...` commands to run level1->level2 normalization
+- [x] Add `elt-pipeline ingest ...` commands to run configured sources/entities
+- [x] Add `elt-pipeline normalize ...` commands to run level1->level2 normalization
 - [x] Add `elt-pipeline sql compile ...` and `elt-pipeline sql run ...` commands
 - [ ] Add CLI selection flags (stage/domain/model + deps, window/backfill, validate-only)
 

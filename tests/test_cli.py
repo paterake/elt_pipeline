@@ -72,6 +72,77 @@ def test_show_run_context_command() -> None:
     assert payload["job_name"] == "demo-job"
 
 
+def test_ingest_run_command(tmp_path: Path) -> None:
+    config_path, output_root = write_object_storage_cli_fixture(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "elt_pipeline",
+            "ingest",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "ingest.run"
+    assert payload["result_count"] == 1
+    assert payload["results"][0]["connector_type"] == "object_storage"
+    manifest = payload["results"][0]["result"]["manifests"][0]
+    assert Path(output_root / manifest["data_path"]).exists()
+    assert Path(output_root / manifest["manifest_path"]).exists()
+    assert payload["results"][0]["result"]["objects_copied"] == 1
+
+
+def test_normalize_run_command(tmp_path: Path) -> None:
+    config_path, output_root = write_object_storage_cli_fixture(tmp_path)
+    _run_cli(
+        [
+            "ingest",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+        ]
+    )
+
+    result = _run_cli(
+        [
+            "normalize",
+            "run",
+            str(config_path),
+            "--source",
+            "local_files",
+            "--entity",
+            "orders",
+            "--root-path",
+            str(output_root),
+        ]
+    )
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "normalize.run"
+    assert payload["processed_count"] == 1
+    assert Path(output_root / payload["results"][0]["mapping_catalog_path"]).exists()
+    table_manifests = payload["results"][0]["table_manifests"]
+    assert len(table_manifests) == 2
+    assert all(Path(output_root / table["data_path"]).exists() for table in table_manifests)
+
+
 def test_sql_compile_command(tmp_path: Path) -> None:
     package_root = write_sql_package(tmp_path)
     result = subprocess.run(
@@ -310,3 +381,54 @@ def _seed_sqlite_database(database_path: Path) -> None:
             ],
         )
         connection.commit()
+
+
+def write_object_storage_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    bucket_path = tmp_path / "bucket"
+    bucket_path.mkdir()
+    (bucket_path / "orders.json").write_text(
+        json.dumps(
+            [
+                {
+                    "order_id": "A-100",
+                    "customer": {"name": "Alice"},
+                    "items": [{"sku": "SKU-1", "quantity": 2}],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    output_root = tmp_path / "runtime"
+    config_path = tmp_path / "object-storage-pipeline.yaml"
+    config_path.write_text(
+        dedent(
+            f"""
+            schema_version: v1
+            environments:
+              default:
+                defaults: {{}}
+            sources:
+              - name: local_files
+                connector_type: object_storage
+                entities:
+                  - name: orders
+                    extraction:
+                      bucket_path: {bucket_path.as_posix()}
+                      payload_format: json
+                      sync_mode: full
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    return config_path, output_root
+
+
+def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "elt_pipeline", *args],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
