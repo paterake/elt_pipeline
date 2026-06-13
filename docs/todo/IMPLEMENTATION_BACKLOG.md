@@ -131,20 +131,20 @@ Implementation must follow the approved PRDs under `docs/prd/`, especially:
 
 ### Phase 8: SQL Transforms (Level2->Level3 and Level3->Level4)
 
-- [ ] Add SQL model package layout and discovery rules
-- [ ] Define model manifest schema and validation aligned to shared error taxonomy
-- [ ] Implement tokenization/parameterization and compile-only mode
-- [ ] Implement dependency graph build and deterministic topological execution
-- [ ] Implement local materializations (full refresh, append, partition overwrite)
+- [x] Add SQL model package layout and discovery rules
+- [x] Define model manifest schema and validation aligned to shared error taxonomy
+- [x] Implement tokenization/parameterization and compile-only mode
+- [x] Implement dependency graph build and deterministic topological execution
+- [x] Implement local materializations (full refresh, append, partition overwrite)
 - [ ] Implement SQL-stage audit/log/lineage emission to local artifact store
 - [ ] Implement model validations and capture results in audit record
-- [ ] Add minimal example SQL model package for local mode
+- [x] Add minimal example SQL model package for local mode
 
 ### Phase 9: Pipeline CLI Commands
 
 - [ ] Add `elt-pipeline ingest ...` commands to run configured sources/entities
 - [ ] Add `elt-pipeline normalize ...` commands to run level1->level2 normalization
-- [ ] Add `elt-pipeline sql compile ...` and `elt-pipeline sql run ...` commands
+- [x] Add `elt-pipeline sql compile ...` and `elt-pipeline sql run ...` commands
 - [ ] Add CLI selection flags (stage/domain/model + deps, window/backfill, validate-only)
 
 ### Phase 10: Orchestration (Scheduled and On-Demand v1)
@@ -175,9 +175,9 @@ The next implementation session should aim to complete:
 
 The next implementation session should aim to complete:
 
-- [ ] Choose and implement local SQL execution engine for level2/level3/level4 transforms
-- [ ] Implement SQL model discovery + manifest validation
-- [ ] Add `elt-pipeline sql compile` and `elt-pipeline sql run` CLI commands (minimal happy path)
+- [ ] Implement SQL-stage audit/log/lineage emission to local artifact store
+- [ ] Implement model validations and capture results in audit record
+- [ ] Add validate-only / explain planning mode for SQL CLI execution
 
 ## Open Decisions Still Allowed During Implementation
 

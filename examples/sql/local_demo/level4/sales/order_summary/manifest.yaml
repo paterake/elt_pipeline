@@ -1,0 +1,12 @@
+name: order_summary
+stage: level4
+domain: sales
+description: Local summary mart built from the level3 base orders table.
+materialization: table
+load_mode: full_refresh
+depends_on:
+  - level3.sales.base_orders
+target:
+  table_name: order_summary
+owner:
+  name: platform
