@@ -28,6 +28,7 @@ from elt_pipeline.integrations.quality import (
     QualityHookSummary,
     RowCountQualityHook,
     build_quality_hook,
+    quality_error_already_recorded,
     raise_for_blocking_quality_failures,
 )
 
@@ -55,5 +56,6 @@ __all__ = [
     "QualityHookSummary",
     "RowCountQualityHook",
     "build_quality_hook",
+    "quality_error_already_recorded",
     "raise_for_blocking_quality_failures",
 ]

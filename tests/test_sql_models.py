@@ -854,6 +854,82 @@ def test_run_sql_models_locally_logs_warning_for_non_blocking_quality_results(
     assert quality_event["severity"] == "WARNING"
 
 
+def test_run_sql_models_locally_records_single_error_for_blocking_quality_backend_failure(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(tmp_path)
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+    run_context = new_run_context(stage=StageName.sql, job_name="sql-run")
+
+    with pytest.raises(PipelineError, match="Optional data-quality backend execution failed"):
+        run_sql_models_locally(
+            root_path=tmp_path,
+            run_context=run_context,
+            environment="dev",
+            package_path=package_root,
+            database_path=database_path,
+            compiled_models=compiled,
+            quality_hook=build_quality_hook(
+                tmp_path,
+                backend=_ExplodingSqlQualityBackend(),
+                policy=QualityHookPolicy.blocking,
+            ),
+        )
+
+    errors_path = (
+        tmp_path
+        / "runs"
+        / "stage=sql"
+        / "environment=dev"
+        / "job=sql-run"
+        / f"run_id={run_context.run_id}"
+        / "errors.jsonl"
+    )
+    error_records = [
+        json.loads(line) for line in errors_path.read_text(encoding="utf-8").splitlines() if line
+    ]
+
+    assert len(error_records) == 1
+    assert error_records[0]["error_code"] == "QUALITY_BACKEND_EXECUTION_FAILED"
+
+
 def test_local_sql_model_executor_returns_structured_planning_error_code(
     tmp_path: Path,
 ) -> None:
@@ -1032,6 +1108,13 @@ class _WarningSqlQualityBackend:
                 message="Observed row distribution drifted from prior run",
             )
         ]
+
+
+class _ExplodingSqlQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        raise RuntimeError("quality backend unavailable")
 
 
 def _write_append_sql_package(base_path: Path) -> Path:

@@ -202,6 +202,44 @@ def test_normalize_pipeline_fails_for_blocking_quality_results(tmp_path: Path) -
     assert audit_payload["metrics_summary"]["extra"]["quality.fail"] == 1
 
 
+def test_normalize_pipeline_records_single_error_for_blocking_quality_backend_failure(
+    tmp_path: Path,
+) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest()
+    payload = {"order_id": "A-100"}
+    quality_hook = build_quality_hook(
+        tmp_path,
+        backend=_ExplodingNormalizeQualityBackend(),
+        policy=QualityHookPolicy.blocking,
+    )
+
+    with pytest.raises(PipelineError, match="Optional data-quality backend execution failed"):
+        normalize_level1_to_local_level2(
+            root_path=tmp_path,
+            run_context=run_context,
+            manifest=manifest,
+            payload=payload,
+            quality_hook=quality_hook,
+        )
+
+    errors_path = (
+        tmp_path
+        / "runs"
+        / "stage=normalize"
+        / "environment=dev"
+        / "job=normalize-orders"
+        / f"run_id={run_context.run_id}"
+        / "errors.jsonl"
+    )
+    error_records = [
+        json.loads(line) for line in errors_path.read_text(encoding="utf-8").splitlines() if line
+    ]
+
+    assert len(error_records) == 1
+    assert error_records[0]["error_code"] == "QUALITY_BACKEND_EXECUTION_FAILED"
+
+
 def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
     tmp_path: Path,
 ) -> None:
@@ -288,3 +326,10 @@ class _WarningNormalizeQualityBackend:
                 message="Observed row distribution drifted from prior run",
             )
         ]
+
+
+class _ExplodingNormalizeQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        raise RuntimeError("quality backend unavailable")

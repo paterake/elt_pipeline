@@ -1,0 +1,52 @@
+{
+  "completed_at": "2026-06-14T17:45:32.011959Z",
+  "config_version": null,
+  "context": {
+    "artifact_root": "/Users/rpatel/Documents/__code/git/emailrak/elt_pipeline",
+    "database_path": "/private/var/folders/sn/18gvhj215h92f4vf_g2ltj640000gp/T/pytest-of-rpatel/pytest-146/test_sql_example_package_compi0/warehouse.db",
+    "environment": "default",
+    "include_dependencies": "true",
+    "model_count": "2",
+    "package_path": "/Users/rpatel/Documents/__code/git/emailrak/elt_pipeline/examples/sql/local_demo",
+    "selected_models": "level3.sales.base_orders,level4.sales.order_summary",
+    "selection_domain": "",
+    "selection_model": "",
+    "selection_stage": "",
+    "window_end": "2026-01-31",
+    "window_start": "2026-01-01"
+  },
+  "error_summary": null,
+  "job_name": "sql-run",
+  "metrics_summary": {
+    "extra": {
+      "database_path": "/private/var/folders/sn/18gvhj215h92f4vf_g2ltj640000gp/T/pytest-of-rpatel/pytest-146/test_sql_example_package_compi0/warehouse.db",
+      "model.level3.sales.base_orders.row_count": 2,
+      "model.level4.sales.order_summary.row_count": 2,
+      "models_executed": 2,
+      "validation_failures": 0,
+      "validation_models_evaluated": 2
+    },
+    "files_written": null,
+    "records_read": null,
+    "records_written": 4
+  },
+  "run_id": "cc5fdacd-5188-4671-b87c-953018373e9c",
+  "stage": "sql",
+  "started_at": "2026-06-14T17:45:32.007151Z",
+  "status": "success",
+  "trigger_type": "manual",
+  "validation_results": [
+    {
+      "model_id": "level3.sales.base_orders",
+      "passed": true,
+      "target_table_name": "base_orders",
+      "validations": []
+    },
+    {
+      "model_id": "level4.sales.order_summary",
+      "passed": true,
+      "target_table_name": "order_summary",
+      "validations": []
+    }
+  ]
+}

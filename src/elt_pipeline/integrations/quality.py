@@ -22,6 +22,7 @@ _QUALITY_BACKEND_ENV = "ELT_PIPELINE_QUALITY_BACKEND"
 _QUALITY_POLICY_ENV = "ELT_PIPELINE_QUALITY_POLICY"
 _QUALITY_ROW_COUNT_MIN_ENV = "ELT_PIPELINE_QUALITY_ROW_COUNT_MIN"
 _QUALITY_STAGES_ENV = "ELT_PIPELINE_QUALITY_STAGES"
+_QUALITY_ERROR_RECORDED_CONTEXT_KEY = "quality_error_recorded"
 
 
 class QualityHookPolicy(str, Enum):
@@ -226,6 +227,7 @@ class QualityHookAdapter:
                         **exc.context,
                         "backend_type": self._backend.backend_type,
                         "quality_summary": summary.model_dump(mode="json"),
+                        _QUALITY_ERROR_RECORDED_CONTEXT_KEY: True,
                     },
                 ) from exc
             return summary
@@ -264,6 +266,7 @@ class QualityHookAdapter:
                         "stage": request.stage,
                         "job_name": request.job_name,
                         "quality_summary": summary.model_dump(mode="json"),
+                        _QUALITY_ERROR_RECORDED_CONTEXT_KEY: True,
                     },
                 ) from exc
             return summary
@@ -397,6 +400,10 @@ def raise_for_blocking_quality_failures(summary: QualityHookSummary) -> None:
             "quality_summary": summary.model_dump(mode="json"),
         },
     )
+
+
+def quality_error_already_recorded(error: PipelineError) -> bool:
+    return bool(error.context.get(_QUALITY_ERROR_RECORDED_CONTEXT_KEY))
 
 
 def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:

@@ -14,6 +14,7 @@ from elt_pipeline.integrations import (
     QualityHookSummary,
     build_lineage_adapter,
     build_quality_hook,
+    quality_error_already_recorded,
     raise_for_blocking_quality_failures,
 )
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
@@ -171,18 +172,19 @@ def run_sql_models_locally(
             "error_category": exc.error_category.value,
             "message": str(exc),
         }
-        artifacts.error_path = artifact_store.append_error_record(
-            run_context=run_context,
-            environment=environment,
-            error_record=build_error_record(
-                run_id=run_context.run_id,
-                error_code=exc.error_code,
-                error_category=exc.error_category,
-                message=str(exc),
-                retryable=exc.retryable,
-                context=exc.context,
-            ),
-        )
+        if not quality_error_already_recorded(exc):
+            artifacts.error_path = artifact_store.append_error_record(
+                run_context=run_context,
+                environment=environment,
+                error_record=build_error_record(
+                    run_id=run_context.run_id,
+                    error_code=exc.error_code,
+                    error_category=exc.error_category,
+                    message=str(exc),
+                    retryable=exc.retryable,
+                    context=exc.context,
+                ),
+            )
     finally:
         metrics = MetricsSummary(
             records_written=sum(record.row_count for record in execution_result.executed_models),

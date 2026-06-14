@@ -13,6 +13,7 @@ from elt_pipeline.integrations import (
     QualityHookSummary,
     build_lineage_adapter,
     build_quality_hook,
+    quality_error_already_recorded,
     raise_for_blocking_quality_failures,
 )
 from elt_pipeline.normalize.level2_storage import LocalLevel2Writer
@@ -190,11 +191,12 @@ def normalize_level1_to_local_level2(
             retryable=exc.retryable,
             context=exc.context,
         )
-        artifact_store.append_error_record(
-            run_context=run_context,
-            environment=environment,
-            error_record=error_record,
-        )
+        if not quality_error_already_recorded(exc):
+            artifact_store.append_error_record(
+                run_context=run_context,
+                environment=environment,
+                error_record=error_record,
+            )
         error_summary = {
             "error_code": exc.error_code,
             "error_category": exc.error_category.value,
