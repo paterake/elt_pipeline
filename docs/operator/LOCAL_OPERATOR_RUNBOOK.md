@@ -62,6 +62,14 @@ uv run elt-pipeline publish run examples/publish/local_demo \
   --environment default \
   --publish daily_order_export \
   --window-label 2026-01
+
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --database .tmp/warehouse.db \
+  --window-start 2026-01-01T00:00:00+00:00 \
+  --window-end 2026-01-31T23:59:59+00:00 \
+  --window-label jan-2026 \
+  --backfill
 ```
 
 ## Backfill Runs
@@ -119,6 +127,26 @@ Notes:
 - Do not combine `--rerun-run-id` with `--stage`, `--domain`, `--model`, `--include-deps`, date filters, partitions, or vars.
 - Use `--validate-only` or `--explain` first if you want to confirm the plan before writing tables.
 
+## Targeted Publish Reruns
+
+Publish reruns restore the prior publish selection and execution window from publish audit artifacts.
+
+1. Find the prior publish `run_id` under `runs/stage=publish/`.
+2. Re-run with the same runtime root, publish package, and database path.
+
+```bash
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --database .tmp/warehouse.db \
+  --rerun-run-id <prior-publish-run-id>
+```
+
+Notes:
+
+- Do not combine `--rerun-run-id` with `--domain`, `--publish`, window filters, `--backfill`, or a non-default `--environment`.
+- The CLI restores the original publish IDs, environment, and window selection from the stored publish audit record.
+- The rerun manifest and audit artifacts record `rerun_of_run_id` so operators can trace replayed deliveries.
+
 ## Schedule-Driven Execution
 
 Schedule plans call existing CLI commands in a fixed order.
@@ -151,6 +179,7 @@ Use `publish run` only after the upstream `level4` table already exists in the t
 - The current implementation supports CSV and `jsonl` outputs.
 - The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact`.
 - `append_new_artifact` writes the immutable run-scoped artifact and also copies a uniquely named delivery file into the consumer-facing artifact path without mutating prior deliveries.
+- Use `--backfill` with an explicit publish window when replaying a historical delivery slice; it records the run as a backfill in stage audit artifacts.
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.
 

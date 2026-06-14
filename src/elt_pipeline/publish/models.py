@@ -191,6 +191,7 @@ class PublishArtifactRecord(BaseModel):
 
 class PublishOutputManifest(BaseModel):
     run_id: str
+    rerun_of_run_id: str | None = None
     publish_name: str
     publish_version: str
     source_stage: str

@@ -77,6 +77,16 @@ class _SqlRerunSelection:
     extra_values: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _PublishRerunSelection:
+    environment: str
+    publish_ids: tuple[str, ...]
+    window_start: str | None
+    window_end: str | None
+    window_label: str | None
+    backfill: bool
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="elt-pipeline")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -259,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     publish_explain_parser.add_argument("--window-start")
     publish_explain_parser.add_argument("--window-end")
     publish_explain_parser.add_argument("--window-label")
+    publish_explain_parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Treat the publish selection as a targeted historical backfill.",
+    )
 
     publish_run_parser = publish_subparsers.add_parser(
         "run",
@@ -272,6 +287,15 @@ def build_parser() -> argparse.ArgumentParser:
     publish_run_parser.add_argument("--window-start")
     publish_run_parser.add_argument("--window-end")
     publish_run_parser.add_argument("--window-label")
+    publish_run_parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Treat the publish selection as a targeted historical backfill.",
+    )
+    publish_run_parser.add_argument(
+        "--rerun-run-id",
+        help="Reuse the publish/window selection from a prior publish run.",
+    )
 
     schedule_parser = subparsers.add_parser(
         "schedule",
@@ -689,22 +713,21 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "publish":
             discovered_definitions = discover_publish_definitions(args.package_path)
-            selected_definitions = filter_publish_definitions(
-                discovered_definitions,
-                domain=args.domain,
-                publish_name=args.publish_name,
-            )
-            if not selected_definitions:
-                raise ConfigValidationError(
-                    message="No publish definitions matched the requested selection",
-                    context={
-                        "package_path": str(args.package_path),
-                        "domain": args.domain,
-                        "publish_name": args.publish_name,
-                    },
-                )
-
             if args.publish_command == "validate":
+                selected_definitions = filter_publish_definitions(
+                    discovered_definitions,
+                    domain=args.domain,
+                    publish_name=args.publish_name,
+                )
+                if not selected_definitions:
+                    raise ConfigValidationError(
+                        message="No publish definitions matched the requested selection",
+                        context={
+                            "package_path": str(args.package_path),
+                            "domain": args.domain,
+                            "publish_name": args.publish_name,
+                        },
+                    )
                 payload = {
                     "command": "publish.validate",
                     "package_path": str(args.package_path),
@@ -733,38 +756,101 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2))
                 return 0
 
+            publish_environment = args.environment
+            selection_domain = args.domain
+            selection_publish = args.publish_name
+            selection_window_start = args.window_start
+            selection_window_end = args.window_end
+            selection_window_label = args.window_label
+            publish_backfill = getattr(args, "backfill", False)
+            rerun_run_id = getattr(args, "rerun_run_id", None)
+
+            if args.publish_command == "run" and rerun_run_id:
+                _validate_publish_rerun_request(args)
+                rerun_selection = _resolve_publish_rerun_selection(
+                    root_path=args.root_path.resolve(),
+                    rerun_run_id=rerun_run_id,
+                )
+                publish_environment = rerun_selection.environment
+                selection_domain = None
+                selection_publish = None
+                selection_window_start = rerun_selection.window_start
+                selection_window_end = rerun_selection.window_end
+                selection_window_label = rerun_selection.window_label
+                publish_backfill = rerun_selection.backfill
+                selected_ids = set(rerun_selection.publish_ids)
+                selected_definitions = [
+                    definition
+                    for definition in discovered_definitions
+                    if definition.publish_id in selected_ids
+                ]
+                missing_publish_ids = sorted(
+                    publish_id
+                    for publish_id in selected_ids
+                    if all(
+                        definition.publish_id != publish_id
+                        for definition in discovered_definitions
+                    )
+                )
+                if missing_publish_ids:
+                    raise ConfigValidationError(
+                        message="Rerun selection references publish definitions that are not present",
+                        context={
+                            "package_path": str(args.package_path),
+                            "rerun_run_id": rerun_run_id,
+                            "missing_publish_ids": missing_publish_ids,
+                        },
+                    )
+            else:
+                selected_definitions = filter_publish_definitions(
+                    discovered_definitions,
+                    domain=args.domain,
+                    publish_name=args.publish_name,
+                )
+                if not selected_definitions:
+                    raise ConfigValidationError(
+                        message="No publish definitions matched the requested selection",
+                        context={
+                            "package_path": str(args.package_path),
+                            "domain": args.domain,
+                            "publish_name": args.publish_name,
+                        },
+                    )
+
             cli_window = _build_cli_window_selection(
-                window_start=args.window_start,
-                window_end=args.window_end,
-                window_label=args.window_label,
-                backfill=False,
+                window_start=selection_window_start,
+                window_end=selection_window_end,
+                window_label=selection_window_label,
+                backfill=publish_backfill,
             )
-            run_context = new_run_context(
+            run_context = build_job_runtime(
                 stage=StageName.publish,
                 job_name=getattr(args, "job_name", "publish-explain"),
+                environment=publish_environment,
                 trigger_type=getattr(args, "trigger_type", "manual"),
+                window=cli_window,
+                backfill=publish_backfill,
                 attributes={
-                    "environment": args.environment,
                     "package_path": str(args.package_path),
-                    "domain_selection": args.domain or "",
-                    "publish_selection": args.publish_name or "",
-                    "window_start": _serialize_datetime(cli_window.start) or "",
-                    "window_end": _serialize_datetime(cli_window.end) or "",
-                    "window_label": cli_window.label or "",
+                    "domain_selection": selection_domain or "",
+                    "publish_selection": selection_publish or "",
+                    "rerun_of_run_id": rerun_run_id or "",
                 },
-            )
+            ).to_run_context()
 
             if args.publish_command == "explain":
                 payload = {
                     "command": "publish.explain",
                     "run_id": run_context.run_id,
+                    "environment": publish_environment,
                     "package_path": str(args.package_path),
                     "selection": {
-                        "domain": args.domain,
-                        "publish_name": args.publish_name,
+                        "domain": selection_domain,
+                        "publish_name": selection_publish,
                         "window_start": _serialize_datetime(cli_window.start),
                         "window_end": _serialize_datetime(cli_window.end),
                         "window_label": cli_window.label,
+                        "backfill": publish_backfill,
                     },
                     "publish_count": len(selected_definitions),
                     "plans": explain_publish_definitions(
@@ -780,7 +866,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = run_publish_definitions_locally(
                     root_path=args.root_path.resolve(),
                     run_context=run_context,
-                    environment=args.environment,
+                    environment=publish_environment,
                     package_path=args.package_path,
                     database_path=args.database,
                     definitions=selected_definitions,
@@ -788,13 +874,16 @@ def main(argv: list[str] | None = None) -> int:
                 payload = {
                     "command": "publish.run",
                     "run_id": run_context.run_id,
+                    "environment": publish_environment,
                     "package_path": str(args.package_path),
                     "selection": {
-                        "domain": args.domain,
-                        "publish_name": args.publish_name,
+                        "domain": selection_domain,
+                        "publish_name": selection_publish,
                         "window_start": _serialize_datetime(cli_window.start),
                         "window_end": _serialize_datetime(cli_window.end),
                         "window_label": cli_window.label,
+                        "backfill": publish_backfill,
+                        "rerun_run_id": rerun_run_id,
                     },
                     "database_path": str(args.database),
                     "publish_count": len(result.results),
@@ -1103,6 +1192,35 @@ def _validate_sql_rerun_request(args: argparse.Namespace) -> None:
     if conflicting_args:
         raise ConfigValidationError(
             message="sql reruns must not specify an explicit selection alongside --rerun-run-id",
+            context={
+                "rerun_run_id": args.rerun_run_id,
+                "conflicting_args": conflicting_args,
+            },
+        )
+
+
+def _validate_publish_rerun_request(args: argparse.Namespace) -> None:
+    conflicting_args = []
+    if args.domain:
+        conflicting_args.append("--domain")
+    if args.publish_name:
+        conflicting_args.append("--publish")
+    if args.window_start:
+        conflicting_args.append("--window-start")
+    if args.window_end:
+        conflicting_args.append("--window-end")
+    if args.window_label:
+        conflicting_args.append("--window-label")
+    if args.backfill:
+        conflicting_args.append("--backfill")
+    if args.environment != "default":
+        conflicting_args.append("--environment")
+    if conflicting_args:
+        raise ConfigValidationError(
+            message=(
+                "publish reruns must not specify an explicit selection "
+                "alongside --rerun-run-id"
+            ),
             context={
                 "rerun_run_id": args.rerun_run_id,
                 "conflicting_args": conflicting_args,
@@ -1441,6 +1559,40 @@ def _resolve_sql_rerun_selection(
             raw_value=audit.context.get("extra_values"),
             field_name="extra_values",
             rerun_run_id=rerun_run_id,
+        ),
+    )
+
+
+def _resolve_publish_rerun_selection(
+    *,
+    root_path: Path,
+    rerun_run_id: str,
+) -> _PublishRerunSelection:
+    audit = _load_stage_audit_record(
+        root_path=root_path,
+        stage=StageName.publish,
+        rerun_run_id=rerun_run_id,
+    )
+    environment = audit.context.get("environment")
+    selected_publishes = [
+        publish_id
+        for publish_id in audit.context.get("selected_publish_ids", "").split(",")
+        if publish_id
+    ]
+    if not environment or not selected_publishes:
+        raise ConfigValidationError(
+            message="Publish rerun audit is missing the required selection context",
+            context={"rerun_run_id": rerun_run_id},
+        )
+    return _PublishRerunSelection(
+        environment=environment,
+        publish_ids=tuple(selected_publishes),
+        window_start=audit.context.get("window_start") or None,
+        window_end=audit.context.get("window_end") or None,
+        window_label=audit.context.get("window_label") or None,
+        backfill=(
+            audit.trigger_type == "backfill"
+            or audit.context.get("checkpoint_mode") == "backfill"
         ),
     )
 

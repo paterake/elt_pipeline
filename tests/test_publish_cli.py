@@ -129,11 +129,131 @@ def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path) -> No
     assert "run_id=" in Path(artifact["stable_delivery_path"]).name
 
 
-def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path) -> None:
+    package_root = _write_publish_package(tmp_path, replacement_mode="overwrite_in_place")
+    runtime_root = tmp_path / "runtime"
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+
+    first_result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(package_root),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--publish",
+            "daily_order_export",
+            "--window-start",
+            "2026-01-01T00:00:00+00:00",
+            "--window-end",
+            "2026-01-31T23:59:59+00:00",
+            "--window-label",
+            "jan-2026",
+        ]
+    )
+    first_payload = json.loads(first_result.stdout)
+
+    second_result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(package_root),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--rerun-run-id",
+            first_payload["run_id"],
+        ]
+    )
+    second_payload = json.loads(second_result.stdout)
+
+    assert second_payload["selection"]["publish_name"] is None
+    assert second_payload["selection"]["window_label"] == "jan-2026"
+    assert second_payload["selection"]["rerun_run_id"] == first_payload["run_id"]
+    assert second_payload["publish_count"] == 1
+
+    rerun_audit = json.loads(Path(second_payload["artifacts"]["audit_path"]).read_text(encoding="utf-8"))
+    assert rerun_audit["context"]["rerun_of_run_id"] == first_payload["run_id"]
+    assert rerun_audit["context"]["selected_publish_ids"] == "sales.daily_order_export"
+
+    export_manifest_path = Path(second_payload["artifacts"]["export_manifest_path"])
+    export_manifest = json.loads(export_manifest_path.read_text(encoding="utf-8"))
+    assert export_manifest["rerun_of_run_id"] == first_payload["run_id"]
+
+
+def test_publish_run_command_supports_backfill_trigger(tmp_path: Path) -> None:
+    package_root = _write_publish_package(tmp_path)
+    runtime_root = tmp_path / "runtime"
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+
+    result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(package_root),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--window-start",
+            "2026-01-01T00:00:00+00:00",
+            "--window-end",
+            "2026-01-31T23:59:59+00:00",
+            "--window-label",
+            "jan-2026",
+            "--backfill",
+        ]
+    )
+    payload = json.loads(result.stdout)
+    audit = json.loads(Path(payload["artifacts"]["audit_path"]).read_text(encoding="utf-8"))
+
+    assert payload["selection"]["backfill"] is True
+    assert audit["trigger_type"] == "backfill"
+    assert audit["context"]["checkpoint_mode"] == "backfill"
+
+
+def test_publish_run_command_rejects_conflicting_rerun_selection(tmp_path: Path) -> None:
+    package_root = _write_publish_package(tmp_path)
+    runtime_root = tmp_path / "runtime"
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+
+    result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(package_root),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--publish",
+            "daily_order_export",
+            "--rerun-run-id",
+            "prior-run-id",
+        ],
+        check=False,
+    )
+
+    assert result.returncode == 2
+    error_payload = json.loads(result.stderr)
+    assert "publish reruns must not specify an explicit selection" in error_payload["message"]
+
+
+def _run_cli(
+    args: list[str],
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "elt_pipeline", *args],
         cwd=Path(__file__).resolve().parents[1],
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
     )

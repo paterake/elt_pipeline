@@ -125,6 +125,7 @@ Validate, explain, and run `level5` publish definitions:
 uv run elt-pipeline publish validate path/to/publish_defs
 uv run elt-pipeline publish explain path/to/publish_defs --root-path path/to/runtime
 uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --database path/to/warehouse.db
+uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --database path/to/warehouse.db --rerun-run-id prior-publish-run-id
 ```
 
 Run a deterministic local schedule plan:
@@ -144,7 +145,7 @@ The local runtime is organized as a staged filesystem workflow:
 5. `publish run` exports approved `level4` datasets into run-scoped `level5` delivery artifacts
 6. `schedule run` orchestrates the above commands in a deterministic local sequence
 
-This reflects the currently implemented runtime path through `level5`. The current publish implementation supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, CSV plus `jsonl` execution against sqlite-backed `level4` tables, and the `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` replacement behaviors. Broader delivery patterns remain follow-on work.
+This reflects the currently implemented runtime path through `level5`. The current publish implementation supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, CSV plus `jsonl` execution against sqlite-backed `level4` tables, the `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` replacement behaviors, and audit-driven publish reruns plus windowed backfill tagging. Broader delivery patterns remain follow-on work.
 
 Runtime metadata is persisted under the selected root path, including:
 

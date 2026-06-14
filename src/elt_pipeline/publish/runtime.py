@@ -206,6 +206,30 @@ def run_publish_definitions_locally(
                     "selected_publish_ids": ",".join(
                         definition.publish_id for definition in definitions
                     ),
+                    "window_start": _string_or_none(run_context.attributes.get("window_start")) or "",
+                    "window_end": _string_or_none(run_context.attributes.get("window_end")) or "",
+                    "window_label": _string_or_none(run_context.attributes.get("window_label")) or "",
+                    "checkpoint_mode": _string_or_none(
+                        run_context.attributes.get("checkpoint_mode")
+                    )
+                    or "",
+                    "rerun_of_run_id": _string_or_none(
+                        run_context.attributes.get("rerun_of_run_id")
+                    )
+                    or "",
+                    "export_manifest_paths": json.dumps(
+                        [
+                            str(result.artifacts[0].run_scoped_path.parent / "manifest.json")
+                            for result in results
+                        ]
+                    ),
+                    "run_scoped_artifact_paths": json.dumps(
+                        [
+                            str(artifact.run_scoped_path)
+                            for result in results
+                            for artifact in result.artifacts
+                        ]
+                    ),
                 },
             ),
         )
@@ -338,6 +362,7 @@ def _run_single_publish_definition(
     manifest_path = run_scoped_path.parent / "manifest.json"
     output_manifest = PublishOutputManifest(
         run_id=run_context.run_id,
+        rerun_of_run_id=_string_or_none(run_context.attributes.get("rerun_of_run_id")),
         publish_name=definition.manifest.name,
         publish_version=definition.manifest.version,
         source_stage=definition.manifest.source.stage,
