@@ -66,6 +66,26 @@ uv run elt-pipeline publish run examples/publish/local_demo \
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-demo \
   --database .tmp/warehouse.db \
+  --environment default \
+  --publish daily_order_export_tsv \
+  --window-label 2026-01
+
+uv run elt-pipeline publish explain examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --environment default \
+  --publish daily_order_export_bundle \
+  --window-label 2026-01
+
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --database .tmp/warehouse.db \
+  --environment default \
+  --publish daily_order_export_bundle \
+  --window-label 2026-01
+
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-demo \
+  --database .tmp/warehouse.db \
   --window-start 2026-01-01T00:00:00+00:00 \
   --window-end 2026-01-31T23:59:59+00:00 \
   --window-label jan-2026 \
@@ -173,12 +193,16 @@ Use `publish explain` when you want a dry preview of the paths a publish run wou
 
 - Pass the same `--root-path`, selection filters, and optional `--window-label` that you expect to use in `publish run`.
 - Review `run_scoped_path` for the immutable history location and `stable_delivery_path` when the publish definition uses `overwrite_in_place` or `append_new_artifact`.
+- Review `archive_run_scoped_path` and `archive_stable_delivery_path` when a publish definition declares `delivery.packaging.archive_format: zip`.
 
 Use `publish run` only after the upstream `level4` table already exists in the target sqlite database.
 
-- The current implementation supports CSV and `jsonl` outputs.
+- The current implementation supports CSV, `jsonl`, and `tsv` outputs.
 - The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact`.
+- A publish definition may also request a zip archive bundle in addition to the primary file output.
 - `append_new_artifact` writes the immutable run-scoped artifact and also copies a uniquely named delivery file into the consumer-facing artifact path without mutating prior deliveries.
+- The bundled `daily_order_export_tsv` example demonstrates `tsv` plus `append_new_artifact`; the stable delivery filename includes the originating `run_id`.
+- The bundled `daily_order_export_bundle` example demonstrates a CSV delivery with an additional stable `.zip` bundle produced from the same run-scoped output.
 - Use `--backfill` with an explicit publish window when replaying a historical delivery slice; it records the run as a backfill in stage audit artifacts.
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.

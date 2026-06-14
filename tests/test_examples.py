@@ -246,12 +246,14 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
         ]
     )
     validate_payload = json.loads(validate_result.stdout)
-    assert validate_payload["publish_count"] == 2
+    assert validate_payload["publish_count"] == 4
     assert {
         definition["publish_id"]: definition["output_format"]
         for definition in validate_payload["definitions"]
     } == {
+        "sales.daily_order_export_bundle": "csv",
         "sales.daily_order_export": "csv",
+        "sales.daily_order_export_tsv": "tsv",
         "sales.daily_order_export_windowed": "jsonl",
     }
 
@@ -267,8 +269,12 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
         ]
     )
     explain_payload = json.loads(explain_result.stdout)
-    assert explain_payload["publish_count"] == 2
+    assert explain_payload["publish_count"] == 4
     assert all("run_id=" in plan["run_scoped_path"] for plan in explain_payload["plans"])
+    bundle_plan = next(
+        plan for plan in explain_payload["plans"] if plan["publish_id"] == "sales.daily_order_export_bundle"
+    )
+    assert bundle_plan["archive_run_scoped_path"].endswith(".zip")
 
     run_result = _run_cli(
         [
@@ -311,6 +317,51 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
     assert jsonl_run_payload["publish_count"] == 1
     assert jsonl_run_payload["results"][0]["artifacts"][0]["output_format"] == "jsonl"
     assert jsonl_run_payload["results"][0]["artifacts"][0]["stable_delivery_path"] is None
+
+    tsv_run_result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(REPO_ROOT / "examples/publish/local_demo"),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--publish",
+            "daily_order_export_tsv",
+            "--window-label",
+            "2026-01",
+        ]
+    )
+    tsv_run_payload = json.loads(tsv_run_result.stdout)
+    assert tsv_run_payload["publish_count"] == 1
+    tsv_artifact = tsv_run_payload["results"][0]["artifacts"][0]
+    assert tsv_artifact["output_format"] == "tsv"
+    assert "run_id=" in Path(tsv_artifact["stable_delivery_path"]).name
+
+    bundle_run_result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(REPO_ROOT / "examples/publish/local_demo"),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--publish",
+            "daily_order_export_bundle",
+            "--window-label",
+            "2026-01",
+        ]
+    )
+    bundle_run_payload = json.loads(bundle_run_result.stdout)
+    assert bundle_run_payload["publish_count"] == 1
+    bundle_artifacts = {
+        artifact["output_format"]: artifact for artifact in bundle_run_payload["results"][0]["artifacts"]
+    }
+    assert set(bundle_artifacts) == {"csv", "zip"}
+    assert Path(bundle_artifacts["csv"]["stable_delivery_path"]).exists()
+    assert Path(bundle_artifacts["zip"]["stable_delivery_path"]).exists()
 
 
 def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> None:

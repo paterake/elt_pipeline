@@ -264,7 +264,7 @@ A later session should aim to complete:
 
 - [x] Add packaging/archive support and broader file-based delivery formats (zip bundle + tsv)
 - [x] Add focused publish/runtime tests for zip bundle + tsv modes
-- [ ] Add operator runbook updates and runnable examples for zip bundle + tsv publish definitions
+- [x] Add operator runbook updates and runnable examples for zip bundle + tsv publish definitions
 
 ## Session Handoff Notes
 
@@ -277,9 +277,9 @@ Use this when resuming in a new session:
 - `elt_pipeline` should be described as a governed data platform runtime aligned to DAMA-DMBOK v2 principles.
 - The `level1` through `level5` structure is a platform-defined architecture model aligned to DAMA-DMBOK v2 concerns, not a claim that DAMA-DMBOK v2 prescribes those exact names.
 - The approved first build slice should focus on local file-based delivery only, not external transports.
-- The first required export formats are CSV and `jsonl`, with CSV as the first representative implementation path.
+- The first required export formats are CSV and `jsonl`, with `tsv` and zip bundling now available as broader local file-based publish options.
 - Every publish run must produce run-scoped artifacts and a run-scoped manifest even if a stable consumer-facing path is also maintained.
-- The current implementation supports publish definition discovery, validation, explain-mode, and local CSV plus `jsonl` execution against sqlite-backed `level4` tables.
+- The current implementation supports publish definition discovery, validation, explain-mode, and local CSV, `jsonl`, and `tsv` execution against sqlite-backed `level4` tables, plus optional zip bundle packaging.
 - The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` as executable replacement behaviors.
 - The current implementation supports `publish run --rerun-run-id <prior-run-id>` to restore publish selection and window scope from prior publish audit artifacts, plus `--backfill` tagging for historical publish windows.
 

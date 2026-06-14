@@ -9,7 +9,7 @@ Run all example commands from the repository root so relative paths resolve corr
 - `examples/configs/local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `examples/data/sql/source.db`
 - `examples/configs/local_kafka_orders_replay.yaml`: Kafka replay ingest from a bundled JSONL log
 - `examples/configs/local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint
-- `examples/publish/local_demo/`: runnable `level5` publish definitions for the bundled SQL demo warehouse
+- `examples/publish/local_demo/`: runnable `level5` publish definitions for CSV, `jsonl`, `tsv`, and zip-bundled local exports
 - `examples/sql/local_demo/`: local SQL model package that prepares example `level4` tables for publish runs
 
 ## Object Storage JSON
@@ -149,3 +149,43 @@ Expected outputs:
 - run-scoped `jsonl` artifacts under `.tmp/runtime-publish/artifacts/level5/.../run_id=<...>/`
 - no stable delivery path because `daily_order_export_windowed` uses `versioned_delivery`
 - a publish manifest next to the exported file
+
+Run the bundled direct `tsv` publish definition:
+
+```bash
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-publish \
+  --database .tmp/example-warehouse.db \
+  --environment default \
+  --publish daily_order_export_tsv \
+  --window-label 2026-01
+```
+
+Expected outputs:
+
+- run-scoped `tsv` artifacts under `.tmp/runtime-publish/artifacts/level5/.../run_id=<...>/`
+- an append-only stable delivery copy whose filename includes `run_id=<...>`
+- a publish manifest next to the exported file
+
+Run the bundled CSV plus zip-bundle publish definition:
+
+```bash
+uv run elt-pipeline publish explain examples/publish/local_demo \
+  --root-path .tmp/runtime-publish \
+  --environment default \
+  --publish daily_order_export_bundle \
+  --window-label 2026-01
+
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-publish \
+  --database .tmp/example-warehouse.db \
+  --environment default \
+  --publish daily_order_export_bundle \
+  --window-label 2026-01
+```
+
+Expected outputs:
+
+- a run-scoped CSV artifact and a sibling run-scoped `.zip` bundle under `.tmp/runtime-publish/artifacts/level5/.../run_id=<...>/`
+- stable delivery copies for both the `.csv` file and the `.zip` bundle because `daily_order_export_bundle` uses `overwrite_in_place`
+- `publish explain` output that includes both `run_scoped_path` and `archive_run_scoped_path`
