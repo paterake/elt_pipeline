@@ -144,9 +144,7 @@ def run_sql_models_locally(
                 environment=environment,
                 log_event=build_log_event(
                     run_context=run_context,
-                    severity=(
-                        "ERROR" if quality_summary.blocking_failure_count else "INFO"
-                    ),
+                    severity=quality_summary.log_severity,
                     component="quality",
                     event_type="quality_hook_complete",
                     message="SQL quality hook evaluated",

@@ -87,6 +87,20 @@ class QualityHookSummary(BaseModel):
             counts[result.status.value] += 1
         return counts
 
+    @property
+    def log_severity(self) -> str:
+        if any(
+            result.status == QualityCheckStatus.fail and result.blocking
+            for result in self.results
+        ):
+            return "ERROR"
+        if any(
+            result.status in {QualityCheckStatus.warn, QualityCheckStatus.fail}
+            for result in self.results
+        ):
+            return "WARNING"
+        return "INFO"
+
 
 class QualityHookBackend(Protocol):
     backend_type: str

@@ -202,6 +202,43 @@ def test_normalize_pipeline_fails_for_blocking_quality_results(tmp_path: Path) -
     assert audit_payload["metrics_summary"]["extra"]["quality.fail"] == 1
 
 
+def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
+    tmp_path: Path,
+) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest()
+    payload = {"order_id": "A-100"}
+    quality_hook = build_quality_hook(
+        tmp_path,
+        backend=_WarningNormalizeQualityBackend(),
+        policy=QualityHookPolicy.best_effort,
+    )
+
+    normalize_level1_to_local_level2(
+        root_path=tmp_path,
+        run_context=run_context,
+        manifest=manifest,
+        payload=payload,
+        quality_hook=quality_hook,
+    )
+
+    log_path = (
+        tmp_path
+        / "runs"
+        / "stage=normalize"
+        / "environment=dev"
+        / "job=normalize-orders"
+        / f"run_id={run_context.run_id}"
+        / "logs.jsonl"
+    )
+    log_events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    quality_event = next(
+        event for event in log_events if event["event_type"] == "quality_hook_complete"
+    )
+
+    assert quality_event["severity"] == "WARNING"
+
+
 class _PassingNormalizeQualityBackend:
     backend_type = "test_quality"
 
@@ -233,5 +270,21 @@ class _FailingNormalizeQualityBackend:
                 observed_value=request.datasets[0].row_count,
                 expected_value=2,
                 message="Row count below threshold",
+            )
+        ]
+
+
+class _WarningNormalizeQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        return [
+            QualityCheckResult(
+                backend_type=self.backend_type,
+                check_name="distribution_drift",
+                status=QualityCheckStatus.warn,
+                dataset_id=request.datasets[0].dataset_id,
+                dataset_name=request.datasets[0].dataset_name,
+                message="Observed row distribution drifted from prior run",
             )
         ]

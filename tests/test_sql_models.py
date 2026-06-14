@@ -789,6 +789,71 @@ def test_run_sql_models_locally_fails_for_blocking_quality_results(tmp_path: Pat
     assert audit_payload["metrics_summary"]["extra"]["quality.fail"] == 1
 
 
+def test_run_sql_models_locally_logs_warning_for_non_blocking_quality_results(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(tmp_path)
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+
+    result = run_sql_models_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
+        environment="dev",
+        package_path=package_root,
+        database_path=database_path,
+        compiled_models=compiled,
+        quality_hook=build_quality_hook(
+            tmp_path,
+            backend=_WarningSqlQualityBackend(),
+            policy=QualityHookPolicy.best_effort,
+        ),
+    )
+
+    log_lines = result.artifacts.log_path.read_text(encoding="utf-8").strip().splitlines()
+    quality_event = next(
+        json.loads(line) for line in log_lines if json.loads(line)["event_type"] == "quality_hook_complete"
+    )
+
+    assert quality_event["severity"] == "WARNING"
+
+
 def test_local_sql_model_executor_returns_structured_planning_error_code(
     tmp_path: Path,
 ) -> None:
@@ -949,6 +1014,22 @@ class _FailingSqlQualityBackend:
                 observed_value=request.datasets[-1].row_count,
                 expected_value=3,
                 message="Row count below threshold",
+            )
+        ]
+
+
+class _WarningSqlQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        return [
+            QualityCheckResult(
+                backend_type=self.backend_type,
+                check_name="distribution_drift",
+                status=QualityCheckStatus.warn,
+                dataset_id=request.datasets[-1].dataset_id,
+                dataset_name=request.datasets[-1].dataset_name,
+                message="Observed row distribution drifted from prior run",
             )
         ]
 
