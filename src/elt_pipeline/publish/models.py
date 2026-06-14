@@ -2,8 +2,13 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from string import Formatter
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+_ALLOWED_PATH_TEMPLATE_FIELDS = frozenset(
+    {"domain", "publish_name", "run_id", "window_label", "output_extension"}
+)
 
 
 class PublishStage(str, Enum):
@@ -94,6 +99,32 @@ class PublishDelivery(BaseModel):
             raise ValueError("delivery.path_template must be relative")
         if ".." in template_path.parts:
             raise ValueError("delivery.path_template must not escape the level5 artifact root")
+        try:
+            template_fields = [
+                field_name
+                for _, field_name, format_spec, conversion in Formatter().parse(cleaned)
+                if field_name is not None
+                if not format_spec and conversion is None
+            ]
+        except ValueError as exc:
+            raise ValueError("delivery.path_template contains invalid template syntax") from exc
+        invalid_fields = sorted(
+            field_name
+            for _, field_name, format_spec, conversion in Formatter().parse(cleaned)
+            if field_name is not None
+            if (
+                field_name not in _ALLOWED_PATH_TEMPLATE_FIELDS
+                or bool(format_spec)
+                or conversion is not None
+            )
+        )
+        if invalid_fields:
+            raise ValueError(
+                "delivery.path_template may only use {domain}, {publish_name}, "
+                "{run_id}, {window_label}, and {output_extension} placeholders"
+            )
+        if any(field_name == "" for field_name in template_fields):
+            raise ValueError("delivery.path_template contains an empty placeholder")
         return cleaned
 
 

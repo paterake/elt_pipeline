@@ -34,6 +34,22 @@ def test_discover_publish_definitions_rejects_missing_query_sql(tmp_path: Path) 
         discover_publish_definitions(package_root)
 
 
+def test_discover_publish_definitions_rejects_unknown_path_template_placeholders(
+    tmp_path: Path,
+) -> None:
+    package_root = _write_publish_package(
+        tmp_path,
+        path_template="exports/{domain}/{missing_field}/daily_order_export.{output_extension}",
+    )
+
+    with pytest.raises(ConfigValidationError) as exc_info:
+        discover_publish_definitions(package_root)
+    assert (
+        "path_template may only use"
+        in exc_info.value.context["errors"][0]["msg"]
+    )
+
+
 def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(tmp_path: Path) -> None:
     database_path = tmp_path / "warehouse.db"
     _seed_order_summary_table(database_path)
@@ -227,6 +243,7 @@ def _write_publish_package(
     replacement_mode: str = "versioned_delivery",
     output_format: str = "csv",
     packaging_archive_format: str | None = None,
+    path_template: str = "exports/{domain}/{publish_name}/daily_order_export.{output_extension}",
 ) -> Path:
     package_root = base_path / "publish_defs"
     publish_dir = package_root / "sales" / "daily_order_export"
@@ -243,8 +260,7 @@ def _write_publish_package(
         "delivery:",
         "  target_type: local_filesystem",
         f"  output_format: {output_format}",
-        "  path_template: exports/{domain}/{publish_name}/daily_order_export."
-        "{output_extension}",
+        f"  path_template: {path_template}",
         f"  replacement_mode: {replacement_mode}",
         "owner:",
         "  owning_domain: sales",
