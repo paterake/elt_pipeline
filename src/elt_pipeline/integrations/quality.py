@@ -139,6 +139,17 @@ class RowCountQualityHook:
                 )
             ]
 
+        if not request.datasets:
+            return [
+                QualityCheckResult(
+                    backend_type=self.backend_type,
+                    check_name="row_count_min",
+                    status=QualityCheckStatus.skipped,
+                    message="No datasets were emitted for quality evaluation",
+                    expected_value=self._row_count_min,
+                )
+            ]
+
         results: list[QualityCheckResult] = []
         for dataset in request.datasets:
             if dataset.row_count is None:
