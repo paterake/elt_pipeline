@@ -182,6 +182,31 @@ Operator guidance:
 - Use the plan-level `continue_on_error` setting for deterministic defaults.
 - Use the CLI flag `--continue-on-error` only when you intentionally want to override the plan.
 
+## Optional Lineage Backend Operations
+
+Optional remote lineage emission is available without changing the CLI contract for ingest, normalize, SQL, publish, or schedule-driven runs.
+
+```bash
+export ELT_PIPELINE_LINEAGE_BACKEND=openlineage_http
+export ELT_PIPELINE_LINEAGE_URL=http://localhost:5000/api/v1/lineage
+export ELT_PIPELINE_LINEAGE_POLICY=best_effort
+export ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS=10
+```
+
+Optional authentication:
+
+```bash
+export ELT_PIPELINE_LINEAGE_AUTH_HEADER="Bearer <token>"
+```
+
+Operator guidance:
+
+- Keep local `runs/.../lineage.jsonl` artifacts as the system of record even when remote emission is enabled.
+- Use `best_effort` for normal local-first operation; remote failures are then captured locally in `logs.jsonl` and `errors.jsonl` without changing stage success.
+- Use `blocking` only when an environment explicitly requires remote lineage submission to succeed.
+- Set `ELT_PIPELINE_LINEAGE_URL` to the full OpenLineage-compatible HTTP endpoint, such as Marquez at `http://localhost:5000/api/v1/lineage`.
+- Validate connectivity with a small CLI run first; if the backend is unavailable, the stage audit still lets operators confirm whether the core stage itself succeeded.
+
 ## Publish Operator Guidance
 
 Use `publish validate` when reviewing new or changed publish packages before touching runtime outputs.

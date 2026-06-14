@@ -216,7 +216,7 @@ This phase is approved for implementation, provided local-first behavior and the
 
 - [x] Draft PRD/design baseline for optional lineage, orchestration, and data-quality integrations
 - [x] Define adapter boundaries for optional lineage backend emission while preserving local-first runtime behavior
-- [ ] Add one reference lineage backend integration aligned to the OpenLineage-compatible event contract
+- [x] Add one reference lineage backend integration aligned to the OpenLineage-compatible event contract
 - [ ] Define adapter boundaries for optional orchestration wrappers while keeping the CLI contract authoritative
 - [ ] Add one reference orchestration integration that invokes the existing CLI entrypoints without redefining runtime contracts
 - [ ] Define optional data-quality hook points around normalization and SQL stage outputs
@@ -287,6 +287,7 @@ Use this when resuming in a new session:
 - The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` as executable replacement behaviors.
 - The current implementation supports `publish run --rerun-run-id <prior-run-id>` to restore publish selection and window scope from prior publish audit artifacts, plus `--backfill` tagging for historical publish windows.
 - The current Phase 14 implementation now routes lineage writes through an internal adapter boundary that preserves local `lineage.jsonl` artifacts and records optional remote-emission failures in local logs/errors.
+- The current Phase 14 implementation now includes a reference `openlineage_http` backend integration enabled by environment variables, preserving local-first lineage artifacts and supporting `best_effort` or `blocking` remote emission policy.
 - Optional Phase 14 integration work must preserve local-first execution, keep the CLI authoritative, and treat local audit/log/lineage artifacts as first-class even when external systems are added.
 
 ## Open Decisions Still Allowed During Implementation

@@ -154,6 +154,34 @@ Runtime metadata is persisted under the selected root path, including:
 - `runs/`: audit, structured logs, lineage, and stage-scoped rerun artifacts
 - `state/`: local checkpoint history
 
+## Optional Lineage Backend
+
+The runtime now supports one optional reference lineage backend integration through the existing internal adapter boundary.
+
+- Local `runs/.../lineage.jsonl` artifacts remain authoritative and are always written first.
+- Remote emission is optional and is configured entirely through environment variables.
+- The current reference backend is `openlineage_http`, which can target Marquez or another OpenLineage-compatible HTTP endpoint.
+- Remote emission failures are recorded in local `logs.jsonl` and `errors.jsonl`; use `ELT_PIPELINE_LINEAGE_POLICY=blocking` only when a remote backend must fail the stage.
+
+Example enablement:
+
+```bash
+export ELT_PIPELINE_LINEAGE_BACKEND=openlineage_http
+export ELT_PIPELINE_LINEAGE_URL=http://localhost:5000/api/v1/lineage
+export ELT_PIPELINE_LINEAGE_POLICY=best_effort
+export ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS=10
+# Optional when the backend expects an Authorization header.
+export ELT_PIPELINE_LINEAGE_AUTH_HEADER="Bearer <token>"
+```
+
+Supported variables:
+
+- `ELT_PIPELINE_LINEAGE_BACKEND`: set to `openlineage_http` to enable remote emission
+- `ELT_PIPELINE_LINEAGE_URL`: full `http` or `https` endpoint URL for OpenLineage event submission
+- `ELT_PIPELINE_LINEAGE_POLICY`: `best_effort` or `blocking`
+- `ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS`: positive request timeout in seconds
+- `ELT_PIPELINE_LINEAGE_AUTH_HEADER`: optional `Authorization` header value sent with requests
+
 ## Runnable Examples
 
 The repository now includes runnable local connector configs under `examples/configs/`:
