@@ -170,6 +170,59 @@ def test_build_lineage_adapter_uses_env_configured_openlineage_http_backend(
     }
 
 
+def test_build_lineage_adapter_normalizes_env_configured_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_request: dict[str, object] = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def _fake_urlopen(request, *, timeout: float):
+        captured_request["url"] = request.full_url
+        captured_request["timeout"] = timeout
+        captured_request["authorization"] = request.get_header("Authorization")
+        return _FakeResponse()
+
+    monkeypatch.setenv("ELT_PIPELINE_LINEAGE_BACKEND", " OPENLINEAGE_HTTP ")
+    monkeypatch.setenv(
+        "ELT_PIPELINE_LINEAGE_URL",
+        " https://lineage.example.test/api/v1/lineage ",
+    )
+    monkeypatch.setenv("ELT_PIPELINE_LINEAGE_POLICY", " BLOCKING ")
+    monkeypatch.setenv("ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS", "4")
+    monkeypatch.setenv("ELT_PIPELINE_LINEAGE_AUTH_HEADER", " Bearer trimmed-token ")
+    monkeypatch.setattr("elt_pipeline.integrations.lineage.urlopen", _fake_urlopen)
+
+    run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
+    adapter = build_lineage_adapter(tmp_path)
+
+    lineage_path = adapter.emit(
+        run_context=run_context,
+        environment="default",
+        lineage_event=LineageEvent(
+            event_type="COMPLETE",
+            run_id=run_context.run_id,
+            job_name=run_context.job_name,
+        ),
+    )
+
+    assert lineage_path.exists()
+    assert captured_request == {
+        "url": "https://lineage.example.test/api/v1/lineage",
+        "timeout": 4.0,
+        "authorization": "Bearer trimmed-token",
+    }
+
+
 def test_build_lineage_adapter_rejects_invalid_env_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -181,6 +234,23 @@ def test_build_lineage_adapter_rejects_invalid_env_configuration(
         build_lineage_adapter(tmp_path)
 
     assert exc_info.value.context["endpoint_url"] == "not-a-url"
+
+
+def test_openlineage_http_emitter_rejects_invalid_constructor_arguments() -> None:
+    with pytest.raises(ConfigValidationError, match="valid http or https URL"):
+        OpenLineageHttpEmitter(endpoint_url="not-a-url")
+
+    with pytest.raises(ConfigValidationError, match="greater than zero"):
+        OpenLineageHttpEmitter(
+            endpoint_url="https://lineage.example.test/api/v1/lineage",
+            timeout_seconds=0,
+        )
+
+    with pytest.raises(ConfigValidationError, match="must not be empty"):
+        OpenLineageHttpEmitter(
+            endpoint_url="https://lineage.example.test/api/v1/lineage",
+            auth_header="   ",
+        )
 
 
 def test_openlineage_http_emitter_surfaces_retryable_backend_errors(

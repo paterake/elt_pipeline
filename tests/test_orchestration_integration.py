@@ -56,6 +56,40 @@ def test_load_orchestration_metadata_from_env_requires_platform() -> None:
     assert "ELT_PIPELINE_ORCHESTRATION_PLATFORM" in str(exc_info.value)
 
 
+def test_orchestration_metadata_normalizes_direct_constructor_values() -> None:
+    metadata = OrchestrationMetadata(
+        platform=" airflow ",
+        flow_name=" nightly ",
+        flow_run_id=" run-001 ",
+        task_name=" normalize_orders ",
+        task_attempt=2,
+        tags={" team ": " platform "},
+    )
+
+    assert metadata == OrchestrationMetadata(
+        platform="airflow",
+        flow_name="nightly",
+        flow_run_id="run-001",
+        task_name="normalize_orders",
+        task_attempt=2,
+        tags={"team": "platform"},
+    )
+
+
+def test_orchestration_metadata_rejects_invalid_direct_constructor_values() -> None:
+    with pytest.raises(ConfigValidationError, match="must not be empty"):
+        OrchestrationMetadata(platform="   ")
+
+    with pytest.raises(ConfigValidationError, match="greater than or equal to 1"):
+        OrchestrationMetadata(platform="airflow", task_attempt=0)
+
+    with pytest.raises(
+        ConfigValidationError,
+        match="must contain non-empty string keys and values",
+    ):
+        OrchestrationMetadata(platform="airflow", tags={"": "platform"})
+
+
 def test_subprocess_cli_invoker_uses_python_module_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

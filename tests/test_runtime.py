@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from elt_pipeline.shared.audit import AuditRecord
 from elt_pipeline.shared.errors import ErrorCategory, build_error_record
@@ -68,6 +69,16 @@ def test_execution_window_derives_label_for_bounded_range() -> None:
     assert window.label == "2026-01-01_to_2026-01-03"
 
 
+def test_execution_window_treats_blank_label_as_missing_and_derives_default() -> None:
+    window = ExecutionWindow(
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+        end=datetime(2026, 1, 2, tzinfo=UTC),
+        label="   ",
+    )
+
+    assert window.label == "2026-01-01_to_2026-01-02"
+
+
 def test_build_job_runtime_resolves_backfill_trigger_and_checkpoint_seed() -> None:
     runtime = build_job_runtime(
         stage=StageName.ingest,
@@ -99,4 +110,18 @@ def test_build_job_runtime_requires_window_start_for_backfill() -> None:
             environment="default",
             trigger_type="manual",
             backfill=True,
+        )
+
+
+def test_new_run_context_rejects_blank_job_name() -> None:
+    with pytest.raises(ValidationError, match="job_name must not be empty"):
+        new_run_context(stage=StageName.ingest, job_name="   ")
+
+
+def test_build_job_runtime_rejects_blank_environment() -> None:
+    with pytest.raises(ValidationError, match="environment must not be empty"):
+        build_job_runtime(
+            stage=StageName.ingest,
+            job_name="ingest-orders",
+            environment="   ",
         )

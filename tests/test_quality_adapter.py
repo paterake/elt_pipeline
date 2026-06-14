@@ -102,6 +102,20 @@ def test_row_count_quality_hook_normalizes_stage_names() -> None:
     assert results[0].status == QualityCheckStatus.pass_
 
 
+def test_row_count_quality_hook_rejects_negative_threshold() -> None:
+    with pytest.raises(ConfigValidationError) as exc_info:
+        RowCountQualityHook(row_count_min=-1)
+
+    assert exc_info.value.context["row_count_min"] == -1
+
+
+def test_row_count_quality_hook_rejects_unsupported_stages() -> None:
+    with pytest.raises(ConfigValidationError) as exc_info:
+        RowCountQualityHook(row_count_min=1, enabled_stages={"publish"})
+
+    assert exc_info.value.context["invalid_stages"] == ["publish"]
+
+
 def test_build_quality_hook_uses_env_configured_row_count_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

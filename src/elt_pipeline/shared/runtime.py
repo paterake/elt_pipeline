@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class StageName(str, Enum):
@@ -35,6 +35,14 @@ class ExecutionWindow(BaseModel):
     end: datetime | None = None
     label: str | None = None
 
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
     @model_validator(mode="after")
     def validate_bounds(self) -> "ExecutionWindow":
         if self.start is not None and self.end is not None and self.end < self.start:
@@ -51,6 +59,19 @@ class JobTarget(BaseModel):
     source_name: str | None = None
     entity_name: str | None = None
 
+    @field_validator("environment")
+    @classmethod
+    def validate_environment(cls, value: str) -> str:
+        return _validate_required_runtime_text(value=value, field_name="environment")
+
+    @field_validator("source_name", "entity_name")
+    @classmethod
+    def normalize_optional_names(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
 
 class CheckpointDirective(BaseModel):
     mode: CheckpointMode = CheckpointMode.resume
@@ -65,6 +86,11 @@ class RunContext(BaseModel):
     started_at: datetime
     attributes: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("run_id", "job_name", "trigger_type")
+    @classmethod
+    def validate_required_text(cls, value: str, info) -> str:
+        return _validate_required_runtime_text(value=value, field_name=info.field_name)
+
 
 class JobRuntime(BaseModel):
     stage: StageName
@@ -74,6 +100,11 @@ class JobRuntime(BaseModel):
     window: ExecutionWindow = Field(default_factory=ExecutionWindow)
     checkpoint: CheckpointDirective = Field(default_factory=CheckpointDirective)
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("job_name")
+    @classmethod
+    def validate_job_name(cls, value: str) -> str:
+        return _validate_required_runtime_text(value=value, field_name="job_name")
 
     def checkpoint_seed(self) -> dict[str, Any] | None:
         if self.checkpoint.mode is CheckpointMode.backfill:
@@ -159,3 +190,10 @@ def new_run_context(
         started_at=datetime.now(tz=UTC),
         attributes=attributes or {},
     )
+
+
+def _validate_required_runtime_text(*, value: str, field_name: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError(f"{field_name} must not be empty")
+    return cleaned

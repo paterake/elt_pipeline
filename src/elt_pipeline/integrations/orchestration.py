@@ -28,6 +28,38 @@ class OrchestrationMetadata:
     task_attempt: int | None = None
     tags: dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "platform",
+            _validate_orchestration_platform(self.platform),
+        )
+        object.__setattr__(
+            self,
+            "flow_name",
+            _coerce_optional_string(self.flow_name),
+        )
+        object.__setattr__(
+            self,
+            "flow_run_id",
+            _coerce_optional_string(self.flow_run_id),
+        )
+        object.__setattr__(
+            self,
+            "task_name",
+            _coerce_optional_string(self.task_name),
+        )
+        object.__setattr__(
+            self,
+            "task_attempt",
+            _validate_task_attempt_value(self.task_attempt),
+        )
+        object.__setattr__(
+            self,
+            "tags",
+            _normalize_orchestration_tags(self.tags),
+        )
+
     def to_env(self) -> dict[str, str]:
         payload = {_ORCHESTRATION_PLATFORM_ENV: self.platform}
         if self.flow_name is not None:
@@ -293,6 +325,16 @@ def _normalize_env_value(value: str | None) -> str | None:
     return normalized or None
 
 
+def _validate_orchestration_platform(platform: str) -> str:
+    normalized = _coerce_optional_string(platform)
+    if normalized is None:
+        raise ConfigValidationError(
+            message="Orchestration platform must not be empty",
+            context={"platform": platform},
+        )
+    return normalized
+
+
 def _parse_task_attempt(
     *,
     raw_value: str | None,
@@ -310,15 +352,13 @@ def _parse_task_attempt(
                 _ORCHESTRATION_TASK_ATTEMPT_ENV: raw_value,
             },
         ) from exc
-    if task_attempt < 1:
-        raise ConfigValidationError(
-            message="Orchestration task attempt must be greater than or equal to 1",
-            context={
-                "configured_fields": list(configured_fields),
-                _ORCHESTRATION_TASK_ATTEMPT_ENV: raw_value,
-            },
-        )
-    return task_attempt
+    return _validate_task_attempt_value(
+        task_attempt,
+        context={
+            "configured_fields": list(configured_fields),
+            _ORCHESTRATION_TASK_ATTEMPT_ENV: raw_value,
+        },
+    )
 
 
 def _parse_tags(*, raw_value: str | None, configured_fields: Sequence[str]) -> dict[str, str]:
@@ -348,7 +388,36 @@ def _parse_tags(*, raw_value: str | None, configured_fields: Sequence[str]) -> d
                 _ORCHESTRATION_TAGS_ENV: raw_value,
             },
         )
-    return decoded
+    return _normalize_orchestration_tags(decoded)
+
+
+def _validate_task_attempt_value(
+    task_attempt: int | None,
+    *,
+    context: dict[str, Any] | None = None,
+) -> int | None:
+    if task_attempt is None:
+        return None
+    if isinstance(task_attempt, bool) or not isinstance(task_attempt, int) or task_attempt < 1:
+        raise ConfigValidationError(
+            message="Orchestration task attempt must be greater than or equal to 1",
+            context=context or {"task_attempt": task_attempt},
+        )
+    return task_attempt
+
+
+def _normalize_orchestration_tags(tags: Mapping[str, str]) -> dict[str, str]:
+    normalized_tags: dict[str, str] = {}
+    for key, value in tags.items():
+        normalized_key = _coerce_optional_string(key)
+        normalized_value = _coerce_optional_string(value)
+        if normalized_key is None or normalized_value is None:
+            raise ConfigValidationError(
+                message="Orchestration tags metadata must contain non-empty string keys and values",
+                context={"tags": dict(tags)},
+            )
+        normalized_tags[normalized_key] = normalized_value
+    return normalized_tags
 
 
 def _value_or_attribute(

@@ -63,9 +63,18 @@ class OpenLineageHttpEmitter:
         timeout_seconds: float = 10.0,
         auth_header: str | None = None,
     ) -> None:
-        self._endpoint_url = endpoint_url
-        self._timeout_seconds = timeout_seconds
-        self._auth_header = auth_header
+        self._endpoint_url = _validate_lineage_endpoint_url(
+            endpoint_url=endpoint_url,
+            backend_type=self.backend_type,
+        )
+        self._timeout_seconds = _validate_lineage_timeout_seconds(
+            timeout_seconds=timeout_seconds,
+            backend_type=self.backend_type,
+        )
+        self._auth_header = _normalize_auth_header(
+            auth_header=auth_header,
+            backend_type=self.backend_type,
+        )
 
     def emit(
         self,
@@ -268,7 +277,7 @@ def _load_openlineage_http_backend_config_from_env() -> (
     if raw_backend_type is None or not raw_backend_type.strip():
         return None
 
-    backend_type = raw_backend_type.strip()
+    backend_type = raw_backend_type.strip().lower()
     if backend_type != OpenLineageHttpEmitter.backend_type:
         raise ConfigValidationError(
             message="Unsupported lineage backend type",
@@ -278,20 +287,14 @@ def _load_openlineage_http_backend_config_from_env() -> (
             },
         )
 
-    endpoint_url = _require_lineage_env_value(_LINEAGE_URL_ENV)
-    parsed_url = urlparse(endpoint_url)
-    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-        raise ConfigValidationError(
-            message="Lineage backend URL must be a valid http or https URL",
-            context={
-                "backend_type": backend_type,
-                "endpoint_url": endpoint_url,
-            },
-        )
+    endpoint_url = _validate_lineage_endpoint_url(
+        endpoint_url=_require_lineage_env_value(_LINEAGE_URL_ENV),
+        backend_type=backend_type,
+    )
 
     raw_policy = os.getenv(_LINEAGE_POLICY_ENV, LineageEmissionPolicy.best_effort.value)
     try:
-        emission_policy = LineageEmissionPolicy(raw_policy.strip())
+        emission_policy = LineageEmissionPolicy(raw_policy.strip().lower())
     except ValueError as exc:
         raise ConfigValidationError(
             message="Lineage emission policy is invalid",
@@ -313,27 +316,21 @@ def _load_openlineage_http_backend_config_from_env() -> (
                 "timeout_seconds": raw_timeout,
             },
         ) from exc
-    if timeout_seconds <= 0:
-        raise ConfigValidationError(
-            message="Lineage backend timeout must be greater than zero",
-            context={
-                "backend_type": backend_type,
-                "timeout_seconds": raw_timeout,
-            },
-        )
+    timeout_seconds = _validate_lineage_timeout_seconds(
+        timeout_seconds=timeout_seconds,
+        backend_type=backend_type,
+    )
 
-    auth_header = os.getenv(_LINEAGE_AUTH_HEADER_ENV)
-    if auth_header is not None and not auth_header.strip():
-        raise ConfigValidationError(
-            message="Lineage auth header must not be empty when configured",
-            context={"backend_type": backend_type},
-        )
+    auth_header = _normalize_auth_header(
+        auth_header=os.getenv(_LINEAGE_AUTH_HEADER_ENV),
+        backend_type=backend_type,
+    )
 
     return _OpenLineageHttpBackendConfig(
         endpoint_url=endpoint_url,
         emission_policy=emission_policy,
         timeout_seconds=timeout_seconds,
-        auth_header=auth_header.strip() if auth_header is not None else None,
+        auth_header=auth_header,
     )
 
 
@@ -345,3 +342,41 @@ def _require_lineage_env_value(variable_name: str) -> str:
             context={"variable_name": variable_name},
         )
     return value.strip()
+
+
+def _validate_lineage_endpoint_url(*, endpoint_url: str, backend_type: str) -> str:
+    normalized_url = endpoint_url.strip()
+    parsed_url = urlparse(normalized_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ConfigValidationError(
+            message="Lineage backend URL must be a valid http or https URL",
+            context={
+                "backend_type": backend_type,
+                "endpoint_url": endpoint_url,
+            },
+        )
+    return normalized_url
+
+
+def _validate_lineage_timeout_seconds(*, timeout_seconds: float, backend_type: str) -> float:
+    if timeout_seconds <= 0:
+        raise ConfigValidationError(
+            message="Lineage backend timeout must be greater than zero",
+            context={
+                "backend_type": backend_type,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+    return timeout_seconds
+
+
+def _normalize_auth_header(*, auth_header: str | None, backend_type: str) -> str | None:
+    if auth_header is None:
+        return None
+    normalized_header = auth_header.strip()
+    if not normalized_header:
+        raise ConfigValidationError(
+            message="Lineage auth header must not be empty when configured",
+            context={"backend_type": backend_type},
+        )
+    return normalized_header

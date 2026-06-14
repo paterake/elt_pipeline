@@ -23,6 +23,7 @@ _QUALITY_POLICY_ENV = "ELT_PIPELINE_QUALITY_POLICY"
 _QUALITY_ROW_COUNT_MIN_ENV = "ELT_PIPELINE_QUALITY_ROW_COUNT_MIN"
 _QUALITY_STAGES_ENV = "ELT_PIPELINE_QUALITY_STAGES"
 _QUALITY_ERROR_RECORDED_CONTEXT_KEY = "quality_error_recorded"
+_SUPPORTED_QUALITY_STAGES = frozenset({"normalize", "sql"})
 
 
 class QualityHookPolicy(str, Enum):
@@ -125,8 +126,14 @@ class RowCountQualityHook:
         row_count_min: int,
         enabled_stages: set[str] | frozenset[str] | None = None,
     ) -> None:
-        self._row_count_min = row_count_min
-        self._enabled_stages = _normalize_stage_set(enabled_stages or {"normalize", "sql"})
+        self._row_count_min = _validate_row_count_min(
+            row_count_min=row_count_min,
+            backend_type=self.backend_type,
+        )
+        self._enabled_stages = _validate_enabled_stages(
+            enabled_stages or {"normalize", "sql"},
+            backend_type=self.backend_type,
+        )
 
     def evaluate(self, *, request: QualityHookRequest) -> list[QualityCheckResult]:
         stage_name = request.stage.strip().lower()
@@ -454,31 +461,16 @@ def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:
             message="Data-quality row count minimum must be an integer",
             context={"backend_type": backend_type, "row_count_min": raw_row_count_min},
         ) from exc
-    if row_count_min < 0:
-        raise ConfigValidationError(
-            message="Data-quality row count minimum must be greater than or equal to zero",
-            context={"backend_type": backend_type, "row_count_min": raw_row_count_min},
-        )
+    row_count_min = _validate_row_count_min(
+        row_count_min=row_count_min,
+        backend_type=backend_type,
+    )
 
     raw_stages = os.getenv(_QUALITY_STAGES_ENV, "normalize,sql")
-    enabled_stages = _normalize_stage_set(raw_stages.split(","))
-    supported_stages = {"normalize", "sql"}
-    invalid_stages = sorted(stage for stage in enabled_stages if stage not in supported_stages)
-    if invalid_stages:
-        raise ConfigValidationError(
-            message="Data-quality hook stages contain unsupported values",
-            context={
-                "backend_type": backend_type,
-                "configured_stages": sorted(enabled_stages),
-                "invalid_stages": invalid_stages,
-                "supported_stages": sorted(supported_stages),
-            },
-        )
-    if not enabled_stages:
-        raise ConfigValidationError(
-            message="Data-quality hook stages must include at least one supported stage",
-            context={"backend_type": backend_type},
-        )
+    enabled_stages = _validate_enabled_stages(
+        raw_stages.split(","),
+        backend_type=backend_type,
+    )
 
     return _RowCountBackendConfig(
         row_count_min=row_count_min,
@@ -495,6 +487,47 @@ def _require_quality_env_value(variable_name: str) -> str:
             context={"variable_name": variable_name},
         )
     return value.strip()
+
+
+def _validate_row_count_min(*, row_count_min: int, backend_type: str) -> int:
+    if isinstance(row_count_min, bool) or not isinstance(row_count_min, int):
+        raise ConfigValidationError(
+            message="Data-quality row count minimum must be an integer",
+            context={"backend_type": backend_type, "row_count_min": row_count_min},
+        )
+    if row_count_min < 0:
+        raise ConfigValidationError(
+            message="Data-quality row count minimum must be greater than or equal to zero",
+            context={"backend_type": backend_type, "row_count_min": row_count_min},
+        )
+    return row_count_min
+
+
+def _validate_enabled_stages(
+    stages: set[str] | frozenset[str] | list[str],
+    *,
+    backend_type: str,
+) -> frozenset[str]:
+    enabled_stages = _normalize_stage_set(stages)
+    invalid_stages = sorted(
+        stage for stage in enabled_stages if stage not in _SUPPORTED_QUALITY_STAGES
+    )
+    if invalid_stages:
+        raise ConfigValidationError(
+            message="Data-quality hook stages contain unsupported values",
+            context={
+                "backend_type": backend_type,
+                "configured_stages": sorted(enabled_stages),
+                "invalid_stages": invalid_stages,
+                "supported_stages": sorted(_SUPPORTED_QUALITY_STAGES),
+            },
+        )
+    if not enabled_stages:
+        raise ConfigValidationError(
+            message="Data-quality hook stages must include at least one supported stage",
+            context={"backend_type": backend_type},
+        )
+    return enabled_stages
 
 
 def _normalize_stage_set(stages: set[str] | frozenset[str] | list[str]) -> frozenset[str]:
