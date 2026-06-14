@@ -196,6 +196,96 @@ class SubprocessCliInvoker:
         )
 
 
+def build_airflow_orchestration_metadata(
+    context: Mapping[str, Any] | None = None,
+) -> OrchestrationMetadata:
+    source = context or {}
+    dag = source.get("dag")
+    dag_run = source.get("dag_run")
+    task = source.get("task")
+    task_instance = source.get("task_instance") or source.get("ti")
+
+    dag_id = _coerce_optional_string(
+        _value_or_attribute(source.get("dag_id"), dag, "dag_id")
+    )
+    flow_run_id = _coerce_optional_string(
+        _value_or_attribute(source.get("run_id"), dag_run, "run_id")
+    )
+    task_id = _coerce_optional_string(
+        _value_or_attribute(source.get("task_id"), task, "task_id")
+        or _value_or_attribute(None, task_instance, "task_id")
+    )
+    try_number = _coerce_optional_int(
+        _value_or_attribute(source.get("try_number"), task_instance, "try_number")
+    )
+
+    tags: dict[str, str] = {}
+    dag_tags = _coerce_tag_sequence(_value_or_attribute(None, dag, "tags"))
+    if dag_tags:
+        tags["dag_tags"] = ",".join(dag_tags)
+    logical_date = _coerce_optional_string(source.get("logical_date"))
+    if logical_date is not None:
+        tags["logical_date"] = logical_date
+
+    return OrchestrationMetadata(
+        platform="airflow",
+        flow_name=dag_id,
+        flow_run_id=flow_run_id,
+        task_name=task_id,
+        task_attempt=try_number,
+        tags=tags,
+    )
+
+
+@dataclass
+class AirflowCliWrapper:
+    repo_root: Path
+    invoker: OrchestrationCliInvoker = field(default_factory=SubprocessCliInvoker)
+    environment_overrides: dict[str, str] = field(default_factory=dict)
+
+    def build_request(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        airflow_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+    ) -> CliInvocationRequest:
+        combined_environment = dict(self.environment_overrides)
+        if environment_overrides is not None:
+            combined_environment.update(
+                {key: str(value) for key, value in environment_overrides.items()}
+            )
+        return CliInvocationRequest(
+            subcommand=tuple(str(value) for value in subcommand),
+            arguments=tuple(str(value) for value in arguments),
+            cwd=self.repo_root.resolve(),
+            environment_overrides=combined_environment,
+            orchestration_metadata=build_airflow_orchestration_metadata(airflow_context),
+        )
+
+    def invoke(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        airflow_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = None,
+        check: bool = True,
+    ) -> CliInvocationResult:
+        request = self.build_request(
+            subcommand=subcommand,
+            arguments=arguments,
+            airflow_context=airflow_context,
+            environment_overrides=environment_overrides,
+        )
+        result = self.invoker.invoke(request, timeout_seconds=timeout_seconds)
+        if check:
+            result.raise_for_exit_code()
+        return result
+
+
 def _normalize_env_value(value: str | None) -> str | None:
     if value is None:
         return None
@@ -259,6 +349,45 @@ def _parse_tags(*, raw_value: str | None, configured_fields: Sequence[str]) -> d
             },
         )
     return decoded
+
+
+def _value_or_attribute(
+    explicit_value: Any,
+    obj: Any,
+    attribute_name: str,
+) -> Any:
+    if explicit_value is not None:
+        return explicit_value
+    if obj is None:
+        return None
+    return getattr(obj, attribute_name, None)
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        value = value.isoformat()
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 1 else None
+
+
+def _coerce_tag_sequence(value: Any) -> list[str]:
+    if value is None or isinstance(value, str):
+        return []
+    if not isinstance(value, Sequence):
+        return []
+    return [normalized for item in value if (normalized := _coerce_optional_string(item))]
 
 
 def _coerce_strings(args: Sequence[str] | str) -> Sequence[str]:

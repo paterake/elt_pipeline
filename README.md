@@ -78,6 +78,7 @@ uv run elt-pipeline --help
 - `tests/`: automated coverage for connectors, normalization, SQL, and CLI flows
 - `examples/configs/`: runnable local connector configs for object storage, SQL, Kafka, and REST demos
 - `examples/data/`: bundled sample inputs for local connector workflows
+- `examples/orchestration/airflow/reference_dag.py`: reference Airflow wrapper calling the authoritative CLI
 - `examples/publish/local_demo/`: example `level5` publish definitions for local file-based exports
 - `examples/sql/local_demo/`: example SQL model package for local execution
 - `examples/schedules/local_demo.yaml`: example schedule plan wiring the CLI stages together
@@ -181,6 +182,53 @@ Supported variables:
 - `ELT_PIPELINE_LINEAGE_POLICY`: `best_effort` or `blocking`
 - `ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS`: positive request timeout in seconds
 - `ELT_PIPELINE_LINEAGE_AUTH_HEADER`: optional `Authorization` header value sent with requests
+
+## Optional Orchestration Wrapper
+
+The runtime now includes one reference orchestration integration for Airflow in addition to the generic subprocess boundary under `elt_pipeline.integrations.orchestration`.
+
+- The CLI remains authoritative; the wrapper still invokes `python -m elt_pipeline ...`.
+- Local `runs/.../audit.json`, `logs.jsonl`, `lineage.jsonl`, and checkpoint artifacts remain authoritative.
+- Airflow metadata is attached as supplemental run attributes through environment variables, so downstream audit records keep the same platform-owned `run_id`.
+- Airflow is not a base dependency of this project; the bundled example DAG is only for environments that install Airflow separately.
+
+Reference files:
+
+- `examples/orchestration/airflow/reference_dag.py`
+- `src/elt_pipeline/integrations/orchestration.py`
+
+Reference usage inside an Airflow task:
+
+```python
+from pathlib import Path
+
+from elt_pipeline.integrations import AirflowCliWrapper
+
+wrapper = AirflowCliWrapper(repo_root=Path("/path/to/elt_pipeline"))
+
+
+def run_publish(**context) -> None:
+    wrapper.invoke(
+        subcommand=("publish", "run"),
+        arguments=(
+            "/path/to/publish_defs",
+            "--database",
+            "/path/to/warehouse.db",
+            "--root-path",
+            "/path/to/runtime",
+            "--job-name",
+            "airflow-publish-run",
+        ),
+        airflow_context=context,
+        timeout_seconds=300.0,
+    )
+```
+
+Disablement and failure behavior:
+
+- Do nothing to disable it; omit the wrapper and run the CLI directly.
+- If the wrapped CLI command fails, the wrapper raises the same structured runtime error used elsewhere in the platform.
+- Even when an Airflow-managed run fails, operators should inspect local run artifacts first because they remain the source of truth for replay and investigation.
 
 ## Runnable Examples
 

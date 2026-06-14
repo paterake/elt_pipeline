@@ -207,6 +207,22 @@ Operator guidance:
 - Set `ELT_PIPELINE_LINEAGE_URL` to the full OpenLineage-compatible HTTP endpoint, such as Marquez at `http://localhost:5000/api/v1/lineage`.
 - Validate connectivity with a small CLI run first; if the backend is unavailable, the stage audit still lets operators confirm whether the core stage itself succeeded.
 
+## Optional Airflow Wrapper Operations
+
+The repository now includes one reference Airflow wrapper that preserves the authoritative CLI contract.
+
+- Reference helper: `elt_pipeline.integrations.AirflowCliWrapper`
+- Reference example DAG: `examples/orchestration/airflow/reference_dag.py`
+- Execution model: Airflow calls `python -m elt_pipeline ...` through the wrapper; it does not replace the platform CLI with an Airflow-native runtime API.
+
+Operator guidance:
+
+- Keep local `runs/.../audit.json`, `logs.jsonl`, and `lineage.jsonl` as the system of record even when runs are launched from Airflow.
+- Pass the same `--root-path`, package paths, selection flags, and window arguments you would use in a direct CLI run; the wrapper is intentionally thin.
+- Expect supplemental audit attributes such as `orchestration_platform`, `orchestration_flow_name`, `orchestration_flow_run_id`, and `orchestration_task_name` when the wrapper injects Airflow context.
+- Disable the integration by running the CLI directly or by removing the wrapper from the Airflow DAG; no platform config change is required.
+- If an Airflow task fails, inspect the local run artifacts first to determine whether the core stage failed or whether the failure happened at the wrapper/orchestrator layer.
+
 ## Publish Operator Guidance
 
 Use `publish validate` when reviewing new or changed publish packages before touching runtime outputs.

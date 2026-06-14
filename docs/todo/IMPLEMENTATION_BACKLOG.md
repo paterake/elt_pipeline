@@ -218,7 +218,7 @@ This phase is approved for implementation, provided local-first behavior and the
 - [x] Define adapter boundaries for optional lineage backend emission while preserving local-first runtime behavior
 - [x] Add one reference lineage backend integration aligned to the OpenLineage-compatible event contract
 - [x] Define adapter boundaries for optional orchestration wrappers while keeping the CLI contract authoritative
-- [ ] Add one reference orchestration integration that invokes the existing CLI entrypoints without redefining runtime contracts
+- [x] Add one reference orchestration integration that invokes the existing CLI entrypoints without redefining runtime contracts
 - [ ] Define optional data-quality hook points around normalization and SQL stage outputs
 
 ### Phase 15: `level5` Publish and Export Capability
@@ -289,6 +289,7 @@ Use this when resuming in a new session:
 - The current Phase 14 implementation now routes lineage writes through an internal adapter boundary that preserves local `lineage.jsonl` artifacts and records optional remote-emission failures in local logs/errors.
 - The current Phase 14 implementation now includes a reference `openlineage_http` backend integration enabled by environment variables, preserving local-first lineage artifacts and supporting `best_effort` or `blocking` remote emission policy.
 - The current Phase 14 implementation now includes an orchestration wrapper boundary in `elt_pipeline.integrations.orchestration` that standardizes CLI subprocess invocation and optional orchestration metadata propagation via environment variables while keeping the CLI authoritative.
+- The current Phase 14 implementation now includes a reference `AirflowCliWrapper` integration and bundled `examples/orchestration/airflow/reference_dag.py`, both of which call existing CLI entrypoints and attach Airflow metadata without requiring Airflow in the base install.
 - Optional Phase 14 integration work must preserve local-first execution, keep the CLI authoritative, and treat local audit/log/lineage artifacts as first-class even when external systems are added.
 
 ## Open Decisions Still Allowed During Implementation

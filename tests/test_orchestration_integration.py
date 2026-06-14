@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from elt_pipeline.integrations import (
+    AirflowCliWrapper,
     CliInvocationRequest,
     OrchestrationMetadata,
     SubprocessCliInvoker,
+    build_airflow_orchestration_metadata,
     load_orchestration_metadata_from_env,
 )
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
@@ -170,3 +174,89 @@ def test_show_run_context_includes_orchestration_metadata_from_env(
     assert payload["attributes"]["orchestration_platform"] == "prefect"
     assert payload["attributes"]["orchestration_flow_name"] == "nightly-normalize"
     assert payload["attributes"]["orchestration_task_name"] == "normalize-orders"
+
+
+def test_build_airflow_orchestration_metadata_maps_airflow_context() -> None:
+    metadata = build_airflow_orchestration_metadata(
+        {
+            "dag": SimpleNamespace(dag_id="elt_pipeline_daily", tags=["finance", "nightly"]),
+            "dag_run": SimpleNamespace(run_id="manual__2026-06-14T00:00:00+00:00"),
+            "task_instance": SimpleNamespace(task_id="publish_level5", try_number=4),
+            "logical_date": datetime(2026, 6, 14, tzinfo=UTC),
+        }
+    )
+
+    assert metadata == OrchestrationMetadata(
+        platform="airflow",
+        flow_name="elt_pipeline_daily",
+        flow_run_id="manual__2026-06-14T00:00:00+00:00",
+        task_name="publish_level5",
+        task_attempt=4,
+        tags={
+            "dag_tags": "finance,nightly",
+            "logical_date": "2026-06-14T00:00:00+00:00",
+        },
+    )
+
+
+def test_airflow_cli_wrapper_build_request_uses_repo_root_and_airflow_metadata() -> None:
+    wrapper = AirflowCliWrapper(repo_root=REPO_ROOT)
+
+    request = wrapper.build_request(
+        subcommand=("publish", "run"),
+        arguments=(
+            "/tmp/publish-package",
+            "--database",
+            "/tmp/demo.db",
+        ),
+        airflow_context={
+            "dag_id": "daily_platform",
+            "run_id": "scheduled__2026-06-14",
+            "task": SimpleNamespace(task_id="publish_customers"),
+            "ti": SimpleNamespace(try_number=2),
+        },
+        environment_overrides={"EXTRA_FLAG": "1"},
+    )
+
+    assert request.cwd == REPO_ROOT
+    assert request.orchestration_metadata == OrchestrationMetadata(
+        platform="airflow",
+        flow_name="daily_platform",
+        flow_run_id="scheduled__2026-06-14",
+        task_name="publish_customers",
+        task_attempt=2,
+        tags={},
+    )
+    assert request.environment_overrides["EXTRA_FLAG"] == "1"
+    assert request.argv()[3:] == (
+        "publish",
+        "run",
+        "/tmp/publish-package",
+        "--database",
+        "/tmp/demo.db",
+    )
+
+
+def test_airflow_cli_wrapper_invokes_show_run_context_end_to_end() -> None:
+    result = AirflowCliWrapper(repo_root=REPO_ROOT).invoke(
+        subcommand=("show-run-context",),
+        arguments=(
+            "--stage",
+            "publish",
+            "--job-name",
+            "publish-orders",
+        ),
+        airflow_context={
+            "dag_id": "elt_pipeline_daily",
+            "run_id": "scheduled__2026-06-14",
+            "task_instance": SimpleNamespace(task_id="publish_orders", try_number=3),
+        },
+        timeout_seconds=10.0,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["attributes"]["orchestration_platform"] == "airflow"
+    assert payload["attributes"]["orchestration_flow_name"] == "elt_pipeline_daily"
+    assert payload["attributes"]["orchestration_flow_run_id"] == "scheduled__2026-06-14"
+    assert payload["attributes"]["orchestration_task_name"] == "publish_orders"
+    assert payload["attributes"]["orchestration_task_attempt"] == 3
