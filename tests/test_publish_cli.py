@@ -5,7 +5,6 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from textwrap import dedent
 
 
 def test_publish_validate_command(tmp_path: Path) -> None:
@@ -176,7 +175,9 @@ def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path) -> Non
     assert second_payload["selection"]["rerun_run_id"] == first_payload["run_id"]
     assert second_payload["publish_count"] == 1
 
-    rerun_audit = json.loads(Path(second_payload["artifacts"]["audit_path"]).read_text(encoding="utf-8"))
+    rerun_audit = json.loads(
+        Path(second_payload["artifacts"]["audit_path"]).read_text(encoding="utf-8")
+    )
     assert rerun_audit["context"]["rerun_of_run_id"] == first_payload["run_id"]
     assert rerun_audit["context"]["selected_publish_ids"] == "sales.daily_order_export"
 
@@ -268,38 +269,35 @@ def _write_publish_package(
     package_root = base_path / "publish_defs"
     publish_dir = package_root / "sales" / "daily_order_export"
     publish_dir.mkdir(parents=True, exist_ok=True)
-    (publish_dir / "manifest.yaml").write_text(
-        dedent(
-            f"""
-            name: daily_order_export
-            stage: level5
-            domain: sales
-            version: v1
-            source:
-              stage: level4
-              dataset: order_summary
-              selection_mode: direct
-            delivery:
-              target_type: local_filesystem
-              output_format: {output_format}
-              path_template: exports/{{domain}}/{{publish_name}}/daily_order_export.{{output_extension}}
-              replacement_mode: {replacement_mode}
-            owner:
-              owning_domain: sales
-              owner_team: analytics_platform
-            consumer_label: finance_consumer
-            delivery_purpose: daily_summary
-            columns:
-              - order_date
-              - total_amount
-            validation:
-              required_columns:
-                - order_date
-                - total_amount
-            """
-        ).strip(),
-        encoding="utf-8",
-    )
+    manifest_lines = [
+        "name: daily_order_export",
+        "stage: level5",
+        "domain: sales",
+        "version: v1",
+        "source:",
+        "  stage: level4",
+        "  dataset: order_summary",
+        "  selection_mode: direct",
+        "delivery:",
+        "  target_type: local_filesystem",
+        f"  output_format: {output_format}",
+        "  path_template: exports/{domain}/{publish_name}/daily_order_export."
+        "{output_extension}",
+        f"  replacement_mode: {replacement_mode}",
+        "owner:",
+        "  owning_domain: sales",
+        "  owner_team: analytics_platform",
+        "consumer_label: finance_consumer",
+        "delivery_purpose: daily_summary",
+        "columns:",
+        "  - order_date",
+        "  - total_amount",
+        "validation:",
+        "  required_columns:",
+        "    - order_date",
+        "    - total_amount",
+    ]
+    (publish_dir / "manifest.yaml").write_text("\n".join(manifest_lines), encoding="utf-8")
     return package_root
 
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,8 +40,15 @@ def explain_publish_definitions(
     run_context: RunContext,
     definitions: list[DiscoveredPublishDefinition],
 ) -> list[dict[str, object]]:
-    return [
-        {
+    plans: list[dict[str, object]] = []
+    for definition in definitions:
+        run_scoped_path = _resolve_run_scoped_output_path(root_path, run_context, definition)
+        stable_delivery_path = (
+            _resolve_stable_delivery_path(root_path, run_context, definition)
+            if _supports_stable_delivery_copy(definition.manifest.delivery.replacement_mode)
+            else None
+        )
+        payload: dict[str, object] = {
             "publish_id": definition.publish_id,
             "manifest_path": str(definition.manifest_path),
             "query_path": str(definition.query_path) if definition.query_path is not None else None,
@@ -48,15 +56,23 @@ def explain_publish_definitions(
             "selection_mode": definition.manifest.source.selection_mode.value,
             "output_format": definition.manifest.delivery.output_format.value,
             "replacement_mode": definition.manifest.delivery.replacement_mode.value,
-            "run_scoped_path": str(_resolve_run_scoped_output_path(root_path, run_context, definition)),
+            "run_scoped_path": str(run_scoped_path),
             "stable_delivery_path": (
-                str(_resolve_stable_delivery_path(root_path, run_context, definition))
-                if _supports_stable_delivery_copy(definition.manifest.delivery.replacement_mode)
-                else None
+                str(stable_delivery_path) if stable_delivery_path is not None else None
             ),
         }
-        for definition in definitions
-    ]
+        packaging = definition.manifest.delivery.packaging
+        if packaging is not None and packaging.archive_format is not None:
+            archive_extension = packaging.archive_format.value
+            archive_run_scoped_path = run_scoped_path.with_suffix(f".{archive_extension}")
+            payload["archive_run_scoped_path"] = str(archive_run_scoped_path)
+            payload["archive_stable_delivery_path"] = (
+                str(stable_delivery_path.with_suffix(f".{archive_extension}"))
+                if stable_delivery_path is not None
+                else None
+            )
+        plans.append(payload)
+    return plans
 
 
 def run_publish_definitions_locally(
@@ -139,7 +155,9 @@ def run_publish_definitions_locally(
                     definition=definition,
                 )
                 results.append(result)
-                artifacts.export_manifest_path = result.artifacts[0].run_scoped_path.parent / "manifest.json"
+                artifacts.export_manifest_path = (
+                    result.artifacts[0].run_scoped_path.parent / "manifest.json"
+                )
         completed_at = datetime.now(tz=UTC)
     except PipelineError as exc:
         completed_at = datetime.now(tz=UTC)
@@ -206,9 +224,15 @@ def run_publish_definitions_locally(
                     "selected_publish_ids": ",".join(
                         definition.publish_id for definition in definitions
                     ),
-                    "window_start": _string_or_none(run_context.attributes.get("window_start")) or "",
-                    "window_end": _string_or_none(run_context.attributes.get("window_end")) or "",
-                    "window_label": _string_or_none(run_context.attributes.get("window_label")) or "",
+                    "window_start": (
+                        _string_or_none(run_context.attributes.get("window_start")) or ""
+                    ),
+                    "window_end": (
+                        _string_or_none(run_context.attributes.get("window_end")) or ""
+                    ),
+                    "window_label": (
+                        _string_or_none(run_context.attributes.get("window_label")) or ""
+                    ),
                     "checkpoint_mode": _string_or_none(
                         run_context.attributes.get("checkpoint_mode")
                     )
@@ -299,9 +323,10 @@ def _run_single_publish_definition(
     if definition.manifest.delivery.output_format not in {
         PublishOutputFormat.csv,
         PublishOutputFormat.jsonl,
+        PublishOutputFormat.tsv,
     }:
         raise ConfigValidationError(
-            message="The current publish runtime only supports csv and jsonl outputs",
+            message="The current publish runtime only supports csv, jsonl, and tsv outputs",
             context={
                 "publish_id": definition.publish_id,
                 "output_format": definition.manifest.delivery.output_format.value,
@@ -327,7 +352,11 @@ def _run_single_publish_definition(
     cursor = connection.execute(sql_text)
     column_names = [str(description[0]) for description in cursor.description or []]
     rows = cursor.fetchall()
-    validations = _validate_publish_output(definition=definition, column_names=column_names, rows=rows)
+    validations = _validate_publish_output(
+        definition=definition,
+        column_names=column_names,
+        rows=rows,
+    )
 
     run_scoped_path = _resolve_run_scoped_output_path(root_path, run_context, definition)
     stable_delivery_path = (
@@ -351,14 +380,54 @@ def _run_single_publish_definition(
         stable_delivery_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(run_scoped_path, stable_delivery_path)
 
-    artifact = PublishArtifactRecord(
-        output_format=definition.manifest.delivery.output_format,
-        run_scoped_path=run_scoped_path,
-        stable_delivery_path=stable_delivery_path,
-        file_size_bytes=file_size_bytes,
-        row_count=len(rows),
-        checksum_sha256=checksum_sha256,
-    )
+    artifacts: list[PublishArtifactRecord] = [
+        PublishArtifactRecord(
+            output_format=definition.manifest.delivery.output_format,
+            run_scoped_path=run_scoped_path,
+            stable_delivery_path=stable_delivery_path,
+            file_size_bytes=file_size_bytes,
+            row_count=len(rows),
+            checksum_sha256=checksum_sha256,
+        )
+    ]
+
+    if (
+        definition.manifest.delivery.packaging is not None
+        and definition.manifest.delivery.packaging.archive_format is not None
+    ):
+        archive_extension = definition.manifest.delivery.packaging.archive_format.value
+        archive_run_scoped_path = run_scoped_path.with_suffix(f".{archive_extension}")
+        archive_stable_delivery_path = (
+            stable_delivery_path.with_suffix(f".{archive_extension}")
+            if stable_delivery_path is not None
+            else None
+        )
+        with zipfile.ZipFile(
+            archive_run_scoped_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as archive_handle:
+            archive_handle.write(run_scoped_path, arcname=run_scoped_path.name)
+
+        archive_checksum_sha256 = hashlib.sha256(
+            archive_run_scoped_path.read_bytes()
+        ).hexdigest()
+        archive_file_size_bytes = archive_run_scoped_path.stat().st_size
+
+        if archive_stable_delivery_path is not None:
+            archive_stable_delivery_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(archive_run_scoped_path, archive_stable_delivery_path)
+
+        artifacts.append(
+            PublishArtifactRecord(
+                output_format=PublishOutputFormat.zip,
+                run_scoped_path=archive_run_scoped_path,
+                stable_delivery_path=archive_stable_delivery_path,
+                file_size_bytes=archive_file_size_bytes,
+                row_count=len(rows),
+                checksum_sha256=archive_checksum_sha256,
+            )
+        )
     manifest_path = run_scoped_path.parent / "manifest.json"
     output_manifest = PublishOutputManifest(
         run_id=run_context.run_id,
@@ -380,7 +449,7 @@ def _run_single_publish_definition(
         consumer_label=definition.manifest.consumer_label,
         delivery_purpose=definition.manifest.delivery_purpose,
         validation_results=validations,
-        artifacts=[artifact],
+        artifacts=artifacts,
     )
     manifest_path.write_text(
         json.dumps(output_manifest.model_dump(mode="json"), indent=2, sort_keys=True),
@@ -403,6 +472,7 @@ def _run_single_publish_definition(
                 "stable_delivery_path": (
                     str(stable_delivery_path) if stable_delivery_path is not None else ""
                 ),
+                "packaged_artifact_count": len(artifacts),
             },
         ),
     )
@@ -431,13 +501,32 @@ def _run_single_publish_definition(
                         "row_count": len(rows),
                     },
                 )
+            ]
+            + [
+                DatasetRef(
+                    namespace="file",
+                    name=artifact.run_scoped_path.as_posix(),
+                    facets={
+                        "publish_id": definition.publish_id,
+                        "manifest_path": manifest_path.as_posix(),
+                        "output_format": artifact.output_format.value,
+                        "row_count": artifact.row_count,
+                        "stable_delivery_path": (
+                            artifact.stable_delivery_path.as_posix()
+                            if artifact.stable_delivery_path is not None
+                            else ""
+                        ),
+                    },
+                )
+                for artifact in artifacts
+                if artifact.run_scoped_path != run_scoped_path
             ],
         ),
     )
     return PublishRunResult(
         publish_id=definition.publish_id,
         row_count=len(rows),
-        artifacts=[artifact],
+        artifacts=artifacts,
         validations=validations,
     )
 
@@ -507,6 +596,14 @@ def _write_publish_output(
                 writer.writerow(_row_to_serializable_mapping(row=row, column_names=column_names))
         return
 
+    if output_format == PublishOutputFormat.tsv:
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=column_names, delimiter="\t")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(_row_to_serializable_mapping(row=row, column_names=column_names))
+        return
+
     if output_format == PublishOutputFormat.jsonl:
         with output_path.open("w", encoding="utf-8", newline="") as handle:
             for row in rows:
@@ -535,7 +632,9 @@ def _row_to_serializable_mapping(
 
 def _build_publish_sql(definition: DiscoveredPublishDefinition) -> str:
     if definition.manifest.source.selection_mode == PublishSelectionMode.direct:
-        selected_columns = ", ".join(definition.manifest.columns) if definition.manifest.columns else "*"
+        selected_columns = (
+            ", ".join(definition.manifest.columns) if definition.manifest.columns else "*"
+        )
         return f"select {selected_columns} from {definition.manifest.source.dataset}"
     if not definition.query_text:
         raise ConfigValidationError(
@@ -573,7 +672,10 @@ def _resolve_stable_delivery_path(
     return root_path / "artifacts" / "level5" / rendered_path
 
 
-def _render_output_path_template(run_context: RunContext, definition: DiscoveredPublishDefinition) -> Path:
+def _render_output_path_template(
+    run_context: RunContext,
+    definition: DiscoveredPublishDefinition,
+) -> Path:
     window_label = (
         _string_or_none(run_context.attributes.get("window_label")) or "open_window"
     )

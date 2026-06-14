@@ -262,8 +262,9 @@ The next implementation session should aim to complete:
 
 A later session should aim to complete:
 
-- [ ] Add packaging/archive support and broader file-based delivery formats
-- [ ] Add operator runbook updates, runnable examples, and focused publish/runtime tests for those additional modes
+- [x] Add packaging/archive support and broader file-based delivery formats (zip bundle + tsv)
+- [x] Add focused publish/runtime tests for zip bundle + tsv modes
+- [ ] Add operator runbook updates and runnable examples for zip bundle + tsv publish definitions
 
 ## Session Handoff Notes
 

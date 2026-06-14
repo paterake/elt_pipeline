@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import zipfile
 from pathlib import Path
 from textwrap import dedent
 
@@ -73,7 +74,9 @@ def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(tmp_p
     assert manifest_payload["artifacts"][0]["row_count"] == 2
 
 
-def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(tmp_path: Path) -> None:
+def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(
+    tmp_path: Path,
+) -> None:
     database_path = tmp_path / "warehouse.db"
     _seed_order_summary_table(database_path)
     package_root = _write_publish_package(
@@ -106,6 +109,74 @@ def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(tmp
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest_payload["output_format"] == "jsonl"
     assert manifest_payload["artifacts"][0]["stable_delivery_path"] is None
+
+
+def test_run_publish_definitions_locally_writes_tsv_manifest_and_artifacts(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+    package_root = _write_publish_package(
+        tmp_path,
+        output_format="tsv",
+    )
+    definitions = discover_publish_definitions(package_root)
+
+    result = run_publish_definitions_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
+        environment="default",
+        package_path=package_root,
+        database_path=database_path,
+        definitions=definitions,
+    )
+
+    artifact = result.results[0].artifacts[0]
+    manifest_path = artifact.run_scoped_path.parent / "manifest.json"
+    header = artifact.run_scoped_path.read_text(encoding="utf-8").splitlines()[0]
+
+    assert artifact.output_format.value == "tsv"
+    assert artifact.run_scoped_path.suffix == ".tsv"
+    assert "\t" in header
+    assert manifest_path.exists()
+
+
+def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+    package_root = _write_publish_package(
+        tmp_path,
+        replacement_mode="overwrite_in_place",
+        packaging_archive_format="zip",
+    )
+    definitions = discover_publish_definitions(package_root)
+
+    result = run_publish_definitions_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
+        environment="default",
+        package_path=package_root,
+        database_path=database_path,
+        definitions=definitions,
+    )
+
+    artifacts_by_format = {
+        artifact.output_format.value: artifact for artifact in result.results[0].artifacts
+    }
+    assert set(artifacts_by_format) == {"csv", "zip"}
+
+    zip_artifact = artifacts_by_format["zip"]
+    assert zip_artifact.run_scoped_path.suffix == ".zip"
+    assert zip_artifact.run_scoped_path.exists()
+    assert zip_artifact.stable_delivery_path is not None
+    assert zip_artifact.stable_delivery_path.exists()
+
+    with zipfile.ZipFile(zip_artifact.run_scoped_path, "r") as handle:
+        assert any(member.endswith(".csv") for member in handle.namelist())
+
+    manifest_path = zip_artifact.run_scoped_path.parent / "manifest.json"
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert sorted(
+        artifact["output_format"] for artifact in manifest_payload["artifacts"]
+    ) == ["csv", "zip"]
 
 
 def test_run_publish_definitions_locally_appends_new_delivery_artifacts(tmp_path: Path) -> None:
@@ -155,42 +226,46 @@ def _write_publish_package(
     include_query: bool = True,
     replacement_mode: str = "versioned_delivery",
     output_format: str = "csv",
+    packaging_archive_format: str | None = None,
 ) -> Path:
     package_root = base_path / "publish_defs"
     publish_dir = package_root / "sales" / "daily_order_export"
     publish_dir.mkdir(parents=True, exist_ok=True)
-    (publish_dir / "manifest.yaml").write_text(
-        dedent(
-            f"""
-            name: daily_order_export
-            stage: level5
-            domain: sales
-            version: v1
-            source:
-              stage: level4
-              dataset: order_summary
-              selection_mode: {selection_mode}
-            delivery:
-              target_type: local_filesystem
-              output_format: {output_format}
-              path_template: exports/{{domain}}/{{publish_name}}/daily_order_export.{{output_extension}}
-              replacement_mode: {replacement_mode}
-            owner:
-              owning_domain: sales
-              owner_team: analytics_platform
-            consumer_label: finance_consumer
-            delivery_purpose: daily_summary
-            columns:
-              - order_date
-              - total_amount
-            validation:
-              required_columns:
-                - order_date
-                - total_amount
-            """
-        ).strip(),
-        encoding="utf-8",
-    )
+    manifest_lines = [
+        "name: daily_order_export",
+        "stage: level5",
+        "domain: sales",
+        "version: v1",
+        "source:",
+        "  stage: level4",
+        "  dataset: order_summary",
+        f"  selection_mode: {selection_mode}",
+        "delivery:",
+        "  target_type: local_filesystem",
+        f"  output_format: {output_format}",
+        "  path_template: exports/{domain}/{publish_name}/daily_order_export."
+        "{output_extension}",
+        f"  replacement_mode: {replacement_mode}",
+        "owner:",
+        "  owning_domain: sales",
+        "  owner_team: analytics_platform",
+        "consumer_label: finance_consumer",
+        "delivery_purpose: daily_summary",
+        "columns:",
+        "  - order_date",
+        "  - total_amount",
+        "validation:",
+        "  required_columns:",
+        "    - order_date",
+        "    - total_amount",
+    ]
+    if packaging_archive_format is not None:
+        insert_at = manifest_lines.index(f"  replacement_mode: {replacement_mode}") + 1
+        manifest_lines[insert_at:insert_at] = [
+            "  packaging:",
+            f"    archive_format: {packaging_archive_format}",
+        ]
+    (publish_dir / "manifest.yaml").write_text("\n".join(manifest_lines), encoding="utf-8")
     if selection_mode == "query" and include_query:
         (publish_dir / "query.sql").write_text(
             dedent(

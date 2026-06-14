@@ -794,7 +794,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if missing_publish_ids:
                     raise ConfigValidationError(
-                        message="Rerun selection references publish definitions that are not present",
+                        message=(
+                            "Rerun selection references publish definitions "
+                            "that are not present"
+                        ),
                         context={
                             "package_path": str(args.package_path),
                             "rerun_run_id": rerun_run_id,

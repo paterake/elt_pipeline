@@ -18,6 +18,16 @@ class PublishSelectionMode(str, Enum):
 class PublishOutputFormat(str, Enum):
     csv = "csv"
     jsonl = "jsonl"
+    tsv = "tsv"
+    zip = "zip"
+
+
+class PublishArchiveFormat(str, Enum):
+    zip = "zip"
+
+
+class PublishPackaging(BaseModel):
+    archive_format: PublishArchiveFormat | None = None
 
 
 class PublishTargetType(str, Enum):
@@ -62,6 +72,16 @@ class PublishDelivery(BaseModel):
     output_format: PublishOutputFormat
     path_template: str
     replacement_mode: PublishReplacementMode = PublishReplacementMode.versioned_delivery
+    packaging: PublishPackaging | None = None
+
+    @field_validator("output_format")
+    @classmethod
+    def validate_output_format(cls, value: PublishOutputFormat) -> PublishOutputFormat:
+        if value == PublishOutputFormat.zip:
+            raise ValueError(
+                "delivery.output_format must not be 'zip'; use delivery.packaging.archive_format"
+            )
+        return value
 
     @field_validator("path_template")
     @classmethod
@@ -157,7 +177,8 @@ class PublishManifest(BaseModel):
             ]
             if missing_columns:
                 raise ValueError(
-                    "validation.required_columns must be a subset of columns when columns are declared"
+                    "validation.required_columns must be a subset of columns "
+                    "when columns are declared"
                 )
         return self
 
