@@ -27,9 +27,12 @@ from elt_pipeline.ingest import (
     RestRequestWindow,
     SqlConnectorConfig,
 )
-from elt_pipeline.integrations import build_lineage_adapter
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
+from elt_pipeline.integrations import (
+    build_lineage_adapter,
+    load_orchestration_metadata_from_env,
+)
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.publish import (
@@ -344,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
                 stage=StageName(args.stage),
                 job_name=args.job_name,
                 trigger_type=args.trigger_type,
+                attributes=_with_orchestration_attributes(),
             )
             print(json.dumps(context.model_dump(mode="json"), indent=2))
             return 0
@@ -544,14 +548,16 @@ def main(argv: list[str] | None = None) -> int:
                 stage=StageName.sql,
                 job_name=getattr(args, "job_name", "sql-compile"),
                 trigger_type=getattr(args, "trigger_type", "manual"),
-                attributes={
-                    "environment": sql_environment,
-                    "package_path": str(args.package_path),
-                    "stage_selection": selection_stage or "",
-                    "domain_selection": selection_domain or "",
-                    "model_selection": selection_model or "",
-                    "rerun_of_run_id": rerun_run_id or "",
-                },
+                attributes=_with_orchestration_attributes(
+                    {
+                        "environment": sql_environment,
+                        "package_path": str(args.package_path),
+                        "stage_selection": selection_stage or "",
+                        "domain_selection": selection_domain or "",
+                        "model_selection": selection_model or "",
+                        "rerun_of_run_id": rerun_run_id or "",
+                    }
+                ),
             )
             extra_values = (
                 rerun_selection.extra_values
@@ -834,12 +840,14 @@ def main(argv: list[str] | None = None) -> int:
                 trigger_type=getattr(args, "trigger_type", "manual"),
                 window=cli_window,
                 backfill=publish_backfill,
-                attributes={
-                    "package_path": str(args.package_path),
-                    "domain_selection": selection_domain or "",
-                    "publish_selection": selection_publish or "",
-                    "rerun_of_run_id": rerun_run_id or "",
-                },
+                attributes=_with_orchestration_attributes(
+                    {
+                        "package_path": str(args.package_path),
+                        "domain_selection": selection_domain or "",
+                        "publish_selection": selection_publish or "",
+                        "rerun_of_run_id": rerun_run_id or "",
+                    }
+                ),
             ).to_run_context()
 
             if args.publish_command == "explain":
@@ -1318,10 +1326,12 @@ def _run_ingest_entity(
             window=cli_window,
             backfill=backfill,
             checkpoint_seed=checkpoint_override.value,
-            attributes={
-                "connector_type": connector_type,
-                "backfill": backfill,
-            },
+            attributes=_with_orchestration_attributes(
+                {
+                    "connector_type": connector_type,
+                    "backfill": backfill,
+                }
+            ),
         ).to_run_context()
     except ValueError as exc:
         raise ConfigValidationError(
@@ -1674,6 +1684,16 @@ def _load_json_string_dict(
     return payload
 
 
+def _with_orchestration_attributes(
+    attributes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    combined_attributes = dict(attributes or {})
+    orchestration_metadata = load_orchestration_metadata_from_env()
+    if orchestration_metadata is not None:
+        combined_attributes.update(orchestration_metadata.to_run_attributes())
+    return combined_attributes
+
+
 def _load_json_object_dict(
     *,
     raw_value: str | None,
@@ -1722,11 +1742,13 @@ def _run_normalize_manifest(
                 label=manifest.window_label,
             ),
             backfill=backfill,
-            attributes={
-                "input_artifact_id": manifest.artifact_id,
-                "input_manifest_path": manifest.manifest_path,
-                "rerun_of_run_id": rerun_run_id or "",
-            },
+            attributes=_with_orchestration_attributes(
+                {
+                    "input_artifact_id": manifest.artifact_id,
+                    "input_manifest_path": manifest.manifest_path,
+                    "rerun_of_run_id": rerun_run_id or "",
+                }
+            ),
         ).to_run_context()
     except ValueError as exc:
         raise ConfigValidationError(
