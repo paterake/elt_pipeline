@@ -126,10 +126,11 @@ class RowCountQualityHook:
         enabled_stages: set[str] | frozenset[str] | None = None,
     ) -> None:
         self._row_count_min = row_count_min
-        self._enabled_stages = frozenset(enabled_stages or {"normalize", "sql"})
+        self._enabled_stages = _normalize_stage_set(enabled_stages or {"normalize", "sql"})
 
     def evaluate(self, *, request: QualityHookRequest) -> list[QualityCheckResult]:
-        if request.stage not in self._enabled_stages:
+        stage_name = request.stage.strip().lower()
+        if stage_name not in self._enabled_stages:
             return [
                 QualityCheckResult(
                     backend_type=self.backend_type,
@@ -422,7 +423,7 @@ def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:
     if raw_backend_type is None or not raw_backend_type.strip():
         return None
 
-    backend_type = raw_backend_type.strip()
+    backend_type = raw_backend_type.strip().lower()
     if backend_type != RowCountQualityHook.backend_type:
         raise ConfigValidationError(
             message="Unsupported data-quality backend type",
@@ -434,7 +435,7 @@ def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:
 
     raw_policy = os.getenv(_QUALITY_POLICY_ENV, QualityHookPolicy.best_effort.value)
     try:
-        policy = QualityHookPolicy(raw_policy.strip())
+        policy = QualityHookPolicy(raw_policy.strip().lower())
     except ValueError as exc:
         raise ConfigValidationError(
             message="Data-quality hook policy is invalid",
@@ -460,9 +461,7 @@ def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:
         )
 
     raw_stages = os.getenv(_QUALITY_STAGES_ENV, "normalize,sql")
-    enabled_stages = frozenset(
-        stage.strip() for stage in raw_stages.split(",") if stage.strip()
-    )
+    enabled_stages = _normalize_stage_set(raw_stages.split(","))
     supported_stages = {"normalize", "sql"}
     invalid_stages = sorted(stage for stage in enabled_stages if stage not in supported_stages)
     if invalid_stages:
@@ -496,3 +495,7 @@ def _require_quality_env_value(variable_name: str) -> str:
             context={"variable_name": variable_name},
         )
     return value.strip()
+
+
+def _normalize_stage_set(stages: set[str] | frozenset[str] | list[str]) -> frozenset[str]:
+    return frozenset(stage.strip().lower() for stage in stages if stage.strip())
