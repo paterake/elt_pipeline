@@ -230,6 +230,38 @@ Disablement and failure behavior:
 - If the wrapped CLI command fails, the wrapper raises the same structured runtime error used elsewhere in the platform.
 - Even when an Airflow-managed run fails, operators should inspect local run artifacts first because they remain the source of truth for replay and investigation.
 
+## Optional Data-Quality Hooks
+
+The runtime now includes one optional reference data-quality integration for normalization and SQL outputs.
+
+- The current reference backend is `row_count_threshold`.
+- Quality hooks run only after `normalize run` and `sql run`; publish-stage quality is still out of scope unless a later PRD extends it.
+- Local stage artifacts remain authoritative whether the quality backend is enabled or disabled.
+- Quality outcomes are recorded in stage audit `validation_results`, structured `logs.jsonl`, and stage metrics such as `quality.pass`, `quality.warn`, `quality.fail`, and `quality.skipped`.
+
+Example enablement:
+
+```bash
+export ELT_PIPELINE_QUALITY_BACKEND=row_count_threshold
+export ELT_PIPELINE_QUALITY_ROW_COUNT_MIN=1
+export ELT_PIPELINE_QUALITY_POLICY=best_effort
+export ELT_PIPELINE_QUALITY_STAGES=normalize,sql
+```
+
+Supported variables:
+
+- `ELT_PIPELINE_QUALITY_BACKEND`: set to `row_count_threshold` to enable the reference backend
+- `ELT_PIPELINE_QUALITY_ROW_COUNT_MIN`: minimum allowed row count for each evaluated output dataset
+- `ELT_PIPELINE_QUALITY_POLICY`: `best_effort` or `blocking`
+- `ELT_PIPELINE_QUALITY_STAGES`: comma-separated subset of `normalize` and `sql`
+
+Disablement and failure behavior:
+
+- Leave `ELT_PIPELINE_QUALITY_BACKEND` unset to disable the integration entirely.
+- Use `best_effort` when quality evidence should be captured without failing an otherwise successful stage.
+- Use `blocking` when any failed quality result must fail the stage with `QUALITY_CHECK_FAILED`.
+- Backend execution failures are recorded locally with `QUALITY_BACKEND_EXECUTION_FAILED`, so operators can distinguish core stage success from optional quality integration failure.
+
 ## Runnable Examples
 
 The repository now includes runnable local connector configs under `examples/configs/`:

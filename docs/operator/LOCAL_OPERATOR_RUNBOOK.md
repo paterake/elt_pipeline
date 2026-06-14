@@ -223,6 +223,27 @@ Operator guidance:
 - Disable the integration by running the CLI directly or by removing the wrapper from the Airflow DAG; no platform config change is required.
 - If an Airflow task fails, inspect the local run artifacts first to determine whether the core stage failed or whether the failure happened at the wrapper/orchestrator layer.
 
+## Optional Data-Quality Operations
+
+Optional quality hooks are available for post-normalize and post-SQL output checks without changing the core CLI contract.
+
+```bash
+export ELT_PIPELINE_QUALITY_BACKEND=row_count_threshold
+export ELT_PIPELINE_QUALITY_ROW_COUNT_MIN=1
+export ELT_PIPELINE_QUALITY_POLICY=best_effort
+export ELT_PIPELINE_QUALITY_STAGES=normalize,sql
+```
+
+Operator guidance:
+
+- The current reference backend is `row_count_threshold`; it evaluates each emitted normalization or SQL dataset against the configured minimum row count.
+- Leave `ELT_PIPELINE_QUALITY_BACKEND` unset to disable the integration cleanly.
+- Use `best_effort` when quality failures should be recorded as supplemental evidence without failing the stage.
+- Use `blocking` when any failed quality result should stop the stage and write `QUALITY_CHECK_FAILED` into local error artifacts.
+- Expect backend execution problems to be recorded as `QUALITY_BACKEND_EXECUTION_FAILED`; this distinguishes optional integration failure from a core normalize or SQL runtime failure.
+- Review `runs/.../audit.json` for `validation_results`, `runs/.../logs.jsonl` for `quality_hook_complete` or `quality_hook_failed`, and stage metrics for `quality.pass`, `quality.warn`, `quality.fail`, and `quality.skipped`.
+- Restrict `ELT_PIPELINE_QUALITY_STAGES` to `normalize`, `sql`, or both; publish-stage quality remains out of scope in the current approved contract.
+
 ## Publish Operator Guidance
 
 Use `publish validate` when reviewing new or changed publish packages before touching runtime outputs.

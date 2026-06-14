@@ -291,6 +291,7 @@ Use this when resuming in a new session:
 - The current Phase 14 implementation now includes an orchestration wrapper boundary in `elt_pipeline.integrations.orchestration` that standardizes CLI subprocess invocation and optional orchestration metadata propagation via environment variables while keeping the CLI authoritative.
 - The current Phase 14 implementation now includes a reference `AirflowCliWrapper` integration and bundled `examples/orchestration/airflow/reference_dag.py`, both of which call existing CLI entrypoints and attach Airflow metadata without requiring Airflow in the base install.
 - The current Phase 14 implementation now includes an optional quality-hook boundary in `elt_pipeline.integrations.quality` that runs after normalization and SQL outputs, records pass/warn/fail/skipped results in local audit/log artifacts, and supports a local reference `row_count_threshold` backend with `best_effort` or `blocking` policy.
+- The current Phase 14 implementation is now documented in `README.md` and `docs/operator/LOCAL_OPERATOR_RUNBOOK.md`, including enablement, disablement, and failure-mode guidance for the optional lineage, orchestration, and quality integrations.
 - Optional Phase 14 integration work must preserve local-first execution, keep the CLI authoritative, and treat local audit/log/lineage artifacts as first-class even when external systems are added.
 
 ## Open Decisions Still Allowed During Implementation
