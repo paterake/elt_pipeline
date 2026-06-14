@@ -144,7 +144,7 @@ The local runtime is organized as a staged filesystem workflow:
 5. `publish run` exports approved `level4` datasets into run-scoped `level5` delivery artifacts
 6. `schedule run` orchestrates the above commands in a deterministic local sequence
 
-This reflects the currently implemented runtime path through `level5`. The current publish implementation supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, and CSV plus `jsonl` execution against sqlite-backed `level4` tables. Broader replacement-mode enforcement and additional delivery patterns remain follow-on work.
+This reflects the currently implemented runtime path through `level5`. The current publish implementation supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, CSV plus `jsonl` execution against sqlite-backed `level4` tables, and the `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` replacement behaviors. Broader delivery patterns remain follow-on work.
 
 Runtime metadata is persisted under the selected root path, including:
 

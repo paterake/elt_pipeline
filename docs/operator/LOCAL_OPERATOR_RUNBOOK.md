@@ -144,12 +144,13 @@ Use `publish validate` when reviewing new or changed publish packages before tou
 Use `publish explain` when you want a dry preview of the paths a publish run would target.
 
 - Pass the same `--root-path`, selection filters, and optional `--window-label` that you expect to use in `publish run`.
-- Review `run_scoped_path` for the immutable history location and `stable_delivery_path` when the publish definition uses `overwrite_in_place`.
+- Review `run_scoped_path` for the immutable history location and `stable_delivery_path` when the publish definition uses `overwrite_in_place` or `append_new_artifact`.
 
 Use `publish run` only after the upstream `level4` table already exists in the target sqlite database.
 
 - The current implementation supports CSV and `jsonl` outputs.
-- The current implementation supports `versioned_delivery` and `overwrite_in_place`.
+- The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact`.
+- `append_new_artifact` writes the immutable run-scoped artifact and also copies a uniquely named delivery file into the consumer-facing artifact path without mutating prior deliveries.
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.
 

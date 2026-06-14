@@ -108,6 +108,46 @@ def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(tmp
     assert manifest_payload["artifacts"][0]["stable_delivery_path"] is None
 
 
+def test_run_publish_definitions_locally_appends_new_delivery_artifacts(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+    package_root = _write_publish_package(
+        tmp_path,
+        replacement_mode="append_new_artifact",
+    )
+    definitions = discover_publish_definitions(package_root)
+    first_context = new_run_context(stage=StageName.publish, job_name="publish-run")
+    second_context = new_run_context(stage=StageName.publish, job_name="publish-run")
+
+    first_result = run_publish_definitions_locally(
+        root_path=tmp_path,
+        run_context=first_context,
+        environment="default",
+        package_path=package_root,
+        database_path=database_path,
+        definitions=definitions,
+    )
+    second_result = run_publish_definitions_locally(
+        root_path=tmp_path,
+        run_context=second_context,
+        environment="default",
+        package_path=package_root,
+        database_path=database_path,
+        definitions=definitions,
+    )
+
+    first_artifact = first_result.results[0].artifacts[0]
+    second_artifact = second_result.results[0].artifacts[0]
+
+    assert first_artifact.stable_delivery_path is not None
+    assert second_artifact.stable_delivery_path is not None
+    assert first_artifact.stable_delivery_path.exists()
+    assert second_artifact.stable_delivery_path.exists()
+    assert first_artifact.stable_delivery_path != second_artifact.stable_delivery_path
+    assert f"run_id={first_context.run_id}" in first_artifact.stable_delivery_path.name
+    assert f"run_id={second_context.run_id}" in second_artifact.stable_delivery_path.name
+
+
 def _write_publish_package(
     base_path: Path,
     *,

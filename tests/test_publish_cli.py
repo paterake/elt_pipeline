@@ -104,6 +104,31 @@ def test_publish_run_command_writes_jsonl(tmp_path: Path) -> None:
     assert json.loads(lines[0]) == {"order_date": "2026-01-01", "total_amount": 10}
 
 
+def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path) -> None:
+    package_root = _write_publish_package(tmp_path, replacement_mode="append_new_artifact")
+    runtime_root = tmp_path / "runtime"
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+
+    result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(package_root),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+        ]
+    )
+    payload = json.loads(result.stdout)
+
+    artifact = payload["results"][0]["artifacts"][0]
+    assert Path(artifact["run_scoped_path"]).exists()
+    assert Path(artifact["stable_delivery_path"]).exists()
+    assert "run_id=" in Path(artifact["stable_delivery_path"]).name
+
+
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "elt_pipeline", *args],

@@ -50,8 +50,8 @@ def explain_publish_definitions(
             "replacement_mode": definition.manifest.delivery.replacement_mode.value,
             "run_scoped_path": str(_resolve_run_scoped_output_path(root_path, run_context, definition)),
             "stable_delivery_path": (
-                str(_resolve_stable_delivery_path(root_path, definition))
-                if _supports_stable_delivery(definition.manifest.delivery.replacement_mode)
+                str(_resolve_stable_delivery_path(root_path, run_context, definition))
+                if _supports_stable_delivery_copy(definition.manifest.delivery.replacement_mode)
                 else None
             ),
         }
@@ -286,11 +286,12 @@ def _run_single_publish_definition(
     if definition.manifest.delivery.replacement_mode not in {
         PublishReplacementMode.versioned_delivery,
         PublishReplacementMode.overwrite_in_place,
+        PublishReplacementMode.append_new_artifact,
     }:
         raise ConfigValidationError(
             message=(
-                "The first publish runtime slice only supports versioned_delivery "
-                "and overwrite_in_place replacement modes"
+                "The current publish runtime only supports versioned_delivery, "
+                "overwrite_in_place, and append_new_artifact replacement modes"
             ),
             context={
                 "publish_id": definition.publish_id,
@@ -306,8 +307,8 @@ def _run_single_publish_definition(
 
     run_scoped_path = _resolve_run_scoped_output_path(root_path, run_context, definition)
     stable_delivery_path = (
-        _resolve_stable_delivery_path(root_path, definition)
-        if _supports_stable_delivery(definition.manifest.delivery.replacement_mode)
+        _resolve_stable_delivery_path(root_path, run_context, definition)
+        if _supports_stable_delivery_copy(definition.manifest.delivery.replacement_mode)
         else None
     )
     run_scoped_path.parent.mkdir(parents=True, exist_ok=True)
@@ -537,32 +538,35 @@ def _resolve_run_scoped_output_path(
 
 def _resolve_stable_delivery_path(
     root_path: Path,
+    run_context: RunContext,
     definition: DiscoveredPublishDefinition,
 ) -> Path:
-    return root_path / "artifacts" / "level5" / _render_output_path_template(None, definition)
+    rendered_path = _render_output_path_template(run_context, definition)
+    if definition.manifest.delivery.replacement_mode == PublishReplacementMode.append_new_artifact:
+        delivery_name = f"{rendered_path.stem}.run_id={run_context.run_id}{rendered_path.suffix}"
+        rendered_path = rendered_path.with_name(delivery_name)
+    return root_path / "artifacts" / "level5" / rendered_path
 
 
-def _render_output_path_template(
-    run_context: RunContext | None,
-    definition: DiscoveredPublishDefinition,
-) -> Path:
+def _render_output_path_template(run_context: RunContext, definition: DiscoveredPublishDefinition) -> Path:
     window_label = (
-        _string_or_none(run_context.attributes.get("window_label"))
-        if run_context is not None
-        else None
-    ) or "open_window"
+        _string_or_none(run_context.attributes.get("window_label")) or "open_window"
+    )
     rendered = definition.manifest.delivery.path_template.format(
         domain=definition.manifest.domain,
         publish_name=definition.manifest.name,
-        run_id=run_context.run_id if run_context is not None else "stable",
+        run_id=run_context.run_id,
         window_label=window_label,
         output_extension=definition.manifest.delivery.output_format.value,
     )
     return Path(rendered)
 
 
-def _supports_stable_delivery(replacement_mode: PublishReplacementMode) -> bool:
-    return replacement_mode == PublishReplacementMode.overwrite_in_place
+def _supports_stable_delivery_copy(replacement_mode: PublishReplacementMode) -> bool:
+    return replacement_mode in {
+        PublishReplacementMode.overwrite_in_place,
+        PublishReplacementMode.append_new_artifact,
+    }
 
 
 def _string_or_none(value: object) -> str | None:
