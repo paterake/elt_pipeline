@@ -178,6 +178,8 @@ The implementation backlog for the approved v1 PRD scope is complete through `le
 
 The first post-v1 design step for `level5` has now been approved in `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
 
+The next post-v1 design baseline for optional integrations has now been drafted in `docs/prd/07-prd-optional-platform-integrations.md` and is pending approval before implementation begins.
+
 The approved `level5` direction is:
 
 - `level1` is raw ingested data
@@ -212,6 +214,7 @@ Some items below are ready for implementation planning, while others require PRD
 
 This phase requires PRD/design approval before implementation begins.
 
+- [x] Draft PRD/design baseline for optional lineage, orchestration, and data-quality integrations
 - [ ] Define adapter boundaries for optional lineage backend emission while preserving local-first runtime behavior
 - [ ] Add one reference lineage backend integration aligned to the OpenLineage-compatible event contract
 - [ ] Define adapter boundaries for optional orchestration wrappers while keeping the CLI contract authoritative
@@ -270,8 +273,9 @@ A later session should aim to complete:
 
 Use this when resuming in a new session:
 
-- Resume prompt: `from docs/todo/IMPLEMENTATION_BACKLOG.md continue with the next session target for level5`
+- Resume prompt: `from docs/todo/IMPLEMENTATION_BACKLOG.md continue with the next approved post-v1 item`
 - The authoritative `level5` PRD is `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
+- The draft Phase 14 integration baseline is `docs/prd/07-prd-optional-platform-integrations.md`.
 - The key clarification is that `level4` is still the consumer datamart/table layer.
 - `level5` is not another datamart layer; it is for transformed static files or canned outputs a consumer picks up directly.
 - `elt_pipeline` should be described as a governed data platform runtime aligned to DAMA-DMBOK v2 principles.
@@ -282,6 +286,7 @@ Use this when resuming in a new session:
 - The current implementation supports publish definition discovery, validation, explain-mode, and local CSV, `jsonl`, and `tsv` execution against sqlite-backed `level4` tables, plus optional zip bundle packaging.
 - The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` as executable replacement behaviors.
 - The current implementation supports `publish run --rerun-run-id <prior-run-id>` to restore publish selection and window scope from prior publish audit artifacts, plus `--backfill` tagging for historical publish windows.
+- Optional Phase 14 integration work must preserve local-first execution, keep the CLI authoritative, and treat local audit/log/lineage artifacts as first-class even when external systems are added.
 
 ## Open Decisions Still Allowed During Implementation
 
