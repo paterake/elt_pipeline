@@ -6,7 +6,15 @@ from typing import Any
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.storage import LocalArtifactStore
-from elt_pipeline.integrations import build_lineage_adapter
+from elt_pipeline.integrations import (
+    QualityDatasetRef,
+    QualityHookAdapter,
+    QualityHookRequest,
+    QualityHookSummary,
+    build_lineage_adapter,
+    build_quality_hook,
+    raise_for_blocking_quality_failures,
+)
 from elt_pipeline.normalize.level2_storage import LocalLevel2Writer
 from elt_pipeline.normalize.models import Level2WriteSummary
 from elt_pipeline.normalize.partitioning import PartitionStrategy
@@ -33,6 +41,7 @@ def normalize_level1_to_local_level2(
     payload: Any,
     partition_strategy: PartitionStrategy | None = None,
     normalization_runner: NormalizationRunner | None = None,
+    quality_hook: QualityHookAdapter | None = None,
 ) -> Level2WriteSummary:
     if run_context.stage != StageName.normalize:
         raise ValueError("normalize_level1_to_local_level2 requires a normalize stage RunContext")
@@ -41,6 +50,7 @@ def normalize_level1_to_local_level2(
     partition_strategy = partition_strategy or PartitionStrategy()
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    quality_adapter = quality_hook or build_quality_hook(root_path)
     mapping_store = LocalMappingCatalogStore(root_path)
     level2_writer = LocalLevel2Writer(root_path)
 
@@ -51,6 +61,8 @@ def normalize_level1_to_local_level2(
     mapping_version: str | None = None
     table_manifests = []
     mapping_catalog_path: Path | None = None
+    quality_summary: QualityHookSummary | None = None
+    failure: PipelineError | None = None
 
     artifact_store.append_log_event(
         run_context=run_context,
@@ -134,10 +146,44 @@ def normalize_level1_to_local_level2(
                 ),
             )
 
+        quality_summary = quality_adapter.evaluate(
+            run_context=run_context,
+            environment=environment,
+            request=_build_quality_request(
+                run_context=run_context,
+                environment=environment,
+                table_manifests=table_manifests,
+            ),
+        )
+        if quality_summary is not None:
+            status_counts = quality_summary.counts_by_status()
+            artifact_store.append_log_event(
+                run_context=run_context,
+                environment=environment,
+                log_event=build_log_event(
+                    run_context=run_context,
+                    severity=(
+                        "ERROR" if quality_summary.blocking_failure_count else "INFO"
+                    ),
+                    component="quality",
+                    event_type="quality_hook_complete",
+                    message="Normalization quality hook evaluated",
+                    details={
+                        "backend_type": quality_summary.backend_type,
+                        "status_counts": status_counts,
+                    },
+                ),
+            )
+            raise_for_blocking_quality_failures(quality_summary)
+
         completed_at = datetime.now(tz=UTC)
     except PipelineError as exc:
         completed_at = datetime.now(tz=UTC)
         status = "failed"
+        failure = exc
+        raw_quality_summary = exc.context.get("quality_summary")
+        if raw_quality_summary is not None:
+            quality_summary = QualityHookSummary.model_validate(raw_quality_summary)
         error_record = build_error_record(
             run_id=run_context.run_id,
             error_code=exc.error_code,
@@ -176,6 +222,9 @@ def normalize_level1_to_local_level2(
                 "mapping_version": mapping_version or "unknown",
             },
         )
+        if quality_summary is not None:
+            for status_name, count in quality_summary.counts_by_status().items():
+                metrics.extra[f"quality.{status_name}"] = count
         for table_manifest in table_manifests:
             metrics.extra[f"table.{table_manifest.table_name}.records_written"] = (
                 table_manifest.record_count
@@ -192,6 +241,9 @@ def normalize_level1_to_local_level2(
             config_version=None,
             metrics_summary=metrics,
             error_summary=error_summary,
+            validation_results=(
+                [quality_summary.model_dump(mode="json")] if quality_summary is not None else []
+            ),
             context={
                 "environment": environment,
                 "source_name": manifest.source_name,
@@ -199,6 +251,7 @@ def normalize_level1_to_local_level2(
                 "input_artifact_id": manifest.artifact_id,
                 "input_manifest_path": manifest.manifest_path,
                 "mapping_version": mapping_version or "unknown",
+                "quality_backend_type": quality_summary.backend_type if quality_summary else "",
             },
         )
         rerun_of_run_id = run_context.attributes.get("rerun_of_run_id")
@@ -255,6 +308,9 @@ def normalize_level1_to_local_level2(
             ),
         )
 
+    if failure is not None:
+        raise failure
+
     if mapping_catalog_path is None:
         mapping_catalog_path = mapping_store.catalog_path(
             source_name=manifest.source_name,
@@ -265,4 +321,38 @@ def normalize_level1_to_local_level2(
     return Level2WriteSummary(
         mapping_catalog_path=mapping_catalog_path.relative_to(root_path).as_posix(),
         table_manifests=table_manifests,
+    )
+
+
+def _build_quality_request(
+    *,
+    run_context: RunContext,
+    environment: str,
+    table_manifests: list,
+) -> QualityHookRequest:
+    records_written = sum(table_manifest.record_count for table_manifest in table_manifests)
+    return QualityHookRequest(
+        run_id=run_context.run_id,
+        stage=run_context.stage.value,
+        job_name=run_context.job_name,
+        environment=environment,
+        datasets=[
+            QualityDatasetRef(
+                dataset_id=table_manifest.artifact_id,
+                dataset_name=table_manifest.table_name,
+                materialization_type="local_jsonl_file",
+                target_name=table_manifest.table_name,
+                output_path=table_manifest.data_path,
+                row_count=table_manifest.record_count,
+                metrics={
+                    "file_size_bytes": table_manifest.file_size_bytes,
+                    "mapping_version": table_manifest.mapping_version,
+                },
+            )
+            for table_manifest in table_manifests
+        ],
+        metrics={
+            "tables_written": len(table_manifests),
+            "records_written": records_written,
+        },
     )

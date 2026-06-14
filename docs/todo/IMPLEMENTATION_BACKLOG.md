@@ -219,7 +219,7 @@ This phase is approved for implementation, provided local-first behavior and the
 - [x] Add one reference lineage backend integration aligned to the OpenLineage-compatible event contract
 - [x] Define adapter boundaries for optional orchestration wrappers while keeping the CLI contract authoritative
 - [x] Add one reference orchestration integration that invokes the existing CLI entrypoints without redefining runtime contracts
-- [ ] Define optional data-quality hook points around normalization and SQL stage outputs
+- [x] Define optional data-quality hook points around normalization and SQL stage outputs
 
 ### Phase 15: `level5` Publish and Export Capability
 
@@ -290,6 +290,7 @@ Use this when resuming in a new session:
 - The current Phase 14 implementation now includes a reference `openlineage_http` backend integration enabled by environment variables, preserving local-first lineage artifacts and supporting `best_effort` or `blocking` remote emission policy.
 - The current Phase 14 implementation now includes an orchestration wrapper boundary in `elt_pipeline.integrations.orchestration` that standardizes CLI subprocess invocation and optional orchestration metadata propagation via environment variables while keeping the CLI authoritative.
 - The current Phase 14 implementation now includes a reference `AirflowCliWrapper` integration and bundled `examples/orchestration/airflow/reference_dag.py`, both of which call existing CLI entrypoints and attach Airflow metadata without requiring Airflow in the base install.
+- The current Phase 14 implementation now includes an optional quality-hook boundary in `elt_pipeline.integrations.quality` that runs after normalization and SQL outputs, records pass/warn/fail/skipped results in local audit/log artifacts, and supports a local reference `row_count_threshold` backend with `best_effort` or `blocking` policy.
 - Optional Phase 14 integration work must preserve local-first execution, keep the CLI authoritative, and treat local audit/log/lineage artifacts as first-class even when external systems are added.
 
 ## Open Decisions Still Allowed During Implementation

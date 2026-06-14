@@ -2,9 +2,18 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
+from elt_pipeline.integrations import (
+    QualityCheckResult,
+    QualityCheckStatus,
+    QualityHookPolicy,
+    build_quality_hook,
+)
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
+from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.runtime import StageName, new_run_context
 
 
@@ -123,3 +132,106 @@ def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path) -> None:
     written_rows = [json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines()]
     assert [row["order_id"] for row in written_rows] == ["A-100", "A-200"]
     assert [row["amount"] for row in written_rows] == ["10", "25"]
+
+
+def test_normalize_pipeline_captures_quality_results_in_audit(tmp_path: Path) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest()
+    payload = {"order_id": "A-100"}
+    quality_hook = build_quality_hook(tmp_path, backend=_PassingNormalizeQualityBackend())
+
+    summary = normalize_level1_to_local_level2(
+        root_path=tmp_path,
+        run_context=run_context,
+        manifest=manifest,
+        payload=payload,
+        quality_hook=quality_hook,
+    )
+
+    audit_path = (
+        tmp_path
+        / "runs"
+        / "stage=normalize"
+        / "environment=dev"
+        / "job=normalize-orders"
+        / f"run_id={run_context.run_id}"
+        / "audit.json"
+    )
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+
+    assert summary.table_manifests
+    assert audit_payload["status"] == "success"
+    assert audit_payload["validation_results"][0]["backend_type"] == "test_quality"
+    assert audit_payload["validation_results"][0]["results"][0]["status"] == "pass"
+    assert audit_payload["metrics_summary"]["extra"]["quality.pass"] == 1
+
+
+def test_normalize_pipeline_fails_for_blocking_quality_results(tmp_path: Path) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest()
+    payload = {"order_id": "A-100"}
+    quality_hook = build_quality_hook(
+        tmp_path,
+        backend=_FailingNormalizeQualityBackend(),
+        policy=QualityHookPolicy.blocking,
+    )
+
+    with pytest.raises(PipelineError, match="Quality checks failed"):
+        normalize_level1_to_local_level2(
+            root_path=tmp_path,
+            run_context=run_context,
+            manifest=manifest,
+            payload=payload,
+            quality_hook=quality_hook,
+        )
+
+    audit_path = (
+        tmp_path
+        / "runs"
+        / "stage=normalize"
+        / "environment=dev"
+        / "job=normalize-orders"
+        / f"run_id={run_context.run_id}"
+        / "audit.json"
+    )
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+
+    assert audit_payload["status"] == "failed"
+    assert audit_payload["error_summary"]["error_code"] == "QUALITY_CHECK_FAILED"
+    assert audit_payload["validation_results"][0]["results"][0]["status"] == "fail"
+    assert audit_payload["metrics_summary"]["extra"]["quality.fail"] == 1
+
+
+class _PassingNormalizeQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        return [
+            QualityCheckResult(
+                backend_type=self.backend_type,
+                check_name="table_count",
+                status=QualityCheckStatus.pass_,
+                dataset_id=request.datasets[0].dataset_id,
+                dataset_name=request.datasets[0].dataset_name,
+                observed_value=len(request.datasets),
+                expected_value=1,
+            )
+        ]
+
+
+class _FailingNormalizeQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        return [
+            QualityCheckResult(
+                backend_type=self.backend_type,
+                check_name="row_count_min",
+                status=QualityCheckStatus.fail,
+                dataset_id=request.datasets[0].dataset_id,
+                dataset_name=request.datasets[0].dataset_name,
+                observed_value=request.datasets[0].row_count,
+                expected_value=2,
+                message="Row count below threshold",
+            )
+        ]

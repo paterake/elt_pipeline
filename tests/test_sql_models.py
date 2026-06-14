@@ -7,6 +7,12 @@ from textwrap import dedent
 
 import pytest
 
+from elt_pipeline.integrations import (
+    QualityCheckResult,
+    QualityCheckStatus,
+    build_quality_hook,
+    QualityHookPolicy,
+)
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
 from elt_pipeline.shared.runtime import StageName, new_run_context
 from elt_pipeline.sql import (
@@ -648,6 +654,141 @@ quality:
     assert json.loads(error_lines[0])["error_code"] == SqlRuntimeErrorCode.model_validation_failed
 
 
+def test_run_sql_models_locally_captures_quality_results_in_audit(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(tmp_path)
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+
+    result = run_sql_models_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
+        environment="dev",
+        package_path=package_root,
+        database_path=database_path,
+        compiled_models=compiled,
+        quality_hook=build_quality_hook(tmp_path, backend=_PassingSqlQualityBackend()),
+    )
+
+    audit_payload = json.loads(result.artifacts.audit_path.read_text(encoding="utf-8"))
+    quality_summary = audit_payload["validation_results"][-1]
+
+    assert audit_payload["status"] == "success"
+    assert quality_summary["backend_type"] == "test_quality"
+    assert quality_summary["results"][0]["status"] == "pass"
+    assert audit_payload["metrics_summary"]["extra"]["quality.pass"] == 1
+
+
+def test_run_sql_models_locally_fails_for_blocking_quality_results(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            create table raw_orders (
+                order_id integer,
+                amount integer,
+                order_date text
+            )
+            """
+        )
+        connection.executemany(
+            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
+            [
+                (1, 10, "2026-01-01"),
+                (2, 20, "2026-01-03"),
+            ],
+        )
+        connection.commit()
+
+    package_root = _write_basic_sql_package(tmp_path)
+    discovered = discover_sql_models(package_root)
+    ordered = topologically_sort_sql_models(discovered)
+    compiled = [
+        compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id="run-123",
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+                start_date="2026-01-01",
+                end_date="2026-01-31",
+            ),
+        )
+        for model in ordered
+    ]
+    run_context = new_run_context(stage=StageName.sql, job_name="sql-run")
+
+    with pytest.raises(PipelineError, match="Quality checks failed"):
+        run_sql_models_locally(
+            root_path=tmp_path,
+            run_context=run_context,
+            environment="dev",
+            package_path=package_root,
+            database_path=database_path,
+            compiled_models=compiled,
+            quality_hook=build_quality_hook(
+                tmp_path,
+                backend=_FailingSqlQualityBackend(),
+                policy=QualityHookPolicy.blocking,
+            ),
+        )
+
+    audit_path = (
+        tmp_path
+        / "runs"
+        / "stage=sql"
+        / "environment=dev"
+        / "job=sql-run"
+        / f"run_id={run_context.run_id}"
+        / "audit.json"
+    )
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    quality_summary = audit_payload["validation_results"][-1]
+
+    assert audit_payload["status"] == "failed"
+    assert audit_payload["error_summary"]["error_code"] == "QUALITY_CHECK_FAILED"
+    assert quality_summary["results"][0]["status"] == "fail"
+    assert audit_payload["metrics_summary"]["extra"]["quality.fail"] == 1
+
+
 def test_local_sql_model_executor_returns_structured_planning_error_code(
     tmp_path: Path,
 ) -> None:
@@ -777,6 +918,39 @@ def _write_basic_sql_package(
         encoding="utf-8",
     )
     return package_root
+
+
+class _PassingSqlQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        return [
+            QualityCheckResult(
+                backend_type=self.backend_type,
+                check_name="model_count",
+                status=QualityCheckStatus.pass_,
+                observed_value=len(request.datasets),
+                expected_value=2,
+            )
+        ]
+
+
+class _FailingSqlQualityBackend:
+    backend_type = "test_quality"
+
+    def evaluate(self, *, request):
+        return [
+            QualityCheckResult(
+                backend_type=self.backend_type,
+                check_name="row_count_min",
+                status=QualityCheckStatus.fail,
+                dataset_id=request.datasets[-1].dataset_id,
+                dataset_name=request.datasets[-1].dataset_name,
+                observed_value=request.datasets[-1].row_count,
+                expected_value=3,
+                message="Row count below threshold",
+            )
+        ]
 
 
 def _write_append_sql_package(base_path: Path) -> Path:

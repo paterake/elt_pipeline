@@ -17,6 +17,19 @@ from elt_pipeline.integrations.orchestration import (
     build_airflow_orchestration_metadata,
     load_orchestration_metadata_from_env,
 )
+from elt_pipeline.integrations.quality import (
+    QualityCheckResult,
+    QualityCheckStatus,
+    QualityDatasetRef,
+    QualityHookAdapter,
+    QualityHookBackend,
+    QualityHookPolicy,
+    QualityHookRequest,
+    QualityHookSummary,
+    RowCountQualityHook,
+    build_quality_hook,
+    raise_for_blocking_quality_failures,
+)
 
 __all__ = [
     "LineageAdapter",
@@ -32,4 +45,15 @@ __all__ = [
     "SubprocessCliInvoker",
     "build_airflow_orchestration_metadata",
     "load_orchestration_metadata_from_env",
+    "QualityCheckResult",
+    "QualityCheckStatus",
+    "QualityDatasetRef",
+    "QualityHookAdapter",
+    "QualityHookBackend",
+    "QualityHookPolicy",
+    "QualityHookRequest",
+    "QualityHookSummary",
+    "RowCountQualityHook",
+    "build_quality_hook",
+    "raise_for_blocking_quality_failures",
 ]

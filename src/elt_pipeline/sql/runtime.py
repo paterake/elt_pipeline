@@ -6,7 +6,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from elt_pipeline.ingest.storage import LocalArtifactStore
-from elt_pipeline.integrations import LineageAdapter, build_lineage_adapter
+from elt_pipeline.integrations import (
+    LineageAdapter,
+    QualityDatasetRef,
+    QualityHookAdapter,
+    QualityHookRequest,
+    QualityHookSummary,
+    build_lineage_adapter,
+    build_quality_hook,
+    raise_for_blocking_quality_failures,
+)
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
@@ -37,6 +46,7 @@ def run_sql_models_locally(
     selection_domain: str | None = None,
     selection_model: str | None = None,
     include_dependencies: bool = False,
+    quality_hook: QualityHookAdapter | None = None,
 ) -> SqlStageRunResult:
     if run_context.stage != StageName.sql:
         raise build_sql_runtime_error(
@@ -47,6 +57,7 @@ def run_sql_models_locally(
 
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    quality_adapter = quality_hook or build_quality_hook(root_path)
     artifacts = SqlRunArtifacts(
         artifact_root=root_path,
         run_dir=artifact_store.layout.run_dir(run_context=run_context, environment=environment),
@@ -57,6 +68,7 @@ def run_sql_models_locally(
     error_summary: dict[str, str] | None = None
     execution_result = SqlExecutionResult(database_path=database_path)
     failure: PipelineError | None = None
+    quality_summary: QualityHookSummary | None = None
 
     artifacts.log_path = artifact_store.append_log_event(
         run_context=run_context,
@@ -116,11 +128,43 @@ def run_sql_models_locally(
                 run_context=run_context,
             ),
         )
+        quality_summary = quality_adapter.evaluate(
+            run_context=run_context,
+            environment=environment,
+            request=_build_quality_request(
+                run_context=run_context,
+                environment=environment,
+                database_path=database_path,
+                execution_result=execution_result,
+            ),
+        )
+        if quality_summary is not None:
+            artifacts.log_path = artifact_store.append_log_event(
+                run_context=run_context,
+                environment=environment,
+                log_event=build_log_event(
+                    run_context=run_context,
+                    severity=(
+                        "ERROR" if quality_summary.blocking_failure_count else "INFO"
+                    ),
+                    component="quality",
+                    event_type="quality_hook_complete",
+                    message="SQL quality hook evaluated",
+                    details={
+                        "backend_type": quality_summary.backend_type,
+                        "status_counts": quality_summary.counts_by_status(),
+                    },
+                ),
+            )
+            raise_for_blocking_quality_failures(quality_summary)
         completed_at = datetime.now(tz=UTC)
     except PipelineError as exc:
         completed_at = datetime.now(tz=UTC)
         status = "failed"
         failure = exc
+        raw_quality_summary = exc.context.get("quality_summary")
+        if raw_quality_summary is not None:
+            quality_summary = QualityHookSummary.model_validate(raw_quality_summary)
         partial_execution_result = exc.context.get("execution_result")
         if partial_execution_result is not None:
             execution_result = SqlExecutionResult.model_validate(partial_execution_result)
@@ -156,6 +200,9 @@ def run_sql_models_locally(
                 "database_path": str(database_path),
             },
         )
+        if quality_summary is not None:
+            for status_name, count in quality_summary.counts_by_status().items():
+                metrics.extra[f"quality.{status_name}"] = count
         for record in execution_result.executed_models:
             metrics.extra[f"model.{record.model_id}.row_count"] = record.row_count
 
@@ -176,7 +223,12 @@ def run_sql_models_locally(
                 validation_results=[
                     summary.model_dump(mode="json")
                     for summary in execution_result.model_validations
-                ],
+                ]
+                + (
+                    [quality_summary.model_dump(mode="json")]
+                    if quality_summary is not None
+                    else []
+                ),
                 context=_build_audit_context(
                     environment=environment,
                     package_path=package_path,
@@ -190,6 +242,7 @@ def run_sql_models_locally(
                     selection_model=selection_model,
                     include_dependencies=include_dependencies,
                     run_context=run_context,
+                    quality_summary=quality_summary,
                 ),
             ),
         )
@@ -325,6 +378,7 @@ def _build_audit_context(
     selection_model: str | None,
     include_dependencies: bool,
     run_context: RunContext,
+    quality_summary: QualityHookSummary | None,
 ) -> dict[str, str]:
     context = {
         "environment": environment,
@@ -365,4 +419,37 @@ def _build_audit_context(
     rerun_of_run_id = run_context.attributes.get("rerun_of_run_id")
     if isinstance(rerun_of_run_id, str) and rerun_of_run_id:
         context["rerun_of_run_id"] = rerun_of_run_id
+    if quality_summary is not None:
+        context["quality_backend_type"] = quality_summary.backend_type
     return context
+
+
+def _build_quality_request(
+    *,
+    run_context: RunContext,
+    environment: str,
+    database_path: Path,
+    execution_result: SqlExecutionResult,
+) -> QualityHookRequest:
+    return QualityHookRequest(
+        run_id=run_context.run_id,
+        stage=run_context.stage.value,
+        job_name=run_context.job_name,
+        environment=environment,
+        datasets=[
+            QualityDatasetRef(
+                dataset_id=record.model_id,
+                dataset_name=record.target_table_name,
+                materialization_type="sqlite_table",
+                target_name=record.target_table_name,
+                output_path=str(database_path),
+                row_count=record.row_count,
+                metrics={"load_mode": record.load_mode.value},
+            )
+            for record in execution_result.executed_models
+        ],
+        metrics={
+            "models_executed": execution_result.model_count,
+            "validation_models_evaluated": len(execution_result.model_validations),
+        },
+    )
