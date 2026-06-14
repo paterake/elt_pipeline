@@ -294,6 +294,29 @@ Use this when resuming in a new session:
 - The current Phase 14 implementation is now documented in `README.md` and `docs/operator/LOCAL_OPERATOR_RUNBOOK.md`, including enablement, disablement, and failure-mode guidance for the optional lineage, orchestration, and quality integrations.
 - Optional Phase 14 integration work must preserve local-first execution, keep the CLI authoritative, and treat local audit/log/lineage artifacts as first-class even when external systems are added.
 
+## Approved Scope Status
+
+All currently approved implementation items in this backlog are complete.
+
+The current repository state also passes the local automated verification baseline:
+
+- `uv run pytest` passes
+- there are no current workspace diagnostics reported by the IDE tooling
+
+No further feature implementation should begin until one of the following is true:
+
+- a new PRD is added and approved
+- an existing approved PRD is expanded and re-approved
+- or the next session is explicitly limited to bug fixing, hardening, or documentation corrections that stay within the already approved contracts
+
+## Next Session Guidance
+
+Use the following order when resuming after this point:
+
+1. Confirm whether the session is meant to stay within the current approved scope or begin a new PRD/design step.
+2. If staying within scope, prioritize bug fixes, test hardening, operator experience gaps, or implementation cleanup that does not change the platform contract.
+3. If expanding scope, update the relevant PRD first, then update this backlog, then implement.
+
 ## Open Decisions Still Allowed During Implementation
 
 These may still be refined during implementation, provided they stay consistent with the PRDs:
