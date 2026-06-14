@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from elt_pipeline.ingest.storage import LocalArtifactStore
+from elt_pipeline.integrations import LineageAdapter, build_lineage_adapter
 from elt_pipeline.publish.models import (
     DiscoveredPublishDefinition,
     PublishArtifactRecord,
@@ -94,6 +95,7 @@ def run_publish_definitions_locally(
         )
 
     artifact_store = LocalArtifactStore(root_path)
+    lineage_adapter = build_lineage_adapter(root_path)
     artifacts = PublishRunArtifacts(
         artifact_root=root_path,
         run_dir=artifact_store.layout.run_dir(run_context=run_context, environment=environment),
@@ -121,7 +123,7 @@ def run_publish_definitions_locally(
             },
         ),
     )
-    artifacts.lineage_path = artifact_store.append_lineage_event(
+    artifacts.lineage_path = lineage_adapter.emit(
         run_context=run_context,
         environment=environment,
         lineage_event=LineageEvent(
@@ -152,6 +154,7 @@ def run_publish_definitions_locally(
                     run_context=run_context,
                     environment=environment,
                     artifact_store=artifact_store,
+                    lineage_adapter=lineage_adapter,
                     definition=definition,
                 )
                 results.append(result)
@@ -257,7 +260,7 @@ def run_publish_definitions_locally(
                 },
             ),
         )
-        artifacts.lineage_path = artifact_store.append_lineage_event(
+        artifacts.lineage_path = lineage_adapter.emit(
             run_context=run_context,
             environment=environment,
             lineage_event=LineageEvent(
@@ -318,6 +321,7 @@ def _run_single_publish_definition(
     run_context: RunContext,
     environment: str,
     artifact_store: LocalArtifactStore,
+    lineage_adapter: LineageAdapter,
     definition: DiscoveredPublishDefinition,
 ) -> PublishRunResult:
     if definition.manifest.delivery.output_format not in {
@@ -476,7 +480,7 @@ def _run_single_publish_definition(
             },
         ),
     )
-    artifact_store.append_lineage_event(
+    lineage_adapter.emit(
         run_context=run_context,
         environment=environment,
         lineage_event=LineageEvent(

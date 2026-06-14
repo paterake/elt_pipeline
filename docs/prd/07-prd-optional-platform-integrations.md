@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft for approval
+- Status: Approved
 - Product area: `elt_pipeline`
 - Scope: optional post-v1 lineage, orchestration, and data-quality integrations
 - Depends on: `00-prd-platform-principles.md`, `00-prd-architecture-levels-and-governance.md`, `00-prd-shared-observability-audit-and-error-handling.md`, `06-prd-level4-to-level5-publish-and-export.md`

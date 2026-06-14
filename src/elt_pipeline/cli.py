@@ -27,6 +27,7 @@ from elt_pipeline.ingest import (
     RestRequestWindow,
     SqlConnectorConfig,
 )
+from elt_pipeline.integrations import build_lineage_adapter
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
@@ -1780,6 +1781,7 @@ def _bypass_normalize_manifest(
     level2_mode: Level2Mode,
 ) -> dict[str, Any]:
     artifact_store = LocalArtifactStore(root_path)
+    lineage_adapter = build_lineage_adapter(root_path)
 
     artifact_store.append_log_event(
         run_context=run_context,
@@ -1798,7 +1800,7 @@ def _bypass_normalize_manifest(
             },
         ),
     )
-    artifact_store.append_lineage_event(
+    lineage_adapter.emit(
         run_context=run_context,
         environment=manifest.environment,
         lineage_event=LineageEvent(
@@ -1855,7 +1857,7 @@ def _bypass_normalize_manifest(
         audit_record=audit,
     )
 
-    artifact_store.append_lineage_event(
+    lineage_adapter.emit(
         run_context=run_context,
         environment=manifest.environment,
         lineage_event=LineageEvent(

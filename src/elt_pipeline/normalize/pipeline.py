@@ -6,6 +6,7 @@ from typing import Any
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.storage import LocalArtifactStore
+from elt_pipeline.integrations import build_lineage_adapter
 from elt_pipeline.normalize.level2_storage import LocalLevel2Writer
 from elt_pipeline.normalize.models import Level2WriteSummary
 from elt_pipeline.normalize.partitioning import PartitionStrategy
@@ -39,6 +40,7 @@ def normalize_level1_to_local_level2(
     runner = normalization_runner or NormalizationRunner()
     partition_strategy = partition_strategy or PartitionStrategy()
     artifact_store = LocalArtifactStore(root_path)
+    lineage_adapter = build_lineage_adapter(root_path)
     mapping_store = LocalMappingCatalogStore(root_path)
     level2_writer = LocalLevel2Writer(root_path)
 
@@ -62,7 +64,7 @@ def normalize_level1_to_local_level2(
             details={"source_name": manifest.source_name, "entity_name": manifest.entity_name},
         ),
     )
-    artifact_store.append_lineage_event(
+    lineage_adapter.emit(
         run_context=run_context,
         environment=environment,
         lineage_event=LineageEvent(
@@ -208,7 +210,7 @@ def normalize_level1_to_local_level2(
             audit_record=audit,
         )
 
-        artifact_store.append_lineage_event(
+        lineage_adapter.emit(
             run_context=run_context,
             environment=environment,
             lineage_event=LineageEvent(

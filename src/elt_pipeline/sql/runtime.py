@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from elt_pipeline.ingest.storage import LocalArtifactStore
+from elt_pipeline.integrations import LineageAdapter, build_lineage_adapter
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
@@ -45,6 +46,7 @@ def run_sql_models_locally(
         )
 
     artifact_store = LocalArtifactStore(root_path)
+    lineage_adapter = build_lineage_adapter(root_path)
     artifacts = SqlRunArtifacts(
         artifact_root=root_path,
         run_dir=artifact_store.layout.run_dir(run_context=run_context, environment=environment),
@@ -73,7 +75,7 @@ def run_sql_models_locally(
             },
         ),
     )
-    artifacts.lineage_path = artifact_store.append_lineage_event(
+    artifacts.lineage_path = lineage_adapter.emit(
         run_context=run_context,
         environment=environment,
         lineage_event=LineageEvent(
@@ -106,6 +108,7 @@ def run_sql_models_locally(
             compiled_models,
             execution_observer=_build_observer(
                 artifact_store=artifact_store,
+                lineage_adapter=lineage_adapter,
                 artifacts=artifacts,
                 compiled_by_id=compiled_by_id,
                 database_path=database_path,
@@ -190,7 +193,7 @@ def run_sql_models_locally(
                 ),
             ),
         )
-        artifacts.lineage_path = artifact_store.append_lineage_event(
+        artifacts.lineage_path = lineage_adapter.emit(
             run_context=run_context,
             environment=environment,
             lineage_event=LineageEvent(
@@ -242,6 +245,7 @@ def run_sql_models_locally(
 def _build_observer(
     *,
     artifact_store: LocalArtifactStore,
+    lineage_adapter: LineageAdapter,
     artifacts: SqlRunArtifacts,
     compiled_by_id: dict[str, CompiledSqlModel],
     database_path: Path,
@@ -266,7 +270,7 @@ def _build_observer(
                 },
             ),
         )
-        artifacts.lineage_path = artifact_store.append_lineage_event(
+        artifacts.lineage_path = lineage_adapter.emit(
             run_context=run_context,
             environment=environment,
             lineage_event=LineageEvent(
