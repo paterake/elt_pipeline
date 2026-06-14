@@ -247,6 +247,13 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
     )
     validate_payload = json.loads(validate_result.stdout)
     assert validate_payload["publish_count"] == 2
+    assert {
+        definition["publish_id"]: definition["output_format"]
+        for definition in validate_payload["definitions"]
+    } == {
+        "sales.daily_order_export": "csv",
+        "sales.daily_order_export_windowed": "jsonl",
+    }
 
     explain_result = _run_cli(
         [
@@ -284,6 +291,26 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
     assert Path(run_payload["artifacts"]["audit_path"]).exists()
     assert Path(run_payload["artifacts"]["export_manifest_path"]).exists()
     assert Path(run_payload["results"][0]["artifacts"][0]["run_scoped_path"]).exists()
+
+    jsonl_run_result = _run_cli(
+        [
+            "publish",
+            "run",
+            str(REPO_ROOT / "examples/publish/local_demo"),
+            "--root-path",
+            str(runtime_root),
+            "--database",
+            str(database_path),
+            "--publish",
+            "daily_order_export_windowed",
+            "--window-label",
+            "2026-01",
+        ]
+    )
+    jsonl_run_payload = json.loads(jsonl_run_result.stdout)
+    assert jsonl_run_payload["publish_count"] == 1
+    assert jsonl_run_payload["results"][0]["artifacts"][0]["output_format"] == "jsonl"
+    assert jsonl_run_payload["results"][0]["artifacts"][0]["stable_delivery_path"] is None
 
 
 def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> None:

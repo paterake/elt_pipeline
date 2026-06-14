@@ -144,7 +144,7 @@ The local runtime is organized as a staged filesystem workflow:
 5. `publish run` exports approved `level4` datasets into run-scoped `level5` delivery artifacts
 6. `schedule run` orchestrates the above commands in a deterministic local sequence
 
-This reflects the currently implemented runtime path through `level5`. The first publish implementation slice supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, and CSV execution against sqlite-backed `level4` tables. The approved contract still reserves `jsonl`, broader replacement-mode enforcement, and additional delivery patterns for follow-on work.
+This reflects the currently implemented runtime path through `level5`. The current publish implementation supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, and CSV plus `jsonl` execution against sqlite-backed `level4` tables. Broader replacement-mode enforcement and additional delivery patterns remain follow-on work.
 
 Runtime metadata is persisted under the selected root path, including:
 
@@ -163,7 +163,7 @@ The repository now includes runnable local connector configs under `examples/con
 - `local_kafka_orders_replay.yaml`: Kafka replay ingest from `examples/data/kafka/orders-events.jsonl`
 - `local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint served from `examples/data/rest_api/`
 
-It also includes a runnable publish package under `examples/publish/local_demo/` for local `level4 -> level5` CSV export workflows against the bundled SQL demo warehouse.
+It also includes a runnable publish package under `examples/publish/local_demo/` for local `level4 -> level5` CSV and `jsonl` export workflows against the bundled SQL demo warehouse.
 
 See `examples/README.md` for setup commands and stage-by-stage usage. See `docs/operator/LOCAL_OPERATOR_RUNBOOK.md` and `docs/operator/TROUBLESHOOTING.md` for reruns, backfills, schedule execution, and artifact inspection guidance.
 

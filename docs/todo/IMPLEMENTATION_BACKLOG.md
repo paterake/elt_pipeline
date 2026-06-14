@@ -254,7 +254,7 @@ The next implementation session should aim to complete:
 
 - [x] Add runnable `examples/publish/` definitions and local happy-path documentation
 - [x] Add operator runbook guidance for `publish validate`, `publish explain`, and `publish run`
-- [ ] Extend publish runtime beyond CSV-only execution to include `jsonl`
+- [x] Extend publish runtime beyond CSV-only execution to include `jsonl`
 - [ ] Add first replacement-mode enforcement beyond `versioned_delivery` and `overwrite_in_place`
 - [ ] Define rerun/backfill semantics for publish runs using prior audit artifacts
 
@@ -278,7 +278,7 @@ Use this when resuming in a new session:
 - The approved first build slice should focus on local file-based delivery only, not external transports.
 - The first required export formats are CSV and `jsonl`, with CSV as the first representative implementation path.
 - Every publish run must produce run-scoped artifacts and a run-scoped manifest even if a stable consumer-facing path is also maintained.
-- The current implementation supports publish definition discovery, validation, explain-mode, and local CSV execution against sqlite-backed `level4` tables.
+- The current implementation supports publish definition discovery, validation, explain-mode, and local CSV plus `jsonl` execution against sqlite-backed `level4` tables.
 - The current implementation supports `versioned_delivery` and `overwrite_in_place` as the first executable replacement behaviors.
 
 ## Open Decisions Still Allowed During Implementation

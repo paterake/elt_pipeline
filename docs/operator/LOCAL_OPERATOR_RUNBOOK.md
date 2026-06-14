@@ -148,7 +148,7 @@ Use `publish explain` when you want a dry preview of the paths a publish run wou
 
 Use `publish run` only after the upstream `level4` table already exists in the target sqlite database.
 
-- The current implementation supports CSV outputs only.
+- The current implementation supports CSV and `jsonl` outputs.
 - The current implementation supports `versioned_delivery` and `overwrite_in_place`.
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.

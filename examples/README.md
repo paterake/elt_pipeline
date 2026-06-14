@@ -116,7 +116,7 @@ uv run elt-pipeline publish explain examples/publish/local_demo \
   --window-label 2026-01
 ```
 
-Run one publish definition against the same warehouse:
+Run one CSV publish definition against the same warehouse:
 
 ```bash
 uv run elt-pipeline publish run examples/publish/local_demo \
@@ -132,3 +132,20 @@ Expected outputs:
 - run-scoped CSV artifacts under `.tmp/runtime-publish/artifacts/level5/.../run_id=<...>/`
 - a publish manifest next to the exported file
 - stage audit, logs, and lineage under `.tmp/runtime-publish/runs/stage=publish/`
+
+Run the bundled query-based `jsonl` publish definition:
+
+```bash
+uv run elt-pipeline publish run examples/publish/local_demo \
+  --root-path .tmp/runtime-publish \
+  --database .tmp/example-warehouse.db \
+  --environment default \
+  --publish daily_order_export_windowed \
+  --window-label 2026-01
+```
+
+Expected outputs:
+
+- run-scoped `jsonl` artifacts under `.tmp/runtime-publish/artifacts/level5/.../run_id=<...>/`
+- no stable delivery path because `daily_order_export_windowed` uses `versioned_delivery`
+- a publish manifest next to the exported file

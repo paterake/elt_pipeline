@@ -272,9 +272,12 @@ def _run_single_publish_definition(
     artifact_store: LocalArtifactStore,
     definition: DiscoveredPublishDefinition,
 ) -> PublishRunResult:
-    if definition.manifest.delivery.output_format != PublishOutputFormat.csv:
+    if definition.manifest.delivery.output_format not in {
+        PublishOutputFormat.csv,
+        PublishOutputFormat.jsonl,
+    }:
         raise ConfigValidationError(
-            message="The first publish runtime slice only supports CSV output",
+            message="The current publish runtime only supports csv and jsonl outputs",
             context={
                 "publish_id": definition.publish_id,
                 "output_format": definition.manifest.delivery.output_format.value,
@@ -309,11 +312,12 @@ def _run_single_publish_definition(
     )
     run_scoped_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with run_scoped_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=column_names)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(dict(row))
+    _write_publish_output(
+        output_path=run_scoped_path,
+        output_format=definition.manifest.delivery.output_format,
+        column_names=column_names,
+        rows=rows,
+    )
 
     checksum_sha256 = hashlib.sha256(run_scoped_path.read_bytes()).hexdigest()
     file_size_bytes = run_scoped_path.stat().st_size
@@ -460,6 +464,47 @@ def _validate_publish_output(
             },
         )
     return validations
+
+
+def _write_publish_output(
+    *,
+    output_path: Path,
+    output_format: PublishOutputFormat,
+    column_names: list[str],
+    rows: list[sqlite3.Row],
+) -> None:
+    if output_format == PublishOutputFormat.csv:
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=column_names)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(_row_to_serializable_mapping(row=row, column_names=column_names))
+        return
+
+    if output_format == PublishOutputFormat.jsonl:
+        with output_path.open("w", encoding="utf-8", newline="") as handle:
+            for row in rows:
+                handle.write(
+                    json.dumps(
+                        _row_to_serializable_mapping(row=row, column_names=column_names),
+                        default=str,
+                    )
+                )
+                handle.write("\n")
+        return
+
+    raise ConfigValidationError(
+        message="Unsupported publish output format",
+        context={"output_format": output_format.value},
+    )
+
+
+def _row_to_serializable_mapping(
+    *,
+    row: sqlite3.Row,
+    column_names: list[str],
+) -> dict[str, object]:
+    return {column_name: row[column_name] for column_name in column_names}
 
 
 def _build_publish_sql(definition: DiscoveredPublishDefinition) -> str:

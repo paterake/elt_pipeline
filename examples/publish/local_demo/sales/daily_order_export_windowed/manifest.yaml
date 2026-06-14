@@ -2,14 +2,14 @@ name: daily_order_export_windowed
 stage: level5
 domain: sales
 version: v1
-description: Export a query-shaped level4 delivery artifact with run-scoped history.
+description: Export a query-shaped level4 delivery artifact as jsonl with run-scoped history.
 source:
   stage: level4
   dataset: order_summary
   selection_mode: query
 delivery:
   target_type: local_filesystem
-  output_format: csv
+  output_format: jsonl
   path_template: exports/{domain}/{publish_name}/window={window_label}/daily_order_export_windowed.{output_extension}
   replacement_mode: versioned_delivery
 owner:

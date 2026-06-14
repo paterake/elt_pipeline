@@ -73,12 +73,48 @@ def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(tmp_p
     assert manifest_payload["artifacts"][0]["row_count"] == 2
 
 
+def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(tmp_path: Path) -> None:
+    database_path = tmp_path / "warehouse.db"
+    _seed_order_summary_table(database_path)
+    package_root = _write_publish_package(
+        tmp_path,
+        selection_mode="query",
+        output_format="jsonl",
+    )
+    definitions = discover_publish_definitions(package_root)
+
+    result = run_publish_definitions_locally(
+        root_path=tmp_path,
+        run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
+        environment="default",
+        package_path=package_root,
+        database_path=database_path,
+        definitions=definitions,
+    )
+
+    artifact = result.results[0].artifacts[0]
+    manifest_path = artifact.run_scoped_path.parent / "manifest.json"
+    lines = artifact.run_scoped_path.read_text(encoding="utf-8").strip().splitlines()
+
+    assert artifact.row_count == 2
+    assert artifact.run_scoped_path.suffix == ".jsonl"
+    assert artifact.stable_delivery_path is None
+    assert len(lines) == 2
+    assert json.loads(lines[0]) == {"order_date": "2026-01-01", "total_amount": 10}
+    assert manifest_path.exists()
+
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_payload["output_format"] == "jsonl"
+    assert manifest_payload["artifacts"][0]["stable_delivery_path"] is None
+
+
 def _write_publish_package(
     base_path: Path,
     *,
     selection_mode: str = "direct",
     include_query: bool = True,
     replacement_mode: str = "versioned_delivery",
+    output_format: str = "csv",
 ) -> Path:
     package_root = base_path / "publish_defs"
     publish_dir = package_root / "sales" / "daily_order_export"
@@ -96,7 +132,7 @@ def _write_publish_package(
               selection_mode: {selection_mode}
             delivery:
               target_type: local_filesystem
-              output_format: csv
+              output_format: {output_format}
               path_template: exports/{{domain}}/{{publish_name}}/daily_order_export.{{output_extension}}
               replacement_mode: {replacement_mode}
             owner:
