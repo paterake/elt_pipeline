@@ -356,3 +356,137 @@ Review conclusion:
 
 - Accept the current ingest implementation as strongly aligned on connector-family coverage, replayable raw persistence, checkpoint-after-durable-write semantics, and simpler client-neutral config handling.
 - Keep the observability/artifact gap and the still-REST-localized envelope capability as explicit provenance findings until they are either implemented or intentionally narrowed in the PRD/review record.
+
+## Review Pass 2: Normalize
+
+- `Review area`: normalize
+- `Current anchor(s)`:
+  - `src/elt_pipeline/normalize/pipeline.py`
+  - `src/elt_pipeline/normalize/runner.py`
+  - `src/elt_pipeline/normalize/partitioning.py`
+  - `src/elt_pipeline/normalize/level2_storage.py`
+  - `src/elt_pipeline/normalize/storage.py`
+  - `src/elt_pipeline/cli.py` (normalize dispatch + bypass)
+  - `src/elt_pipeline/integrations/quality.py`
+  - `src/elt_pipeline/shared/audit.py`, `src/elt_pipeline/shared/errors.py`, `src/elt_pipeline/shared/lineage.py`, `src/elt_pipeline/shared/logging.py`
+- `PRD anchor(s)`:
+  - `docs/prd/02-prd-level1-to-level2.md`
+  - `docs/prd/00-prd-shared-observability-audit-and-error-handling.md`
+  - `docs/prd/00-prd-architecture-levels-and-governance.md`
+  - `docs/prd/07-prd-optional-platform-integrations.md`
+- `Legacy baseline(s)`:
+  - `bi-bdp-elt/transform-ingest`
+  - `edp-elt-ingestion-main/edp-elt-transform-ingest`
+- `Evidence inspected`:
+  - example configs under `examples/configs/`, including `local_object_storage_orders.yaml` and `local_object_storage_orders_csv_bypass.yaml`
+  - normalization tests under `tests/test_normalize_pipeline.py` and `tests/test_normalize_runner.py`
+  - local SQL stage demo package under `examples/sql/local_demo/` (used as a downstream consumer of level2 materializations)
+- `Observed alignment`:
+  - the runtime makes the stage optional via config (`level2_mode`), and explicitly records bypass runs with audit + lineage + log artifacts (rather than silently skipping work)
+  - the normalize stage emits structured run artifacts (audit record, log events, structured errors, lineage events) using the shared observability contract patterns
+  - `NormalizationRunner` implements deterministic flattening/explosion into multiple tables with join key propagation and identifier sanitization
+  - mapping catalogs are deterministic and stable: `mapping_version` is derived from a canonical structural payload hash, and the mapping catalog is stored under a `source/entity/mapping_version` location so reruns reuse the same artifact path when structure is unchanged
+  - level2 outputs are materialized with a consistent path contract that includes environment/source/entity/mapping_version/partition/table/run_id, with per-table manifests capturing run and input-provenance context
+  - the normalize stage supports a first-slice quality hook integration and records the evaluation outcome in run metadata
+- `Intentional divergence`:
+  - the first implementation materializes `level2` as local `jsonl` files (not parquet) as a pragmatic local-first contract that still preserves table/partition semantics and replayability
+  - normalization is generic and payload-driven (JSON/CSV) rather than being driven by a rich, per-source mapping configuration layer (schema definitions, flatten rules, evolution policies)
+  - type enforcement and schema evolution policies are not implemented in v1; normalization focuses on structural flattening and reproducible mapping catalogs
+- `Risk or ambiguity`:
+  - `Flag for review`: PRD 02 describes a source mapping configuration contract (schemas, flatten rules, evolution policy, write mode) and multiple format families (XML/Avro/etc.); current normalization supports JSON/CSV only and does not yet expose a mapping-config surface beyond `level2_mode` and partitioning strategy
+  - `Flag for review`: PRD 02 emphasizes deterministic type casting with error capture; current normalize runner does not yet apply type casting rules or produce typed schemas as artifacts
+- `Outcome`: needs follow-up
+
+Review conclusion:
+
+- Accept the current normalize stage as aligned on explicit optionality (bypass vs normalize), deterministic mapping catalogs, stable table naming with collision/length safeguards, and shared audit/log/error/lineage artifacts.
+- Keep the missing mapping-config contract (schemas, evolution, and broader payload formats) as an explicit provenance finding until PRD scope is narrowed or the contract is implemented.
+
+## Review Pass 3: SQL
+
+- `Review area`: sql
+- `Current anchor(s)`:
+  - `src/elt_pipeline/sql/discovery.py`
+  - `src/elt_pipeline/sql/models.py`
+  - `src/elt_pipeline/sql/compiler.py`
+  - `src/elt_pipeline/sql/graph.py`
+  - `src/elt_pipeline/sql/executor.py`
+  - `src/elt_pipeline/sql/runtime.py`
+  - `src/elt_pipeline/cli.py` (sql dispatch)
+  - `src/elt_pipeline/integrations/quality.py`
+  - `src/elt_pipeline/shared/audit.py`, `src/elt_pipeline/shared/errors.py`, `src/elt_pipeline/shared/lineage.py`, `src/elt_pipeline/shared/logging.py`
+- `PRD anchor(s)`:
+  - `docs/prd/03-prd-sql-level2-to-level3-and-level3-to-level4.md`
+  - `docs/prd/00-prd-shared-observability-audit-and-error-handling.md`
+  - `docs/prd/00-prd-architecture-levels-and-governance.md`
+  - `docs/prd/07-prd-optional-platform-integrations.md`
+- `Legacy baseline(s)`:
+  - `edp-elt-ingestion-main/edp-elt-transform-sql`
+  - `bi-bdp-elt/transform-cfg`
+  - `bi-bdp-elt/utility-athena`
+  - `bi-bdp-elt/transform-check`
+  - `bi-bdp-elt/transform-report`
+- `Evidence inspected`:
+  - example SQL package under `examples/sql/local_demo/` (model manifests + SQL text)
+  - SQL tests under `tests/test_sql_models.py`
+  - runtime smoke coverage under `tests/test_runtime.py` and `tests/test_examples.py`
+- `Observed alignment`:
+  - SQL models are treated as first-class artifacts via `manifest.yaml` + `model.sql`, with typed validation and directory-structure enforcement at discovery time
+  - manifests encode the core PRD-required metadata: stage (`level3`/`level4`), domain, model name, target table, explicit load mode, dependencies, and model-level quality expectations
+  - dependency ordering is deterministic via topological sorting and supports selective runs with optional inclusion of upstream dependencies
+  - runtime parameterization is implemented as simple, deterministic token replacement with fail-fast validation for missing tokens, while recording resolved token values for auditability
+  - load modes support the initial PRD slice (`full_refresh`, `append`, `partition_overwrite`) with explicit runtime validation when partition overwrite is selected
+  - model-level validations (row count minimum, uniqueness, and not-null checks) are executed and persisted as part of the run record, with failures treated as blocking errors
+  - SQL runs emit structured audit/log/error artifacts and lineage events, including per-model execution events for traceability
+- `Intentional divergence`:
+  - the first implementation is local-first and executes against `sqlite`, avoiding warehouse-specific coupling from the baselines
+  - the execution surface is intentionally minimal (table materialization only; no merge/upsert semantics; no snapshot/SCD helpers)
+  - tokenization intentionally avoids a macro engine (no Jinja/dbt-like templating), favoring a small validated placeholder system
+- `Risk or ambiguity`:
+  - `Flag for review`: PRD 03 calls out merge/upsert and broader materialization strategies; current runtime does not implement merge/upsert or snapshot/SCD patterns
+  - `Flag for review`: legacy “data exists / ready” checks are not present as a first-class step; the current contract relies on model execution + validations rather than explicit preflight existence checks
+- `Outcome`: needs follow-up
+
+Review conclusion:
+
+- Accept the SQL stage as aligned on model packaging, dependency ordering, deterministic tokenization, explicit load modes (within the v1 slice), blocking validations, and shared observability artifacts.
+- Keep merge/upsert and broader materialization behavior as explicit gaps pending PRD narrowing or runtime expansion.
+
+## Review Pass 4: Publish
+
+- `Review area`: publish
+- `Current anchor(s)`:
+  - `src/elt_pipeline/publish/discovery.py`
+  - `src/elt_pipeline/publish/models.py`
+  - `src/elt_pipeline/publish/runtime.py`
+  - `src/elt_pipeline/cli.py` (publish dispatch)
+  - `src/elt_pipeline/shared/audit.py`, `src/elt_pipeline/shared/errors.py`, `src/elt_pipeline/shared/lineage.py`, `src/elt_pipeline/shared/logging.py`
+- `PRD anchor(s)`:
+  - `docs/prd/06-prd-level4-to-level5-publish-and-export.md`
+  - `docs/prd/00-prd-shared-observability-audit-and-error-handling.md`
+  - `docs/prd/00-prd-architecture-levels-and-governance.md`
+- `Legacy baseline(s)`:
+  - `bi-bdp-elt/consume-*`
+- `Evidence inspected`:
+  - example publish package under `examples/publish/local_demo/` (manifests and optional query.sql)
+  - publish tests under `tests/test_publish_models.py` and `tests/test_publish_cli.py`
+- `Observed alignment`:
+  - publish definitions are treated as first-class artifacts (`manifest.yaml`, optional `query.sql`) with typed validation and directory-structure enforcement at discovery time
+  - the v1 contract is enforced in the manifest: `source.stage` is constrained to `level4` and local filesystem delivery is the only supported target type
+  - required client-neutral delivery metadata is present and validated (owning domain, owner team, consumer label, delivery purpose)
+  - publish supports both direct dataset exports and query-driven selection, matching the approved v1 PRD decision
+  - output formats include the required first-slice formats (`csv`, `jsonl`) plus `tsv`, and support optional archive packaging via `delivery.packaging.archive_format`
+  - runs always write run-scoped artifacts and include a run-scoped manifest describing what was produced, with optional stable delivery paths depending on replacement mode
+  - publish runs emit structured audit/log/error artifacts and lineage events mapping sqlite inputs to file outputs
+- `Intentional divergence`:
+  - the runtime includes additional convenience beyond the mandatory slice (TSV output, optional archive packaging) while keeping the default contract local-first and manifest-driven
+  - replacement semantics are implemented as explicit modes, without introducing external transport or consumer acknowledgment workflows
+- `Risk or ambiguity`:
+  - `Flag for review`: PRD 06 reserves several follow-on capabilities (parquet extracts, canned reports, broader packaging semantics); the current implementation includes optional archive packaging, so ensure the feature stays optional and does not expand the required contract without PRD update
+  - `Open scope note`: only local filesystem delivery is supported, as required by v1; external delivery adapters remain future work
+- `Outcome`: accepted
+
+Review conclusion:
+
+- Accept the publish stage as aligned to PRD 06 v1 on local-only delivery, run-scoped manifests, required metadata validation, and direct vs query selection modes.
+- Treat optional archive packaging as acceptable “ahead of need” implementation only if it remains non-mandatory and PRD 06 reserved-scope guidance is preserved. 
