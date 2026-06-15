@@ -71,6 +71,9 @@ instance/
 # Sphinx documentation
 docs/_build/
 
+# Maintainer-only provenance notes
+docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.local.md
+
 # PyBuilder
 .pybuilder/
 target/
