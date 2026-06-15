@@ -303,3 +303,56 @@ That deliverable should summarize:
 - where the current implementation intentionally simplifies or departs from the baselines
 - where evidence from local runs confirms the current behavior
 - which items, if any, require PRD clarification before further work is considered
+
+## Review Pass 1: Ingest
+
+- `Review area`: ingest
+- `Current anchor(s)`:
+  - `src/elt_pipeline/ingest/connectors/rest.py`
+  - `src/elt_pipeline/ingest/connectors/local_rest.py`
+  - `src/elt_pipeline/ingest/connectors/sql.py`
+  - `src/elt_pipeline/ingest/connectors/local_sql.py`
+  - `src/elt_pipeline/ingest/connectors/object_storage.py`
+  - `src/elt_pipeline/ingest/connectors/local_object_storage.py`
+  - `src/elt_pipeline/ingest/connectors/kafka.py`
+  - `src/elt_pipeline/ingest/connectors/local_kafka.py`
+  - `src/elt_pipeline/ingest/storage.py`
+  - `src/elt_pipeline/ingest/state.py`
+  - `src/elt_pipeline/cli.py`
+- `PRD anchor(s)`:
+  - `docs/prd/01-prd-ingestion-raw-to-level1.md`
+  - `docs/prd/00-prd-shared-observability-audit-and-error-handling.md`
+  - `docs/prd/00-prd-platform-principles.md`
+- `Legacy baseline(s)`:
+  - `bi-bdp-elt/ingest-*`
+  - `edp-elt-ingestion-main/edp-elt-ingest-*`
+- `Evidence inspected`:
+  - example configs under `examples/configs/`
+  - connector and storage tests under `tests/test_rest_connectors.py`, `tests/test_sql_connectors.py`, `tests/test_object_storage_connectors.py`, `tests/test_kafka_connectors.py`, `tests/test_ingest_storage.py`, and `tests/test_cli.py`
+  - one local object-storage ingest run captured under `tmp_provenance_ingest_review/`
+  - resulting local artifacts inspected:
+    - `tmp_provenance_ingest_review/level1/.../orders.json.json.manifest.json`
+    - `tmp_provenance_ingest_review/state/environment=default/source=local_files/entity=orders.json`
+- `Observed alignment`:
+  - the runtime implements the four required first-class connector families: `rest`, `sql`, `object_storage`, and `kafka`
+  - all four families follow a shared lifecycle shape: validate config, resolve prior checkpoint state, extract or consume, persist raw `level1` artifacts, and update checkpoints only after persistence
+  - `LocalLevel1Writer` provides a standardized `level1` path contract using environment, source, entity, ingest date, optional window label, and `run_id`
+  - `Level1ArtifactManifest` captures the minimum reproducibility fields expected by the ingestion PRD: `run_id`, source/entity, trigger, extraction mode, timestamps, checkpoint context, payload format, content hash, and artifact paths
+  - `LocalCheckpointStore` preserves current state plus checkpoint history with `manifest_paths`, enabling replay and backfill seed resolution rather than opaque point-in-time state only
+  - CLI backfill flow reuses saved checkpoint history to seed replay windows, which aligns with the PRD emphasis on replayability and controlled reprocessing
+  - REST support includes config-driven request templating, auth strategies, retry policy, pagination, and envelope item extraction while preserving the original response artifact in `level1`
+- `Intentional divergence`:
+  - the current implementation is explicitly local-first and uses pragmatic local adapters (`sqlite`, local directories, local JSONL Kafka log) instead of reproducing cloud-runtime operational complexity from the baselines
+  - config handling is materially simpler and more client-neutral than the legacy stacks; connector config is validated into typed models instead of distributing path and behavior inference across many modules
+  - object storage is currently modeled as local-path pickup for v1 review evidence, which is a simplification of broader historical object-store patterns
+- `Risk or ambiguity`:
+  - `Flag for review`: the current `ingest run` path does not appear to emit the shared run artifact set under `runs/stage=ingest/...` even though the ingestion PRD and shared observability PRD call for authoritative audit, structured logs, structured errors, and lineage-compatible events for ingestion runs
+  - `Flag for review`: envelope extraction and payload decoding are implemented inside the REST connector path, but there is not yet evidence of a connector-agnostic shared envelope capability reused across multiple ingestion families as described in the ingestion PRD
+  - `Flag for review`: SQL watermark resolution currently supports checkpoint/static sources, but there is not yet evidence of the broader PRD aspiration to resolve delta state from prior `level1`/`level2`/`level3` platform-managed history sources
+  - `Open scope note`: the current examples prove local object pickup, but they do not yet demonstrate the PRD's cross-account object-storage coverage target
+- `Outcome`: needs follow-up
+
+Review conclusion:
+
+- Accept the current ingest implementation as strongly aligned on connector-family coverage, replayable raw persistence, checkpoint-after-durable-write semantics, and simpler client-neutral config handling.
+- Keep the observability/artifact gap and the still-REST-localized envelope capability as explicit provenance findings until they are either implemented or intentionally narrowed in the PRD/review record.

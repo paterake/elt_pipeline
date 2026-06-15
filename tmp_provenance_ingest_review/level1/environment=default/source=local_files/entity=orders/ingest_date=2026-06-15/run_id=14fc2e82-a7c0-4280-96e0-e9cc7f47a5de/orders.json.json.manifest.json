@@ -1,0 +1,31 @@
+{
+  "artifact_id": "054742b33c766cdf9d914182",
+  "checkpoint_after": null,
+  "checkpoint_before": null,
+  "compression": null,
+  "content_hash": "02f4d169d1f59f5fe412c47b35a17f424d228c00fac2fe028d302410f9cfe947",
+  "data_path": "level1/environment=default/source=local_files/entity=orders/ingest_date=2026-06-15/run_id=14fc2e82-a7c0-4280-96e0-e9cc7f47a5de/orders.json.json",
+  "entity_name": "orders",
+  "environment": "default",
+  "extraction_mode": "manual",
+  "file_size_bytes": 540,
+  "ingest_completed_at": "2026-06-15T11:47:43.942866Z",
+  "ingest_started_at": "2026-06-15T11:47:43.941438Z",
+  "job_name": "ingest-run",
+  "manifest_path": "level1/environment=default/source=local_files/entity=orders/ingest_date=2026-06-15/run_id=14fc2e82-a7c0-4280-96e0-e9cc7f47a5de/orders.json.json.manifest.json",
+  "manifest_version": "v1",
+  "metadata": {
+    "bucket_path": "examples/data/object_storage",
+    "object_key": "orders.json",
+    "object_last_modified": "2026-06-13T20:09:45.455250+00:00",
+    "object_size_bytes": 540
+  },
+  "payload_format": "json",
+  "record_count_estimate": null,
+  "run_id": "14fc2e82-a7c0-4280-96e0-e9cc7f47a5de",
+  "source_name": "local_files",
+  "trigger_type": "manual",
+  "window_end": null,
+  "window_label": null,
+  "window_start": null
+}
