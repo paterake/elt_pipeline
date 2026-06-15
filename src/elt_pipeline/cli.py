@@ -42,7 +42,12 @@ from elt_pipeline.publish import (
     run_publish_definitions_locally,
 )
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
-from elt_pipeline.shared.errors import ConfigValidationError, PipelineError, build_error_record
+from elt_pipeline.shared.errors import (
+    ConfigValidationError,
+    ErrorCategory,
+    PipelineError,
+    build_error_record,
+)
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.runtime import (
@@ -1344,51 +1349,259 @@ def _run_ingest_entity(
             },
         ) from exc
 
-    if connector_type == "rest":
-        result = _CliLocalRestConnector(
-            config=RestConnectorConfig.from_resolved_entity_config(resolved_config),
+    artifact_store = LocalArtifactStore(root_path)
+    lineage_adapter = build_lineage_adapter(root_path)
+    artifact_store.append_log_event(
+        run_context=run_context,
+        environment=resolved_config.environment,
+        log_event=build_log_event(
             run_context=run_context,
-            root_path=root_path,
-            checkpoint_override=checkpoint_override,
-            window=cli_window,
-        ).run()
-    elif connector_type == "sql":
-        result = _CliLocalSqlConnector(
-            config=SqlConnectorConfig.from_resolved_entity_config(resolved_config),
-            run_context=run_context,
-            root_path=root_path,
-            checkpoint_override=checkpoint_override,
-            window=cli_window,
-        ).run()
-    elif connector_type == "object_storage":
-        result = _CliLocalObjectStorageConnector(
-            config=ObjectStorageConnectorConfig.from_resolved_entity_config(resolved_config),
-            run_context=run_context,
-            root_path=root_path,
-            checkpoint_override=checkpoint_override,
-            window=cli_window,
-        ).run()
-    elif connector_type == "kafka":
-        result = _CliLocalKafkaConnector(
-            config=KafkaConnectorConfig.from_resolved_entity_config(resolved_config),
-            run_context=run_context,
-            root_path=root_path,
-            log_path=_resolve_kafka_log_path(
-                resolved_config=resolved_config,
-                explicit_log_path=kafka_log_path,
-            ),
-            checkpoint_override=checkpoint_override,
-            window=cli_window,
-        ).run()
-    else:
-        raise ConfigValidationError(
-            message="Unsupported connector type for local ingest CLI",
-            context={
+            severity="INFO",
+            component="ingest",
+            event_type="ingest_run_start",
+            message="Ingest run started",
+            details={
                 "source_name": resolved_config.source_name,
                 "entity_name": resolved_config.entity_name,
                 "connector_type": connector_type,
+                "window_start": _serialize_datetime(cli_window.start),
+                "window_end": _serialize_datetime(cli_window.end),
+                "window_label": cli_window.label,
+                "backfill": backfill,
+            },
+        ),
+    )
+    lineage_adapter.emit(
+        run_context=run_context,
+        environment=resolved_config.environment,
+        lineage_event=LineageEvent(
+            event_type="START",
+            run_id=run_context.run_id,
+            job_name=run_context.job_name,
+            inputs=[
+                DatasetRef(
+                    namespace="source",
+                    name=f"{resolved_config.source_name}/{resolved_config.entity_name}",
+                    facets={"connector_type": connector_type},
+                )
+            ],
+        ),
+    )
+
+    completed_at: datetime | None = None
+    status = "success"
+    error_summary: dict[str, str] | None = None
+    failure: PipelineError | None = None
+    result = None
+
+    try:
+        if connector_type == "rest":
+            result = _CliLocalRestConnector(
+                config=RestConnectorConfig.from_resolved_entity_config(resolved_config),
+                run_context=run_context,
+                root_path=root_path,
+                checkpoint_override=checkpoint_override,
+                window=cli_window,
+            ).run()
+        elif connector_type == "sql":
+            result = _CliLocalSqlConnector(
+                config=SqlConnectorConfig.from_resolved_entity_config(resolved_config),
+                run_context=run_context,
+                root_path=root_path,
+                checkpoint_override=checkpoint_override,
+                window=cli_window,
+            ).run()
+        elif connector_type == "object_storage":
+            result = _CliLocalObjectStorageConnector(
+                config=ObjectStorageConnectorConfig.from_resolved_entity_config(resolved_config),
+                run_context=run_context,
+                root_path=root_path,
+                checkpoint_override=checkpoint_override,
+                window=cli_window,
+            ).run()
+        elif connector_type == "kafka":
+            result = _CliLocalKafkaConnector(
+                config=KafkaConnectorConfig.from_resolved_entity_config(resolved_config),
+                run_context=run_context,
+                root_path=root_path,
+                log_path=_resolve_kafka_log_path(
+                    resolved_config=resolved_config,
+                    explicit_log_path=kafka_log_path,
+                ),
+                checkpoint_override=checkpoint_override,
+                window=cli_window,
+            ).run()
+        else:
+            raise ConfigValidationError(
+                message="Unsupported connector type for local ingest CLI",
+                context={
+                    "source_name": resolved_config.source_name,
+                    "entity_name": resolved_config.entity_name,
+                    "connector_type": connector_type,
+                },
+            )
+        completed_at = datetime.now(tz=UTC)
+    except PipelineError as exc:
+        completed_at = datetime.now(tz=UTC)
+        status = "failed"
+        failure = exc
+        error_summary = {
+            "error_code": exc.error_code,
+            "error_category": exc.error_category.value,
+            "message": str(exc),
+        }
+        artifact_store.append_error_record(
+            run_context=run_context,
+            environment=resolved_config.environment,
+            error_record=build_error_record(
+                run_id=run_context.run_id,
+                error_code=exc.error_code,
+                error_category=exc.error_category,
+                message=str(exc),
+                retryable=exc.retryable,
+                context=exc.context,
+            ),
+        )
+    except Exception as exc:
+        completed_at = datetime.now(tz=UTC)
+        status = "failed"
+        failure = PipelineError(
+            message="Unexpected ingest failure",
+            error_code="INGEST_UNEXPECTED_ERROR",
+            error_category=ErrorCategory.unexpected_runtime_error,
+            retryable=True,
+            context={
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
             },
         )
+        error_summary = {
+            "error_code": failure.error_code,
+            "error_category": failure.error_category.value,
+            "message": str(failure),
+        }
+        artifact_store.append_error_record(
+            run_context=run_context,
+            environment=resolved_config.environment,
+            error_record=build_error_record(
+                run_id=run_context.run_id,
+                error_code=failure.error_code,
+                error_category=failure.error_category,
+                message=str(failure),
+                retryable=failure.retryable,
+                context=failure.context,
+            ),
+        )
+    finally:
+        manifests: list[Level1ArtifactManifest] = []
+        if result is not None:
+            manifests = list(getattr(result, "manifests", []) or [])
+
+        total_record_estimates = [
+            manifest.record_count_estimate
+            for manifest in manifests
+            if manifest.record_count_estimate is not None
+        ]
+        records_written = (
+            sum(total_record_estimates) if total_record_estimates else None
+        )
+        metrics_extra: dict[str, int | float | str] = {
+            "connector_type": connector_type,
+            "backfill": str(backfill).lower(),
+        }
+        for field_name in (
+            "request_count",
+            "response_count",
+            "query_count",
+            "row_count",
+            "message_count",
+            "objects_discovered",
+            "objects_copied",
+            "bytes_copied",
+        ):
+            value = getattr(result, field_name, None) if result is not None else None
+            if isinstance(value, (int, float)):
+                metrics_extra[field_name] = value
+
+        artifact_store.write_audit_record(
+            run_context=run_context,
+            environment=resolved_config.environment,
+            audit_record=AuditRecord(
+                run_id=run_context.run_id,
+                stage=run_context.stage.value,
+                job_name=run_context.job_name,
+                trigger_type=run_context.trigger_type,
+                started_at=run_context.started_at,
+                completed_at=completed_at,
+                status=status,
+                config_version=None,
+                metrics_summary=MetricsSummary(
+                    records_read=records_written,
+                    records_written=records_written,
+                    files_written=len(manifests),
+                    extra=metrics_extra,
+                ),
+                error_summary=error_summary,
+                context={
+                    "environment": resolved_config.environment,
+                    "source_name": resolved_config.source_name,
+                    "entity_name": resolved_config.entity_name,
+                    "connector_type": connector_type,
+                    "root_path": str(root_path),
+                    "window_start": _serialize_datetime(cli_window.start),
+                    "window_end": _serialize_datetime(cli_window.end),
+                    "window_label": cli_window.label or "",
+                    "checkpoint_seeded": str(checkpoint_override.active).lower(),
+                },
+            ),
+        )
+        lineage_adapter.emit(
+            run_context=run_context,
+            environment=resolved_config.environment,
+            lineage_event=LineageEvent(
+                event_type="COMPLETE" if status == "success" else "FAIL",
+                run_id=run_context.run_id,
+                job_name=run_context.job_name,
+                inputs=[
+                    DatasetRef(
+                        namespace="source",
+                        name=f"{resolved_config.source_name}/{resolved_config.entity_name}",
+                        facets={"connector_type": connector_type},
+                    )
+                ],
+                outputs=[
+                    DatasetRef(
+                        namespace="local",
+                        name=manifest.data_path,
+                        facets={
+                            "artifact_id": manifest.artifact_id,
+                            "content_hash": manifest.content_hash,
+                            "payload_format": manifest.payload_format,
+                            "manifest_path": manifest.manifest_path,
+                        },
+                    )
+                    for manifest in manifests
+                ],
+            ),
+        )
+        artifact_store.append_log_event(
+            run_context=run_context,
+            environment=resolved_config.environment,
+            log_event=build_log_event(
+                run_context=run_context,
+                severity="INFO" if status == "success" else "ERROR",
+                component="ingest",
+                event_type="ingest_run_complete",
+                message="Ingest run completed",
+                details={
+                    "status": status,
+                    "artifact_count": len(manifests),
+                },
+            ),
+        )
+
+    if failure is not None:
+        raise failure
 
     return {
         "run_id": run_context.run_id,
