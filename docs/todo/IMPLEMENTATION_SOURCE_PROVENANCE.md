@@ -218,3 +218,88 @@ In `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.local.md` (ignored by `.gitignore
 - any workstation notes required to run searches locally (e.g., monorepo layout quirks)
 
 Do not include client identifiers or proprietary configuration payloads in committed files.
+
+## Provenance Review Workflow
+
+Execute the provenance review in a consistent order so conclusions are tied to current requirements and current runtime evidence.
+
+1. Populate `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.local.md` with reviewer-local archive paths and frozen identifiers.
+2. Select one review area at a time:
+   - ingest
+   - normalize
+   - sql
+   - publish
+3. Re-read the corresponding PRD section under `docs/prd/` before inspecting either the current code or the legacy baseline.
+4. Identify the current implementation anchor in `src/elt_pipeline/` and the relevant legacy baseline module(s).
+5. Compare behavior at the level of:
+   - runtime contract
+   - config contract
+   - evidence emitted by the run
+   - known intentional simplifications
+6. Validate the comparison against current example assets and local run artifacts rather than relying on memory.
+7. Record findings as one of:
+   - aligned baseline reuse
+   - intentional divergence
+   - open question
+   - follow-up candidate for PRD/backlog
+
+## Recommended Review Record Format
+
+For each review area, capture notes in a structured format so the result is auditable and easy to hand off.
+
+Suggested record fields:
+
+- `Review area`: ingest / normalize / sql / publish
+- `Current anchor(s)`: current runtime modules reviewed under `src/elt_pipeline/`
+- `PRD anchor(s)`: requirement documents used as the authoritative reference
+- `Legacy baseline(s)`: redacted module identifiers from the archive repositories
+- `Evidence inspected`: configs, manifests, logs, audit artifacts, lineage artifacts, or run outputs used during the review
+- `Observed alignment`: where the current implementation clearly follows a legacy pattern that still matches the PRD
+- `Intentional divergence`: where the current implementation deliberately differs for simplicity, client-neutrality, or correctness
+- `Risk or ambiguity`: anything that needs clarification, deeper validation, or PRD expansion
+- `Outcome`: accepted / needs follow-up / convert to backlog candidate
+
+## Divergence Classification Guidance
+
+Not every difference from a legacy baseline is a problem.
+
+Classify differences using the following rules:
+
+- `Accept as intentional divergence` when the current implementation is simpler, more explicit, or more client-neutral while still satisfying the PRD.
+- `Accept as modernization` when the legacy baseline used older operational patterns and the current implementation replaces them with clearer contracts or better evidence capture.
+- `Flag for review` when a legacy capability appears materially required by a PRD but is not represented in the current implementation or examples.
+- `Convert to PRD/backlog candidate` when the review reveals genuinely valuable behavior that is outside the currently approved scope.
+
+## Review Boundaries
+
+During provenance review, do not treat the existence of a legacy pattern as sufficient reason to expand scope.
+
+Specifically:
+
+- do not reintroduce client-specific config shapes into `elt_pipeline_cfg`
+- do not rebuild inferred path derivation logic just because it existed historically
+- do not treat legacy module count or feature sprawl as a target architecture
+- do not mark a review item as a defect unless it conflicts with the PRDs or the current documented contract
+
+## Completion Criteria
+
+The provenance review can be considered complete when all of the following are true:
+
+- each stage (`ingest`, `normalize`, `sql`, `publish`) has a recorded review pass
+- each review pass references the authoritative PRD sections that were used
+- each review pass identifies the current implementation anchors that were inspected
+- each review pass lists the relevant legacy baseline modules consulted
+- intentional divergences are explicitly recorded rather than left implicit
+- no finding depends on non-committed client identifiers or proprietary payloads
+- any scope-expanding observation is redirected into PRD/backlog workflow instead of being treated as an immediate implementation task
+
+## Expected Deliverable
+
+The output of this provenance exercise should be a concise review artifact, not a new implementation backlog.
+
+That deliverable should summarize:
+
+- where the current implementation clearly inherits useful baseline patterns
+- where the current implementation intentionally simplifies or departs from the baselines
+- where evidence from local runs confirms the current behavior
+- which items, if any, require PRD clarification before further work is considered
