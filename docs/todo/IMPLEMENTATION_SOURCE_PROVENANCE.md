@@ -176,3 +176,45 @@ Use this checklist when conducting the detailed review:
 - The implementation backlog in `docs/todo/IMPLEMENTATION_BACKLOG.md` is complete for the currently approved scope.
 - The completed backlog snapshot is archived in `docs/todo/archive/IMPLEMENTATION_BACKLOG_COMPLETED.md`.
 - This provenance file exists to support a post-completion review of how the implementation was derived, not to expand scope.
+
+## Current Implementation Pointers (Review Anchors)
+
+Use these as review anchors when comparing the current implementation to the legacy baselines and PRDs.
+
+- Config loading + schema contract: `src/elt_pipeline/config/`
+- Ingestion runtime + connector families: `src/elt_pipeline/ingest/`
+  - Connectors: `src/elt_pipeline/ingest/connectors/`
+  - Checkpoint/state: `src/elt_pipeline/ingest/state.py`
+  - Raw landing storage layout: `src/elt_pipeline/ingest/storage.py`
+- Level1->Level2 normalization: `src/elt_pipeline/normalize/`
+- SQL discovery/compile/execute (Level2->Level3/4): `src/elt_pipeline/sql/`
+- Publish/export runtime (Level4->Level5): `src/elt_pipeline/publish/`
+- Shared contracts (audit, errors, logging, lineage, runtime): `src/elt_pipeline/shared/`
+
+## Evidence Capture During Provenance Review
+
+Collect and validate evidence using the runtime’s own artifacts rather than relying on memory or baseline assumptions.
+
+Recommended evidence sources:
+
+- Example configs: `examples/configs/`
+- Example SQL manifests/models: `examples/sql/`
+- Publish manifests: `examples/publish/`
+- Local run artifacts (audit, logs, lineage): `runs/`
+
+For each stage under review (ingest / normalize / sql / publish), verify:
+
+- audit artifacts include the expected identifiers and timestamps for the run
+- logs are sufficient to reconstruct “what happened” without client-specific context
+- lineage is emitted consistently and remains optional/local-first
+- error taxonomy matches the PRDs and remains stable across connectors
+
+## Local-Only Source Map Guidance (Not Committed)
+
+In `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.local.md` (ignored by `.gitignore`), record reviewer-local details needed to reproduce the provenance review:
+
+- absolute filesystem path to each legacy archive repository
+- the archive’s “frozen” identifier (commit hash, tag, or archive label), if available
+- any workstation notes required to run searches locally (e.g., monorepo layout quirks)
+
+Do not include client identifiers or proprietary configuration payloads in committed files.
