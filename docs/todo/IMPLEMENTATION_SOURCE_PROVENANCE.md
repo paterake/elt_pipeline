@@ -489,4 +489,56 @@ Review conclusion:
 Review conclusion:
 
 - Accept the publish stage as aligned to PRD 06 v1 on local-only delivery, run-scoped manifests, required metadata validation, and direct vs query selection modes.
-- Treat optional archive packaging as acceptable “ahead of need” implementation only if it remains non-mandatory and PRD 06 reserved-scope guidance is preserved. 
+- Treat optional archive packaging as acceptable "ahead of need" implementation only if it remains non-mandatory and PRD 06 reserved-scope guidance is preserved.
+
+## Cross-Stage Provenance Summary
+
+- The current implementation clearly inherits useful baseline patterns around stage-oriented runtime separation, manifest-driven contracts, deterministic artifact paths, replayability, and evidence capture.
+- The strongest areas of alignment are:
+  - ingest connector-family coverage with replayable raw persistence and checkpoint-after-durable-write behavior
+  - normalize determinism around mapping catalogs, table naming, and explicit bypass handling
+  - SQL packaging, dependency ordering, validated parameterization, and blocking validations
+  - publish manifest discovery, local-first delivery, and run-scoped output evidence
+- The strongest intentional divergences are:
+  - local-first execution surfaces instead of reproducing cloud-runtime coupling from the baselines
+  - materially simpler, typed, and client-neutral config handling
+  - explicit avoidance of legacy config/path derivation sprawl
+  - smaller v1 execution surfaces that preserve the approved contract without inheriting historical feature breadth
+
+## Evidence-Based Conclusion
+
+- Local examples, targeted tests, and existing run artifacts are sufficient to show that the current runtime is not a thin copy of either legacy baseline; it selectively preserves the durable patterns that still match the PRDs.
+- The current implementation should be treated as a modernization of the legacy approaches rather than a direct recreation:
+  - simpler configuration contracts
+  - clearer run evidence
+  - local-first optional integrations
+  - reduced operational complexity
+- No review pass required client-specific identifiers or proprietary payloads to explain the current behavior.
+
+## Follow-Up Candidates
+
+The provenance review identifies a small set of items that should remain explicit for PRD clarification or later backlog triage rather than being silently absorbed into scope:
+
+1. Ingest observability parity:
+   - confirm whether ingestion must emit the same authoritative `runs/stage=ingest/...` artifact set already present for normalize, SQL, and publish
+2. Shared envelope capability:
+   - decide whether envelope extraction should become a cross-connector ingestion contract or remain a REST-specific implementation detail
+3. Broader delta-state resolution:
+   - confirm whether SQL/ingest delta handling must resolve from platform-managed level history beyond checkpoint/static sources
+4. Normalize mapping contract:
+   - decide whether PRD 02 should be narrowed to the implemented JSON/CSV structural normalization slice or expanded into typed schema/mapping policy implementation
+5. SQL materialization breadth:
+   - decide whether merge/upsert, snapshot, and SCD behavior are required for the approved SQL stage scope
+
+## Final Review Outcome
+
+- `Ingest`: needs follow-up
+- `Normalize`: needs follow-up
+- `SQL`: needs follow-up
+- `Publish`: accepted
+
+Overall disposition:
+
+- Accept the repository as broadly aligned with the intended baseline patterns and current PRDs for the approved v1 implementation.
+- Keep the remaining gaps framed as provenance review findings, not automatic defects, unless and until the PRDs explicitly require the broader behavior.
+- Redirect any scope-expanding discoveries into PRD or backlog workflow rather than reopening implementation by implication from the archived baselines.
