@@ -287,8 +287,8 @@ A later session should aim to complete:
 
 Use this when resuming in a new session:
 
-- Resume prompt: `from docs/todo/IMPLEMENTATION_BACKLOG.md continue with the next approved post-v1 item`
-- Implementation provenance inputs (legacy baseline sources + config mapping notes) are captured in `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.md`.
+- Resume prompt: `from docs/todo/archive/IMPLEMENTATION_BACKLOG.md continue with the next approved post-v1 item`
+- Implementation provenance inputs (legacy baseline sources + config mapping notes) are captured in `docs/todo/archive/IMPLEMENTATION_SOURCE_PROVENANCE.md`.
 - The authoritative `level5` PRD is `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
 - The approved Phase 14 integration baseline is `docs/prd/07-prd-optional-platform-integrations.md`.
 - The key clarification is that `level4` is still the consumer datamart/table layer.

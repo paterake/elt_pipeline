@@ -173,7 +173,7 @@ Use this checklist when conducting the detailed review:
 
 ## Notes
 
-- The implementation backlog in `docs/todo/IMPLEMENTATION_BACKLOG.md` is complete for the currently approved scope.
+- The implementation backlog in `docs/todo/archive/IMPLEMENTATION_BACKLOG.md` is complete for the currently approved scope.
 - The completed backlog snapshot is archived in `docs/todo/archive/IMPLEMENTATION_BACKLOG_COMPLETED.md`.
 - This provenance file exists to support a post-completion review of how the implementation was derived, not to expand scope.
 

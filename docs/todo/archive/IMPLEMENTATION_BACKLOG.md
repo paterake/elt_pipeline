@@ -3,7 +3,7 @@
 The implementation backlog for the currently approved scope is complete and has been archived.
 
 - Completed snapshot: `docs/todo/archive/IMPLEMENTATION_BACKLOG_COMPLETED.md`
-- Provenance capture (sources used during implementation): `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.md`
+- Provenance capture (sources used during implementation): `docs/todo/archive/IMPLEMENTATION_SOURCE_PROVENANCE.md`
 
 Next work:
 

@@ -44,7 +44,7 @@ This repository must remain client-neutral.
 
 PRDs live in `docs/prd/` and define the target-state architecture.
 
-The implementation continuity backlog is tracked in `docs/todo/IMPLEMENTATION_BACKLOG.md`.
+The implementation continuity backlog is tracked in `docs/todo/archive/IMPLEMENTATION_BACKLOG.md`.
 The completed backlog snapshot is archived in `docs/todo/archive/IMPLEMENTATION_BACKLOG_COMPLETED.md`.
 
 Recommended starting points:
