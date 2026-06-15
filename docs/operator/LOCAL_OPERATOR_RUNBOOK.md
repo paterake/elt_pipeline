@@ -206,6 +206,8 @@ Operator guidance:
 - Use `blocking` only when an environment explicitly requires remote lineage submission to succeed.
 - Set `ELT_PIPELINE_LINEAGE_URL` to the full OpenLineage-compatible HTTP endpoint, such as Marquez at `http://localhost:5000/api/v1/lineage`.
 - Validate connectivity with a small CLI run first; if the backend is unavailable, the stage audit still lets operators confirm whether the core stage itself succeeded.
+- All `ELT_PIPELINE_LINEAGE_*` values are trimmed before validation.
+- `ELT_PIPELINE_LINEAGE_BACKEND` and `ELT_PIPELINE_LINEAGE_POLICY` are accepted case-insensitively, but lowercase values are still the recommended operational form.
 
 ## Optional Airflow Wrapper Operations
 
@@ -243,6 +245,8 @@ Operator guidance:
 - Expect backend execution problems to be recorded as `QUALITY_BACKEND_EXECUTION_FAILED`; this distinguishes optional integration failure from a core normalize or SQL runtime failure.
 - Review `runs/.../audit.json` for `validation_results`, `runs/.../logs.jsonl` for `quality_hook_complete` or `quality_hook_failed`, and stage metrics for `quality.pass`, `quality.warn`, `quality.fail`, and `quality.skipped`.
 - Restrict `ELT_PIPELINE_QUALITY_STAGES` to `normalize`, `sql`, or both; publish-stage quality remains out of scope in the current approved contract.
+- All `ELT_PIPELINE_QUALITY_*` values are trimmed before validation.
+- `ELT_PIPELINE_QUALITY_BACKEND`, `ELT_PIPELINE_QUALITY_POLICY`, and `ELT_PIPELINE_QUALITY_STAGES` are accepted case-insensitively, but lowercase values are still the recommended operational form.
 
 ## Publish Operator Guidance
 
@@ -256,6 +260,7 @@ Use `publish explain` when you want a dry preview of the paths a publish run wou
 - Pass the same `--root-path`, selection filters, and optional `--window-label` that you expect to use in `publish run`.
 - Review `run_scoped_path` for the immutable history location and `stable_delivery_path` when the publish definition uses `overwrite_in_place` or `append_new_artifact`.
 - Review `archive_run_scoped_path` and `archive_stable_delivery_path` when a publish definition declares `delivery.packaging.archive_format: zip`.
+- Expect `stable_delivery_path` to be `null` in explain output when the publish definition uses `versioned_delivery`; only `overwrite_in_place` and `append_new_artifact` maintain a consumer-facing stable path.
 
 Use `publish run` only after the upstream `level4` table already exists in the target sqlite database.
 
@@ -269,7 +274,7 @@ Use `publish run` only after the upstream `level4` table already exists in the t
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.
 
-## Audit And State Locations
+## Audit and State Locations
 
 A local runtime root persists these operator-visible directories:
 

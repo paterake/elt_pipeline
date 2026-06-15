@@ -183,6 +183,11 @@ Supported variables:
 - `ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS`: positive request timeout in seconds
 - `ELT_PIPELINE_LINEAGE_AUTH_HEADER`: optional `Authorization` header value sent with requests
 
+All `ELT_PIPELINE_LINEAGE_*` values are trimmed before validation.
+`ELT_PIPELINE_LINEAGE_BACKEND` and `ELT_PIPELINE_LINEAGE_POLICY` are accepted
+case-insensitively, but the normalized lowercase values shown above remain the
+recommended form in scripts and documentation.
+
 ## Optional Orchestration Wrapper
 
 The runtime now includes one reference orchestration integration for Airflow in addition to the generic subprocess boundary under `elt_pipeline.integrations.orchestration`.
@@ -254,6 +259,12 @@ Supported variables:
 - `ELT_PIPELINE_QUALITY_ROW_COUNT_MIN`: minimum allowed row count for each evaluated output dataset
 - `ELT_PIPELINE_QUALITY_POLICY`: `best_effort` or `blocking`
 - `ELT_PIPELINE_QUALITY_STAGES`: comma-separated subset of `normalize` and `sql`
+
+All `ELT_PIPELINE_QUALITY_*` values are trimmed before validation.
+`ELT_PIPELINE_QUALITY_BACKEND`, `ELT_PIPELINE_QUALITY_POLICY`, and
+`ELT_PIPELINE_QUALITY_STAGES` are accepted case-insensitively, but the
+normalized lowercase values shown above remain the recommended form in scripts
+and documentation.
 
 Disablement and failure behavior:
 

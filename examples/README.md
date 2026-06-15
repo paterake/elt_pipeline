@@ -116,6 +116,11 @@ uv run elt-pipeline publish explain examples/publish/local_demo \
   --window-label 2026-01
 ```
 
+Notes:
+
+- `publish explain` reports `stable_delivery_path` only for definitions that use `overwrite_in_place` or `append_new_artifact`.
+- The bundled zip example also reports `archive_run_scoped_path` and, when applicable, `archive_stable_delivery_path`.
+
 Run one CSV publish definition against the same warehouse:
 
 ```bash
