@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import zipfile
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from elt_pipeline.publish import discover_publish_definitions, run_publish_definitions_locally
 from elt_pipeline.shared.errors import ConfigValidationError
@@ -50,9 +50,11 @@ def test_discover_publish_definitions_rejects_unknown_path_template_placeholders
     )
 
 
-def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(
+    tmp_path: Path, spark_session
+) -> None:
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
     package_root = _write_publish_package(
         tmp_path,
         replacement_mode="overwrite_in_place",
@@ -64,7 +66,8 @@ def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(tmp_p
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=warehouse_root,
+        spark=spark_session,
         definitions=definitions,
     )
 
@@ -91,10 +94,10 @@ def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(tmp_p
 
 
 def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
     package_root = _write_publish_package(
         tmp_path,
         selection_mode="query",
@@ -107,7 +110,8 @@ def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=warehouse_root,
+        spark=spark_session,
         definitions=definitions,
     )
 
@@ -127,9 +131,11 @@ def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(
     assert manifest_payload["artifacts"][0]["stable_delivery_path"] is None
 
 
-def test_run_publish_definitions_locally_writes_tsv_manifest_and_artifacts(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+def test_run_publish_definitions_locally_writes_tsv_manifest_and_artifacts(
+    tmp_path: Path, spark_session
+) -> None:
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
     package_root = _write_publish_package(
         tmp_path,
         output_format="tsv",
@@ -141,7 +147,8 @@ def test_run_publish_definitions_locally_writes_tsv_manifest_and_artifacts(tmp_p
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=warehouse_root,
+        spark=spark_session,
         definitions=definitions,
     )
 
@@ -155,9 +162,11 @@ def test_run_publish_definitions_locally_writes_tsv_manifest_and_artifacts(tmp_p
     assert manifest_path.exists()
 
 
-def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(
+    tmp_path: Path, spark_session
+) -> None:
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
     package_root = _write_publish_package(
         tmp_path,
         replacement_mode="overwrite_in_place",
@@ -170,7 +179,8 @@ def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(tmp_p
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=warehouse_root,
+        spark=spark_session,
         definitions=definitions,
     )
 
@@ -195,9 +205,11 @@ def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(tmp_p
     ) == ["csv", "zip"]
 
 
-def test_run_publish_definitions_locally_appends_new_delivery_artifacts(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+def test_run_publish_definitions_locally_appends_new_delivery_artifacts(
+    tmp_path: Path, spark_session
+) -> None:
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
     package_root = _write_publish_package(
         tmp_path,
         replacement_mode="append_new_artifact",
@@ -211,7 +223,8 @@ def test_run_publish_definitions_locally_appends_new_delivery_artifacts(tmp_path
         run_context=first_context,
         environment="default",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=warehouse_root,
+        spark=spark_session,
         definitions=definitions,
     )
     second_result = run_publish_definitions_locally(
@@ -219,7 +232,8 @@ def test_run_publish_definitions_locally_appends_new_delivery_artifacts(tmp_path
         run_context=second_context,
         environment="default",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=warehouse_root,
+        spark=spark_session,
         definitions=definitions,
     )
 
@@ -296,21 +310,18 @@ def _write_publish_package(
     return package_root
 
 
-def _seed_order_summary_table(database_path: Path) -> None:
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table order_summary (
-                order_date text,
-                total_amount integer
-            )
-            """
-        )
-        connection.executemany(
-            "insert into order_summary (order_date, total_amount) values (?, ?)",
-            [
-                ("2026-01-01", 10),
-                ("2026-01-02", 35),
-            ],
-        )
-        connection.commit()
+def _seed_order_summary_table(spark_session, warehouse_root: Path) -> None:
+    schema = StructType(
+        [
+            StructField("order_date", StringType(), nullable=False),
+            StructField("total_amount", IntegerType(), nullable=False),
+        ]
+    )
+    dataset_path = warehouse_root / "level4" / "order_summary"
+    spark_session.createDataFrame(
+        [
+            {"order_date": "2026-01-01", "total_amount": 10},
+            {"order_date": "2026-01-02", "total_amount": 35},
+        ],
+        schema=schema,
+    ).write.mode("error").parquet(str(dataset_path))

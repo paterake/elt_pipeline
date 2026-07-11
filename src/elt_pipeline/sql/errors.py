@@ -14,6 +14,8 @@ class SqlRuntimeErrorCode(str, Enum):
     partition_value_missing = "SQL_PARTITION_VALUE_MISSING"
     planning_failed = "SQL_PLANNING_FAILED"
     identifier_invalid = "SQL_IDENTIFIER_INVALID"
+    dependency_not_materialized = "SQL_DEPENDENCY_NOT_MATERIALIZED"
+    level2_source_not_found = "SQL_LEVEL2_SOURCE_NOT_FOUND"
 
 
 _SQL_RUNTIME_ERROR_CATEGORIES = {
@@ -24,6 +26,8 @@ _SQL_RUNTIME_ERROR_CATEGORIES = {
     SqlRuntimeErrorCode.partition_value_missing: ErrorCategory.config_error,
     SqlRuntimeErrorCode.planning_failed: ErrorCategory.processing_error,
     SqlRuntimeErrorCode.identifier_invalid: ErrorCategory.config_error,
+    SqlRuntimeErrorCode.dependency_not_materialized: ErrorCategory.config_error,
+    SqlRuntimeErrorCode.level2_source_not_found: ErrorCategory.input_contract_error,
 }
 
 

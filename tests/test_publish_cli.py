@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 
 def test_publish_validate_command(tmp_path: Path) -> None:
@@ -42,11 +43,11 @@ def test_publish_explain_command(tmp_path: Path) -> None:
     assert "run_id=" in payload["plans"][0]["run_scoped_path"]
 
 
-def test_publish_run_command(tmp_path: Path) -> None:
+def test_publish_run_command(tmp_path: Path, spark_session) -> None:
     package_root = _write_publish_package(tmp_path, replacement_mode="overwrite_in_place")
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
 
     result = _run_cli(
         [
@@ -55,8 +56,8 @@ def test_publish_run_command(tmp_path: Path) -> None:
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
         ]
     )
     payload = json.loads(result.stdout)
@@ -75,11 +76,11 @@ def test_publish_run_command(tmp_path: Path) -> None:
     assert Path(artifact["stable_delivery_path"]).exists()
 
 
-def test_publish_run_command_writes_jsonl(tmp_path: Path) -> None:
+def test_publish_run_command_writes_jsonl(tmp_path: Path, spark_session) -> None:
     package_root = _write_publish_package(tmp_path, output_format="jsonl")
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
 
     result = _run_cli(
         [
@@ -88,8 +89,8 @@ def test_publish_run_command_writes_jsonl(tmp_path: Path) -> None:
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
         ]
     )
     payload = json.loads(result.stdout)
@@ -103,11 +104,11 @@ def test_publish_run_command_writes_jsonl(tmp_path: Path) -> None:
     assert json.loads(lines[0]) == {"order_date": "2026-01-01", "total_amount": 10}
 
 
-def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path) -> None:
+def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path, spark_session) -> None:
     package_root = _write_publish_package(tmp_path, replacement_mode="append_new_artifact")
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
 
     result = _run_cli(
         [
@@ -116,8 +117,8 @@ def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path) -> No
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
         ]
     )
     payload = json.loads(result.stdout)
@@ -128,11 +129,11 @@ def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path) -> No
     assert "run_id=" in Path(artifact["stable_delivery_path"]).name
 
 
-def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path) -> None:
+def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path, spark_session) -> None:
     package_root = _write_publish_package(tmp_path, replacement_mode="overwrite_in_place")
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
 
     first_result = _run_cli(
         [
@@ -141,8 +142,8 @@ def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path) -> Non
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--publish",
             "daily_order_export",
             "--window-start",
@@ -162,8 +163,8 @@ def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path) -> Non
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--rerun-run-id",
             first_payload["run_id"],
         ]
@@ -186,11 +187,11 @@ def test_publish_run_command_reuses_prior_audit_selection(tmp_path: Path) -> Non
     assert export_manifest["rerun_of_run_id"] == first_payload["run_id"]
 
 
-def test_publish_run_command_supports_backfill_trigger(tmp_path: Path) -> None:
+def test_publish_run_command_supports_backfill_trigger(tmp_path: Path, spark_session) -> None:
     package_root = _write_publish_package(tmp_path)
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
 
     result = _run_cli(
         [
@@ -199,8 +200,8 @@ def test_publish_run_command_supports_backfill_trigger(tmp_path: Path) -> None:
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--window-start",
             "2026-01-01T00:00:00+00:00",
             "--window-end",
@@ -218,11 +219,13 @@ def test_publish_run_command_supports_backfill_trigger(tmp_path: Path) -> None:
     assert audit["context"]["checkpoint_mode"] == "backfill"
 
 
-def test_publish_run_command_rejects_conflicting_rerun_selection(tmp_path: Path) -> None:
+def test_publish_run_command_rejects_conflicting_rerun_selection(
+    tmp_path: Path, spark_session
+) -> None:
     package_root = _write_publish_package(tmp_path)
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_order_summary_table(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_order_summary_table(spark_session, warehouse_root)
 
     result = _run_cli(
         [
@@ -231,8 +234,8 @@ def test_publish_run_command_rejects_conflicting_rerun_selection(tmp_path: Path)
             str(package_root),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--publish",
             "daily_order_export",
             "--rerun-run-id",
@@ -301,21 +304,18 @@ def _write_publish_package(
     return package_root
 
 
-def _seed_order_summary_table(database_path: Path) -> None:
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table order_summary (
-                order_date text,
-                total_amount integer
-            )
-            """
-        )
-        connection.executemany(
-            "insert into order_summary (order_date, total_amount) values (?, ?)",
-            [
-                ("2026-01-01", 10),
-                ("2026-01-02", 35),
-            ],
-        )
-        connection.commit()
+def _seed_order_summary_table(spark_session, warehouse_root: Path) -> None:
+    schema = StructType(
+        [
+            StructField("order_date", StringType(), nullable=False),
+            StructField("total_amount", IntegerType(), nullable=False),
+        ]
+    )
+    dataset_path = warehouse_root / "level4" / "order_summary"
+    spark_session.createDataFrame(
+        [
+            {"order_date": "2026-01-01", "total_amount": 10},
+            {"order_date": "2026-01-02", "total_amount": 35},
+        ],
+        schema=schema,
+    ).write.mode("error").parquet(str(dataset_path))

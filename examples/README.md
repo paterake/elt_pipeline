@@ -72,33 +72,28 @@ uv run elt-pipeline ingest run examples/configs/local_rest_orders.yaml \
 
 ## SQL Models
 
-The downstream SQL model package remains under `examples/sql/local_demo/`. Use it after preparing a local sqlite warehouse for `sql compile` or `sql run` commands.
+The downstream SQL model package lives under `examples/sql/local_demo/`. Its `level3.sales.base_orders` model declares a `sources` entry pointing at the `orders` table produced by the Object Storage JSON example (`source_name: local_files`, `entity_name: orders`), so run that ingest/normalize pair first to produce real `level2` data before running the SQL package.
 
 ## Publish / Export Happy Path
 
 The bundled publish package under `examples/publish/local_demo/` expects the example `level4` table produced by the SQL demo package.
 
-Seed a local warehouse with the raw input expected by `examples/sql/local_demo/`:
+Produce the `level2` input expected by `examples/sql/local_demo/`:
 
 ```bash
-rm -f .tmp/example-warehouse.db
-sqlite3 .tmp/example-warehouse.db <<'SQL'
-create table raw_orders (
-  order_id text,
-  amount integer,
-  order_date text
-);
-insert into raw_orders (order_id, amount, order_date) values
-  ('A-100', 10, '2026-01-01'),
-  ('A-200', 25, '2026-01-02');
-SQL
+uv run elt-pipeline ingest run examples/configs/local_object_storage_orders.yaml \
+  --root-path .tmp/runtime-publish
+
+uv run elt-pipeline normalize run examples/configs/local_object_storage_orders.yaml \
+  --root-path .tmp/runtime-publish
 ```
 
 Materialize the example `level4` datamart:
 
 ```bash
 uv run elt-pipeline sql run examples/sql/local_demo \
-  --database .tmp/example-warehouse.db \
+  --root-path .tmp/runtime-publish \
+  --warehouse-root .tmp/example-warehouse \
   --environment default \
   --include-deps \
   --start-date 2026-01-01 \
@@ -126,7 +121,7 @@ Run one CSV publish definition against the same warehouse:
 ```bash
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-publish \
-  --database .tmp/example-warehouse.db \
+  --warehouse-root .tmp/example-warehouse \
   --environment default \
   --publish daily_order_export \
   --window-label 2026-01
@@ -143,7 +138,7 @@ Run the bundled query-based `jsonl` publish definition:
 ```bash
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-publish \
-  --database .tmp/example-warehouse.db \
+  --warehouse-root .tmp/example-warehouse \
   --environment default \
   --publish daily_order_export_windowed \
   --window-label 2026-01
@@ -160,7 +155,7 @@ Run the bundled direct `tsv` publish definition:
 ```bash
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-publish \
-  --database .tmp/example-warehouse.db \
+  --warehouse-root .tmp/example-warehouse \
   --environment default \
   --publish daily_order_export_tsv \
   --window-label 2026-01
@@ -183,7 +178,7 @@ uv run elt-pipeline publish explain examples/publish/local_demo \
 
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-publish \
-  --database .tmp/example-warehouse.db \
+  --warehouse-root .tmp/example-warehouse \
   --environment default \
   --publish daily_order_export_bundle \
   --window-label 2026-01

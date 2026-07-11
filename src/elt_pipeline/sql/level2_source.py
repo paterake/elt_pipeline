@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from pyspark.sql import DataFrame, SparkSession
+
+from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
+from elt_pipeline.sql.models import SqlModelSourceRef
+
+_SAFE_PATH_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_path_fragment(value: str) -> str:
+    cleaned = _SAFE_PATH_FRAGMENT.sub("_", value.strip())
+    return cleaned or "unknown"
+
+
+class Level2DatasetLocator:
+    def __init__(self, *, root_path: Path, spark: SparkSession) -> None:
+        self.root_path = Path(root_path)
+        self.spark = spark
+
+    def read(self, *, source_ref: SqlModelSourceRef, environment: str) -> DataFrame:
+        table_name = source_ref.table_name or source_ref.logical_name
+        entity_root = (
+            self.root_path
+            / "level2"
+            / f"environment={_sanitize_path_fragment(environment)}"
+            / f"source={_sanitize_path_fragment(source_ref.source_name)}"
+            / f"entity={_sanitize_path_fragment(source_ref.entity_name)}"
+        )
+        matches = sorted(
+            path
+            for path in entity_root.glob(f"**/table={_sanitize_path_fragment(table_name)}/run_id=*")
+            if path.is_dir()
+        )
+        if not matches:
+            raise build_sql_runtime_error(
+                code=SqlRuntimeErrorCode.level2_source_not_found,
+                message=(
+                    f"No level2 data found for source '{source_ref.source_name}', "
+                    f"entity '{source_ref.entity_name}', table '{table_name}'"
+                ),
+                context={
+                    "logical_name": source_ref.logical_name,
+                    "source_name": source_ref.source_name,
+                    "entity_name": source_ref.entity_name,
+                    "table_name": table_name,
+                    "environment": environment,
+                    "search_root": str(entity_root),
+                },
+            )
+        return self.spark.read.option("mergeSchema", "true").parquet(
+            *[str(path) for path in matches]
+        )

@@ -6,16 +6,17 @@ Use it to see which backlog documents exist, what each one is for, and whether i
 
 ## Current Status
 
-- Active implementation backlog documents: `docs/todo/TODO_SPARK.md`
-- Archived implementation backlog documents: complete for the earlier local-first implementation slice
-- Current corrective workstream: align the solution to the Spark-only engine requirement
-- New scope or engine changes beyond the current correction path: require PRD review and tracker updates
+- Active implementation backlog documents: none
+- Archived implementation backlog documents: complete for the local-first implementation slice and the subsequent Spark-only engine correction
+- Current corrective workstream: none open
+- New scope or engine changes beyond the completed Spark correction (e.g. object storage URIs for `level2+`, a metastore, `elt_pipeline_cfg` wiring): require PRD review and a new tracker entry
 
 ## Backlog Index
 
 | Document | Type | Status | Purpose |
 | --- | --- | --- | --- |
-| `docs/todo/TODO_SPARK.md` | Active backlog tracker | Active | Corrective backlog for replacing downstream local sqlite execution with a Spark-only runtime path |
+| `docs/todo/TODO_SPARK.md` | Backlog tracker | Archived / complete | Pointer for the completed Spark-only engine correction backlog |
+| `docs/todo/archive/TODO_SPARK_COMPLETED.md` | Completed snapshot | Archived / complete | Historical completed snapshot of the Spark correction backlog, including what was descoped |
 | `docs/todo/archive/IMPLEMENTATION_BACKLOG.md` | Backlog tracker | Archived / complete | Final working backlog pointer for the approved implementation scope |
 | `docs/todo/archive/IMPLEMENTATION_BACKLOG_COMPLETED.md` | Completed snapshot | Archived / complete | Historical completed snapshot of the detailed implementation backlog |
 | `docs/todo/archive/IMPLEMENTATION_SOURCE_PROVENANCE.md` | Provenance review | Archived / complete | Review of implementation source lineage, PRD alignment, and baseline inheritance |

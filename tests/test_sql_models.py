@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from elt_pipeline.integrations import (
     QualityCheckResult,
     QualityCheckStatus,
-    build_quality_hook,
     QualityHookPolicy,
+    build_quality_hook,
 )
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
 from elt_pipeline.shared.runtime import StageName, new_run_context
 from elt_pipeline.sql import (
-    LocalSqlModelExecutor,
+    SparkSqlModelExecutor,
     SqlRuntimeErrorCode,
     build_token_context,
     compile_sql_model,
@@ -26,6 +26,29 @@ from elt_pipeline.sql import (
     run_sql_models_locally,
     topologically_sort_sql_models,
 )
+
+
+def _seed_level2_table(
+    spark_session,
+    root_path: Path,
+    *,
+    environment: str = "dev",
+    source_name: str = "orders_source",
+    entity_name: str = "orders",
+    table_name: str = "raw_orders",
+    rows: list[dict],
+) -> None:
+    data_dir = (
+        root_path
+        / "level2"
+        / f"environment={environment}"
+        / f"source={source_name}"
+        / f"entity={entity_name}"
+        / "mapping_version=v1"
+        / f"table={table_name}"
+        / "run_id=seed-run"
+    )
+    spark_session.createDataFrame(rows).write.mode("error").parquet(str(data_dir))
 
 
 def test_discover_sql_models_reads_valid_package(tmp_path: Path) -> None:
@@ -90,6 +113,7 @@ def test_compile_sql_model_resolves_tokens(tmp_path: Path) -> None:
 
     assert "where order_date >= '2026-01-01'" in compiled.compiled_sql
     assert compiled.token_values["window.end_date"] == "2026-01-31"
+    assert compiled.sources[0].logical_name == "raw_orders"
 
 
 def test_compile_sql_model_fails_for_missing_token(tmp_path: Path) -> None:
@@ -179,27 +203,44 @@ def test_topologically_sort_sql_models_rejects_missing_dependencies(tmp_path: Pa
         topologically_sort_sql_models(discover_sql_models(package_root))
 
 
-def test_local_sql_model_executor_runs_models_in_sqlite(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
+def test_sql_model_manifest_rejects_sources_on_level4_models(tmp_path: Path) -> None:
+    package_root = tmp_path / "invalid_sources_models"
+    model_dir = package_root / "level4" / "sales" / "bad_model"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.sql").write_text("select 1 as value", encoding="utf-8")
+    (model_dir / "manifest.yaml").write_text(
+        dedent(
             """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
+            name: bad_model
+            stage: level4
+            domain: sales
+            target:
+              table_name: bad_model
+            sources:
+              - logical_name: raw_orders
+                source_name: orders_source
+                entity_name: orders
+            owner:
+              name: platform
             """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-                (3, 30, "2026-01-07"),
-            ],
-        )
-        connection.commit()
+        ).strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigValidationError, match="SQL model manifest validation failed"):
+        discover_sql_models(package_root)
+
+
+def test_local_sql_model_executor_runs_models_in_spark(tmp_path: Path, spark_session) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+            {"order_id": 3, "amount": 30, "order_date": "2026-01-07"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(tmp_path)
     discovered = discover_sql_models(package_root)
@@ -221,39 +262,47 @@ def test_local_sql_model_executor_runs_models_in_sqlite(tmp_path: Path) -> None:
         for model in ordered
     ]
 
-    result = LocalSqlModelExecutor(database_path=database_path).execute(compiled)
+    warehouse_root = tmp_path / "warehouse"
+    result = SparkSqlModelExecutor(
+        spark=spark_session,
+        warehouse_root=warehouse_root,
+        root_path=tmp_path,
+        environment="dev",
+    ).execute(compiled)
 
     assert result.model_count == 2
-    with sqlite3.connect(database_path) as connection:
-        base_orders_count = connection.execute("select count(*) from base_orders").fetchone()[0]
-        summary_rows = connection.execute(
-            "select order_date, total_amount from order_summary order by order_date"
-        ).fetchall()
+    base_orders_count = spark_session.read.parquet(
+        str(warehouse_root / "level3" / "base_orders")
+    ).count()
+    summary_rows = sorted(
+        (
+            row.asDict()
+            for row in spark_session.read.parquet(
+                str(warehouse_root / "level4" / "order_summary")
+            ).collect()
+        ),
+        key=lambda row: row["order_date"],
+    )
 
     assert base_orders_count == 3
-    assert summary_rows == [("2026-01-01", 10), ("2026-01-03", 20), ("2026-01-07", 30)]
+    assert [(row["order_date"], row["total_amount"]) for row in summary_rows] == [
+        ("2026-01-01", 10),
+        ("2026-01-03", 20),
+        ("2026-01-07", 30),
+    ]
 
 
-def test_local_sql_model_executor_plans_models_with_query_plan(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+def test_local_sql_model_executor_plans_models_with_query_plan(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     models = discover_sql_models(_write_basic_sql_package(tmp_path))
     compiled = [
@@ -273,7 +322,12 @@ def test_local_sql_model_executor_plans_models_with_query_plan(tmp_path: Path) -
         for model in topologically_sort_sql_models(models)
     ]
 
-    planning_result = LocalSqlModelExecutor(database_path=database_path).plan(
+    planning_result = SparkSqlModelExecutor(
+        spark=spark_session,
+        warehouse_root=tmp_path / "warehouse",
+        root_path=tmp_path,
+        environment="dev",
+    ).plan(
         compiled,
         include_query_plan=True,
     )
@@ -287,30 +341,27 @@ def test_local_sql_model_executor_plans_models_with_query_plan(tmp_path: Path) -
     assert planning_result.planned_models[1].depends_on == ["level3.sales.base_orders"]
 
 
-def test_local_sql_model_executor_appends_rows_across_runs(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-                (3, 30, "2026-01-07"),
-            ],
-        )
-        connection.commit()
+def test_local_sql_model_executor_appends_rows_across_runs(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+            {"order_id": 3, "amount": 30, "order_date": "2026-01-07"},
+        ],
+    )
 
     model = discover_sql_models(_write_append_sql_package(tmp_path))[0]
-    executor = LocalSqlModelExecutor(database_path=database_path)
+    warehouse_root = tmp_path / "warehouse"
+    executor = SparkSqlModelExecutor(
+        spark=spark_session,
+        warehouse_root=warehouse_root,
+        root_path=tmp_path,
+        environment="dev",
+    )
 
     first_run = compile_sql_model(
         model,
@@ -344,11 +395,16 @@ def test_local_sql_model_executor_appends_rows_across_runs(tmp_path: Path) -> No
 
     assert first_result.executed_models[0].load_mode.value == "append"
     assert second_result.executed_models[0].row_count == 3
-    with sqlite3.connect(database_path) as connection:
-        rows = connection.execute(
-            "select order_id, amount, order_date from appended_orders order by order_id"
-        ).fetchall()
-    assert rows == [
+    rows = sorted(
+        (
+            row.asDict()
+            for row in spark_session.read.parquet(
+                str(warehouse_root / "level3" / "appended_orders")
+            ).collect()
+        ),
+        key=lambda row: row["order_id"],
+    )
+    assert [(row["order_id"], row["amount"], row["order_date"]) for row in rows] == [
         (1, 10, "2026-01-01"),
         (2, 20, "2026-01-03"),
         (3, 30, "2026-01-07"),
@@ -356,26 +412,23 @@ def test_local_sql_model_executor_appends_rows_across_runs(tmp_path: Path) -> No
 
 
 def test_local_sql_model_executor_partition_overwrite_replaces_selected_partition(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table daily_orders (
-                order_id integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into daily_orders (order_id, order_date) values (?, ?)",
-            [
-                (999, "2026-01-01"),
-                (200, "2026-01-02"),
-            ],
-        )
-        connection.commit()
+    warehouse_root = tmp_path / "warehouse"
+    existing_path = warehouse_root / "level3" / "daily_orders"
+    daily_orders_schema = StructType(
+        [
+            StructField("order_id", IntegerType(), nullable=False),
+            StructField("order_date", StringType(), nullable=False),
+        ]
+    )
+    spark_session.createDataFrame(
+        [
+            {"order_id": 999, "order_date": "2026-01-01"},
+            {"order_id": 200, "order_date": "2026-01-02"},
+        ],
+        schema=daily_orders_schema,
+    ).write.mode("overwrite").partitionBy("order_date").parquet(str(existing_path))
 
     model = discover_sql_models(_write_partition_overwrite_sql_package(tmp_path))[0]
     compiled = compile_sql_model(
@@ -390,42 +443,39 @@ def test_local_sql_model_executor_partition_overwrite_replaces_selected_partitio
         ),
     )
 
-    result = LocalSqlModelExecutor(
-        database_path=database_path,
+    result = SparkSqlModelExecutor(
+        spark=spark_session,
+        warehouse_root=warehouse_root,
+        root_path=tmp_path,
+        environment="dev",
         partition_values={"order_date": "2026-01-01"},
     ).execute([compiled])
 
     assert result.executed_models[0].load_mode.value == "partition_overwrite"
-    with sqlite3.connect(database_path) as connection:
-        rows = connection.execute(
-            "select order_id, order_date from daily_orders order by order_date, order_id"
-        ).fetchall()
-    assert rows == [
+    rows = sorted(
+        (
+            row.asDict()
+            for row in spark_session.read.parquet(str(existing_path)).collect()
+        ),
+        key=lambda row: (str(row["order_date"]), row["order_id"]),
+    )
+    assert [(row["order_id"], str(row["order_date"])) for row in rows] == [
         (1, "2026-01-01"),
         (200, "2026-01-02"),
     ]
 
 
-def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(tmp_path)
     discovered = discover_sql_models(package_root)
@@ -452,7 +502,8 @@ def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(tmp_path:
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=tmp_path / "warehouse",
+        spark=spark_session,
         compiled_models=compiled,
     )
 
@@ -481,26 +532,17 @@ def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(tmp_path:
     )
 
 
-def test_run_sql_models_locally_captures_validation_results_in_audit(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+def test_run_sql_models_locally_captures_validation_results_in_audit(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(
         tmp_path,
@@ -537,7 +579,8 @@ quality:
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=tmp_path / "warehouse",
+        spark=spark_session,
         compiled_models=compiled,
     )
 
@@ -561,28 +604,17 @@ quality:
 
 
 def test_run_sql_models_locally_fails_on_validation_error_and_audits_results(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (1, 20, "2026-01-03"),
-                (None, 30, "2026-01-04"),
-            ],
-        )
-        connection.commit()
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 1, "amount": 20, "order_date": "2026-01-03"},
+            {"order_id": None, "amount": 30, "order_date": "2026-01-04"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(
         tmp_path,
@@ -620,7 +652,8 @@ quality:
             run_context=run_context,
             environment="dev",
             package_path=package_root,
-            database_path=database_path,
+            warehouse_root=tmp_path / "warehouse",
+            spark=spark_session,
             compiled_models=compiled,
         )
 
@@ -654,26 +687,17 @@ quality:
     assert json.loads(error_lines[0])["error_code"] == SqlRuntimeErrorCode.model_validation_failed
 
 
-def test_run_sql_models_locally_captures_quality_results_in_audit(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+def test_run_sql_models_locally_captures_quality_results_in_audit(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(tmp_path)
     discovered = discover_sql_models(package_root)
@@ -700,7 +724,8 @@ def test_run_sql_models_locally_captures_quality_results_in_audit(tmp_path: Path
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=tmp_path / "warehouse",
+        spark=spark_session,
         compiled_models=compiled,
         quality_hook=build_quality_hook(tmp_path, backend=_PassingSqlQualityBackend()),
     )
@@ -714,26 +739,17 @@ def test_run_sql_models_locally_captures_quality_results_in_audit(tmp_path: Path
     assert audit_payload["metrics_summary"]["extra"]["quality.pass"] == 1
 
 
-def test_run_sql_models_locally_fails_for_blocking_quality_results(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+def test_run_sql_models_locally_fails_for_blocking_quality_results(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(tmp_path)
     discovered = discover_sql_models(package_root)
@@ -762,7 +778,8 @@ def test_run_sql_models_locally_fails_for_blocking_quality_results(tmp_path: Pat
             run_context=run_context,
             environment="dev",
             package_path=package_root,
-            database_path=database_path,
+            warehouse_root=tmp_path / "warehouse",
+            spark=spark_session,
             compiled_models=compiled,
             quality_hook=build_quality_hook(
                 tmp_path,
@@ -790,27 +807,16 @@ def test_run_sql_models_locally_fails_for_blocking_quality_results(tmp_path: Pat
 
 
 def test_run_sql_models_locally_logs_warning_for_non_blocking_quality_results(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(tmp_path)
     discovered = discover_sql_models(package_root)
@@ -837,7 +843,8 @@ def test_run_sql_models_locally_logs_warning_for_non_blocking_quality_results(
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        database_path=database_path,
+        warehouse_root=tmp_path / "warehouse",
+        spark=spark_session,
         compiled_models=compiled,
         quality_hook=build_quality_hook(
             tmp_path,
@@ -847,35 +854,25 @@ def test_run_sql_models_locally_logs_warning_for_non_blocking_quality_results(
     )
 
     log_lines = result.artifacts.log_path.read_text(encoding="utf-8").strip().splitlines()
+    parsed_log_lines = [json.loads(line) for line in log_lines]
     quality_event = next(
-        json.loads(line) for line in log_lines if json.loads(line)["event_type"] == "quality_hook_complete"
+        event for event in parsed_log_lines if event["event_type"] == "quality_hook_complete"
     )
 
     assert quality_event["severity"] == "WARNING"
 
 
 def test_run_sql_models_locally_records_single_error_for_blocking_quality_backend_failure(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
-    database_path = tmp_path / "warehouse.db"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     package_root = _write_basic_sql_package(tmp_path)
     discovered = discover_sql_models(package_root)
@@ -904,7 +901,8 @@ def test_run_sql_models_locally_records_single_error_for_blocking_quality_backen
             run_context=run_context,
             environment="dev",
             package_path=package_root,
-            database_path=database_path,
+            warehouse_root=tmp_path / "warehouse",
+            spark=spark_session,
             compiled_models=compiled,
             quality_hook=build_quality_hook(
                 tmp_path,
@@ -931,7 +929,7 @@ def test_run_sql_models_locally_records_single_error_for_blocking_quality_backen
 
 
 def test_local_sql_model_executor_returns_structured_planning_error_code(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
     package_root = _write_basic_sql_package(tmp_path)
     model = discover_sql_models(package_root)[0]
@@ -950,14 +948,18 @@ def test_local_sql_model_executor_returns_structured_planning_error_code(
     )
 
     with pytest.raises(PipelineError) as exc_info:
-        LocalSqlModelExecutor(database_path=tmp_path / "warehouse.db").plan([compiled])
+        SparkSqlModelExecutor(
+            spark=spark_session,
+            warehouse_root=tmp_path / "warehouse",
+            root_path=tmp_path,
+            environment="dev",
+        ).plan([compiled])
 
-    assert exc_info.value.error_code == SqlRuntimeErrorCode.planning_failed
-    assert exc_info.value.error_category.value == "processing_error"
+    assert exc_info.value.error_code == SqlRuntimeErrorCode.level2_source_not_found
 
 
 def test_local_sql_model_executor_returns_structured_partition_error_code(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
     model = discover_sql_models(
         _write_partition_overwrite_sql_package(tmp_path),
@@ -975,7 +977,12 @@ def test_local_sql_model_executor_returns_structured_partition_error_code(
     )
 
     with pytest.raises(PipelineError) as exc_info:
-        LocalSqlModelExecutor(database_path=tmp_path / "warehouse.db").execute([compiled])
+        SparkSqlModelExecutor(
+            spark=spark_session,
+            warehouse_root=tmp_path / "warehouse",
+            root_path=tmp_path,
+            environment="dev",
+        ).execute([compiled])
 
     assert exc_info.value.error_code == SqlRuntimeErrorCode.partition_value_missing
     assert exc_info.value.error_category.value == "config_error"
@@ -1001,6 +1008,10 @@ def _write_basic_sql_package(
             load_mode: full_refresh
             target:
               table_name: base_orders
+            sources:
+              - logical_name: raw_orders
+                source_name: orders_source
+                entity_name: orders
             owner:
               name: platform
             {base_orders_quality}
@@ -1131,6 +1142,10 @@ def _write_append_sql_package(base_path: Path) -> Path:
             load_mode: append
             target:
               table_name: appended_orders
+            sources:
+              - logical_name: raw_orders
+                source_name: orders_source
+                entity_name: orders
             owner:
               name: platform
             """

@@ -49,6 +49,22 @@ class SqlModelOwner(BaseModel):
     email: str | None = None
 
 
+class SqlModelSourceRef(BaseModel):
+    logical_name: str
+    source_name: str
+    entity_name: str
+    environment: str | None = None
+    table_name: str | None = None
+
+    @field_validator("logical_name", "source_name", "entity_name")
+    @classmethod
+    def validate_required_identifier(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be empty")
+        return cleaned
+
+
 class SqlModelManifest(BaseModel):
     manifest_version: str = "v1"
     name: str
@@ -59,6 +75,7 @@ class SqlModelManifest(BaseModel):
     load_mode: SqlLoadMode = SqlLoadMode.full_refresh
     target: SqlModelTarget
     depends_on: list[str] = Field(default_factory=list)
+    sources: list[SqlModelSourceRef] = Field(default_factory=list)
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
     owner: SqlModelOwner
     tags: list[str] = Field(default_factory=list)
@@ -93,6 +110,17 @@ class SqlModelManifest(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_sources(self) -> "SqlModelManifest":
+        if self.sources and self.stage != SqlModelStage.level3:
+            raise ValueError("sources may only be declared on level3 models")
+        seen_logical_names: set[str] = set()
+        for source_ref in self.sources:
+            if source_ref.logical_name in seen_logical_names:
+                raise ValueError(f"duplicate source logical_name '{source_ref.logical_name}'")
+            seen_logical_names.add(source_ref.logical_name)
+        return self
+
 
 class DiscoveredSqlModel(BaseModel):
     manifest: SqlModelManifest
@@ -120,11 +148,13 @@ class CompiledSqlModel(BaseModel):
     compiled_sql: str
     token_values: dict[str, str] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+    sources: list[SqlModelSourceRef] = Field(default_factory=list)
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
 
 
 class SqlExecutionRecord(BaseModel):
     model_id: str
+    stage: SqlModelStage
     target_table_name: str
     load_mode: SqlLoadMode
     row_count: int
@@ -147,9 +177,8 @@ class SqlModelValidationSummary(BaseModel):
 
 
 class SqlQueryPlanStep(BaseModel):
-    node_id: int
-    parent_id: int
-    detail: str
+    step_index: int
+    plan_text: str
 
 
 class SqlModelPlan(BaseModel):
@@ -164,7 +193,7 @@ class SqlModelPlan(BaseModel):
 
 
 class SqlExecutionResult(BaseModel):
-    database_path: Path
+    warehouse_root: Path
     executed_models: list[SqlExecutionRecord] = Field(default_factory=list)
     model_validations: list[SqlModelValidationSummary] = Field(default_factory=list)
 
@@ -174,7 +203,7 @@ class SqlExecutionResult(BaseModel):
 
 
 class SqlPlanningResult(BaseModel):
-    database_path: Path
+    warehouse_root: Path
     planned_models: list[SqlModelPlan] = Field(default_factory=list)
 
     @property

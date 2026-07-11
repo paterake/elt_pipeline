@@ -52,8 +52,10 @@ jobs:
       - sql
       - run
       - /absolute/path/to/sql-package
-      - --database
-      - /absolute/path/to/warehouse.db
+      - --root-path
+      - /absolute/path/to/runtime
+      - --warehouse-root
+      - /absolute/path/to/warehouse
       - --environment
       - default
       - --include-deps

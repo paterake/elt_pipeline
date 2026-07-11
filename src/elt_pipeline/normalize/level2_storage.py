@@ -7,12 +7,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.types import LongType, StringType, StructField, StructType
+
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.normalize.models import Level2TableManifest, NormalizedTable
 from elt_pipeline.shared.errors import ErrorCategory, PipelineError
 from elt_pipeline.shared.runtime import RunContext
+from elt_pipeline.spark.errors import SparkRuntimeErrorCode, build_spark_runtime_error
 
 _SAFE_PATH_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
+
+_EMPTY_TABLE_SCHEMA = StructType(
+    [
+        StructField("_row_id", StringType(), nullable=False),
+        StructField("_parent_row_id", StringType(), nullable=True),
+        StructField("_array_index", LongType(), nullable=True),
+    ]
+)
 
 
 def _sanitize_path_fragment(value: str) -> str:
@@ -20,19 +32,19 @@ def _sanitize_path_fragment(value: str) -> str:
     return cleaned or "unknown"
 
 
-def _append_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, sort_keys=True))
-            handle.write("\n")
-
-
 def _write_json_file(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
     temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     temp_path.replace(path)
+
+
+def _rows_to_dataframe(spark: SparkSession, rows: list[dict[str, Any]]) -> DataFrame:
+    if not rows:
+        return spark.createDataFrame([], schema=_EMPTY_TABLE_SCHEMA)
+    json_lines = [json.dumps(row, sort_keys=True, default=str) for row in rows]
+    rdd = spark.sparkContext.parallelize(json_lines)
+    return spark.read.json(rdd)
 
 
 class LocalLevel2Layout:
@@ -64,9 +76,10 @@ class LocalLevel2Layout:
         return path / f"run_id={_sanitize_path_fragment(run_id)}"
 
 
-class LocalLevel2Writer:
-    def __init__(self, root_path: Path) -> None:
+class SparkLevel2Writer:
+    def __init__(self, root_path: Path, spark: SparkSession) -> None:
         self.layout = LocalLevel2Layout(root_path)
+        self.spark = spark
 
     def write_table(
         self,
@@ -88,20 +101,31 @@ class LocalLevel2Writer:
             table_name=table.physical_name,
             run_id=run_context.run_id,
         )
-        data_path = data_dir / "data.jsonl"
-        if data_path.exists():
+        if data_dir.exists() and any(data_dir.iterdir()):
             raise PipelineError(
-                message=f"Refusing to overwrite existing level2 artifact: {data_path}",
+                message=f"Refusing to overwrite existing level2 artifact: {data_dir}",
                 error_code="LEVEL2_ARTIFACT_EXISTS",
                 error_category=ErrorCategory.storage_write_error,
                 retryable=False,
-                context={"path": str(data_path)},
+                context={"path": str(data_dir)},
             )
 
-        _append_jsonl_rows(data_path, table.rows)
+        dataframe = _rows_to_dataframe(self.spark, table.rows)
+        try:
+            dataframe.write.mode("error").parquet(str(data_dir))
+        except Exception as exc:
+            raise build_spark_runtime_error(
+                code=SparkRuntimeErrorCode.write_failed,
+                message=f"Failed to write level2 parquet dataset: {data_dir}",
+                context={"path": str(data_dir)},
+            ) from exc
 
-        relative_data_path = data_path.relative_to(self.layout.root_path).as_posix()
-        manifest_path = data_path.with_suffix(f"{data_path.suffix}.manifest.json")
+        part_files = sorted(data_dir.glob("*.parquet"))
+        file_count = len(part_files)
+        total_file_size_bytes = sum(part_file.stat().st_size for part_file in part_files)
+
+        relative_data_path = data_dir.relative_to(self.layout.root_path).as_posix()
+        manifest_path = data_dir.parent / f"{data_dir.name}.manifest.json"
         relative_manifest_path = manifest_path.relative_to(self.layout.root_path).as_posix()
         artifact_id = hashlib.sha256(
             f"{run_context.run_id}:{relative_data_path}".encode("utf-8")
@@ -123,10 +147,10 @@ class LocalLevel2Writer:
             normalize_started_at=run_context.started_at,
             normalize_completed_at=completed_at,
             record_count=len(table.rows),
-            file_size_bytes=data_path.stat().st_size,
+            file_count=file_count,
+            total_file_size_bytes=total_file_size_bytes,
             data_path=relative_data_path,
             manifest_path=relative_manifest_path,
         )
         _write_json_file(manifest_path, manifest_payload.model_dump(mode="json"))
         return manifest_payload
-

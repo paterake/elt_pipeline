@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import io
 import json
-import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from pyspark.sql import SparkSession
 
 from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_config
 from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntityConfig
@@ -57,8 +57,9 @@ from elt_pipeline.shared.runtime import (
     new_run_context,
 )
 from elt_pipeline.shared.scheduler import SchedulePlan, load_schedule_plan, parse_schedule_payload
+from elt_pipeline.spark.session import build_spark_session
 from elt_pipeline.sql import (
-    LocalSqlModelExecutor,
+    SparkSqlModelExecutor,
     build_token_context,
     compile_sql_model,
     discover_sql_models,
@@ -230,11 +231,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = sql_subparsers.add_parser(
         "run",
-        help="Run SQL models against a local sqlite database.",
+        help="Run SQL models against a Spark-backed local parquet warehouse.",
     )
     _add_sql_selection_arguments(run_parser)
     run_parser.add_argument("--include-deps", action="store_true")
-    run_parser.add_argument("--database", type=Path, required=True)
+    run_parser.add_argument(
+        "--root-path",
+        type=Path,
+        required=True,
+        help="Pipeline runtime root containing level1/level2 data and run artifacts.",
+    )
+    run_parser.add_argument("--warehouse-root", type=Path, required=True)
     run_parser.add_argument("--job-name", default="sql-run")
     run_parser.add_argument("--trigger-type", default="manual")
     run_parser.add_argument(
@@ -286,11 +293,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     publish_run_parser = publish_subparsers.add_parser(
         "run",
-        help="Run publish definitions against a local sqlite database and write level5 outputs.",
+        help="Run publish definitions against a Spark-backed parquet warehouse.",
     )
     _add_publish_selection_arguments(publish_run_parser)
     publish_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
-    publish_run_parser.add_argument("--database", type=Path, required=True)
+    publish_run_parser.add_argument("--warehouse-root", type=Path, required=True)
     publish_run_parser.add_argument("--job-name", default="publish-run")
     publish_run_parser.add_argument("--trigger-type", default="manual")
     publish_run_parser.add_argument("--window-start")
@@ -430,28 +437,35 @@ def main(argv: list[str] | None = None) -> int:
                 selected_environment = args.environment
             selected_source = manifests[0].source_name if args.rerun_run_id else args.source
             selected_entity = manifests[0].entity_name if args.rerun_run_id else args.entity
-            summaries = [
-                _run_normalize_manifest(
-                    manifest=manifest,
-                    resolved_config=resolve_entity_config(
-                        config,
-                        environment=manifest.environment,
-                        source_name=manifest.source_name,
-                        entity_name=manifest.entity_name,
-                    ),
-                    root_path=args.root_path,
-                    job_name=args.job_name,
-                    trigger_type=args.trigger_type,
-                    backfill=args.backfill,
-                    rerun_run_id=args.rerun_run_id,
-                    partition_strategy=PartitionStrategy(
-                        mode=PartitionMode(args.partition_mode),
-                        partition_key=args.partition_key,
-                        metadata_key=args.metadata_key,
-                    ),
-                )
-                for manifest in manifests
-            ]
+            normalize_spark = build_spark_session(
+                app_name=f"elt-pipeline-normalize-{args.job_name}"
+            )
+            try:
+                summaries = [
+                    _run_normalize_manifest(
+                        manifest=manifest,
+                        resolved_config=resolve_entity_config(
+                            config,
+                            environment=manifest.environment,
+                            source_name=manifest.source_name,
+                            entity_name=manifest.entity_name,
+                        ),
+                        root_path=args.root_path,
+                        job_name=args.job_name,
+                        trigger_type=args.trigger_type,
+                        backfill=args.backfill,
+                        rerun_run_id=args.rerun_run_id,
+                        partition_strategy=PartitionStrategy(
+                            mode=PartitionMode(args.partition_mode),
+                            partition_key=args.partition_key,
+                            metadata_key=args.metadata_key,
+                        ),
+                        spark=normalize_spark,
+                    )
+                    for manifest in manifests
+                ]
+            finally:
+                normalize_spark.stop()
             payload = {
                 "command": "normalize.run",
                 "environment": selected_environment,
@@ -491,10 +505,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.sql_command == "run" and rerun_run_id:
                 _validate_sql_rerun_request(args)
                 rerun_selection = _resolve_sql_rerun_selection(
-                    root_path=_resolve_sql_artifact_root(
-                        package_path=args.package_path,
-                        database_path=args.database,
-                    ),
+                    root_path=args.root_path,
                     rerun_run_id=rerun_run_id,
                 )
                 selected_ids = set(rerun_selection.model_ids)
@@ -622,14 +633,23 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.sql_command == "run":
+                sql_spark = build_spark_session(
+                    app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}"
+                )
                 if args.validate_only or args.explain:
-                    planning_result = LocalSqlModelExecutor(
-                        database_path=args.database,
-                        partition_values=partition_values,
-                    ).plan(
-                        compiled_models,
-                        include_query_plan=args.explain,
-                    )
+                    try:
+                        planning_result = SparkSqlModelExecutor(
+                            spark=sql_spark,
+                            warehouse_root=args.warehouse_root,
+                            root_path=args.root_path,
+                            environment=sql_environment,
+                            partition_values=partition_values,
+                        ).plan(
+                            compiled_models,
+                            include_query_plan=args.explain,
+                        )
+                    finally:
+                        sql_spark.stop()
                     payload = {
                         "run_id": run_context.run_id,
                         "mode": "explain" if args.explain else "validate_only",
@@ -643,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
                             "partitions": partition_values,
                             "rerun_run_id": rerun_run_id,
                         },
-                        "database_path": str(planning_result.database_path),
+                        "warehouse_root": str(planning_result.warehouse_root),
                         "model_count": planning_result.model_count,
                         "execution_order": [
                             model_plan.model_id for model_plan in planning_result.planned_models
@@ -668,23 +688,24 @@ def main(argv: list[str] | None = None) -> int:
                     print(json.dumps(payload, indent=2))
                     return 0
 
-                result = run_sql_models_locally(
-                    root_path=_resolve_sql_artifact_root(
+                try:
+                    result = run_sql_models_locally(
+                        root_path=args.root_path,
+                        run_context=run_context,
+                        environment=sql_environment,
                         package_path=args.package_path,
-                        database_path=args.database,
-                    ),
-                    run_context=run_context,
-                    environment=sql_environment,
-                    package_path=args.package_path,
-                    database_path=args.database,
-                    compiled_models=compiled_models,
-                    partition_values=partition_values,
-                    extra_values=extra_values,
-                    selection_stage=selection_stage,
-                    selection_domain=selection_domain,
-                    selection_model=selection_model,
-                    include_dependencies=selection_include_dependencies,
-                )
+                        warehouse_root=args.warehouse_root,
+                        spark=sql_spark,
+                        compiled_models=compiled_models,
+                        partition_values=partition_values,
+                        extra_values=extra_values,
+                        selection_stage=selection_stage,
+                        selection_domain=selection_domain,
+                        selection_model=selection_model,
+                        include_dependencies=selection_include_dependencies,
+                    )
+                finally:
+                    sql_spark.stop()
                 payload = {
                     "run_id": run_context.run_id,
                     "selection": {
@@ -697,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
                         "partitions": partition_values,
                         "rerun_run_id": rerun_run_id,
                     },
-                    "database_path": str(result.execution_result.database_path),
+                    "warehouse_root": str(result.execution_result.warehouse_root),
                     "model_count": result.execution_result.model_count,
                     "executed_models": [
                         record.model_dump(mode="json")
@@ -880,14 +901,21 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.publish_command == "run":
-                result = run_publish_definitions_locally(
-                    root_path=args.root_path.resolve(),
-                    run_context=run_context,
-                    environment=publish_environment,
-                    package_path=args.package_path,
-                    database_path=args.database,
-                    definitions=selected_definitions,
+                publish_spark = build_spark_session(
+                    app_name=f"elt-pipeline-publish-{getattr(args, 'job_name', 'publish-run')}"
                 )
+                try:
+                    result = run_publish_definitions_locally(
+                        root_path=args.root_path.resolve(),
+                        run_context=run_context,
+                        environment=publish_environment,
+                        package_path=args.package_path,
+                        warehouse_root=args.warehouse_root,
+                        spark=publish_spark,
+                        definitions=selected_definitions,
+                    )
+                finally:
+                    publish_spark.stop()
                 payload = {
                     "command": "publish.run",
                     "run_id": run_context.run_id,
@@ -902,7 +930,7 @@ def main(argv: list[str] | None = None) -> int:
                         "backfill": publish_backfill,
                         "rerun_run_id": rerun_run_id,
                     },
-                    "database_path": str(args.database),
+                    "warehouse_root": str(args.warehouse_root),
                     "publish_count": len(result.results),
                     "results": [
                         {
@@ -1245,17 +1273,6 @@ def _validate_publish_rerun_request(args: argparse.Namespace) -> None:
         )
 
 
-def _resolve_sql_artifact_root(*, package_path: Path, database_path: Path) -> Path:
-    try:
-        common_root = os.path.commonpath([package_path.resolve(), database_path.resolve()])
-    except ValueError:
-        return Path.cwd()
-    resolved_root = Path(common_root)
-    if resolved_root == Path(resolved_root.anchor):
-        return Path.cwd()
-    return resolved_root
-
-
 def _resolve_entity_selections(
     config: PipelineConfig,
     *,
@@ -1548,8 +1565,8 @@ def _run_ingest_entity(
                     "entity_name": resolved_config.entity_name,
                     "connector_type": connector_type,
                     "root_path": str(root_path),
-                    "window_start": _serialize_datetime(cli_window.start),
-                    "window_end": _serialize_datetime(cli_window.end),
+                    "window_start": _serialize_datetime(cli_window.start) or "",
+                    "window_end": _serialize_datetime(cli_window.end) or "",
                     "window_label": cli_window.label or "",
                     "checkpoint_seeded": str(checkpoint_override.active).lower(),
                 },
@@ -1657,6 +1674,7 @@ def _select_level1_manifests(
             context={"entity_name": entity_name},
         )
 
+    root_path = root_path.resolve()
     manifests = [
         _read_level1_manifest(path=manifest_path, root_path=root_path)
         for manifest_path in (
@@ -1724,6 +1742,7 @@ def _resolve_normalize_rerun_manifest(
     root_path: Path,
     rerun_run_id: str,
 ) -> Level1ArtifactManifest:
+    root_path = root_path.resolve()
     audit = _load_stage_audit_record(
         root_path=root_path,
         stage=StageName.normalize,
@@ -1940,6 +1959,7 @@ def _run_normalize_manifest(
     backfill: bool,
     rerun_run_id: str | None,
     partition_strategy: PartitionStrategy,
+    spark: SparkSession,
 ) -> dict[str, Any]:
     try:
         run_context = build_job_runtime(
@@ -1989,6 +2009,7 @@ def _run_normalize_manifest(
         run_context=run_context,
         manifest=manifest,
         payload=(root_path / manifest.data_path).resolve(),
+        spark=spark,
         partition_strategy=partition_strategy,
     )
     return {

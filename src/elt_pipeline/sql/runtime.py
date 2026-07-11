@@ -5,6 +5,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pyspark.sql import SparkSession
+
 from elt_pipeline.ingest.storage import LocalArtifactStore
 from elt_pipeline.integrations import (
     LineageAdapter,
@@ -23,7 +25,6 @@ from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.runtime import RunContext, StageName
 from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
-from elt_pipeline.sql.executor import LocalSqlModelExecutor
 from elt_pipeline.sql.models import (
     CompiledSqlModel,
     SqlExecutionRecord,
@@ -31,6 +32,7 @@ from elt_pipeline.sql.models import (
     SqlRunArtifacts,
     SqlStageRunResult,
 )
+from elt_pipeline.sql.spark_executor import SparkSqlModelExecutor
 
 
 def run_sql_models_locally(
@@ -39,7 +41,8 @@ def run_sql_models_locally(
     run_context: RunContext,
     environment: str,
     package_path: Path,
-    database_path: Path,
+    warehouse_root: Path,
+    spark: SparkSession,
     compiled_models: list[CompiledSqlModel],
     partition_values: dict[str, str] | None = None,
     extra_values: dict[str, object] | None = None,
@@ -67,7 +70,7 @@ def run_sql_models_locally(
     completed_at: datetime | None = None
     status = "success"
     error_summary: dict[str, str] | None = None
-    execution_result = SqlExecutionResult(database_path=database_path)
+    execution_result = SqlExecutionResult(warehouse_root=warehouse_root)
     failure: PipelineError | None = None
     quality_summary: QualityHookSummary | None = None
 
@@ -83,7 +86,7 @@ def run_sql_models_locally(
             details={
                 "environment": environment,
                 "package_path": str(package_path),
-                "database_path": str(database_path),
+                "warehouse_root": str(warehouse_root),
                 "model_count": len(compiled_models),
             },
         ),
@@ -113,8 +116,11 @@ def run_sql_models_locally(
     )
 
     try:
-        executor = LocalSqlModelExecutor(
-            database_path=database_path,
+        executor = SparkSqlModelExecutor(
+            spark=spark,
+            warehouse_root=warehouse_root,
+            root_path=root_path,
+            environment=environment,
             partition_values=partition_values,
         )
         execution_result = executor.execute(
@@ -124,7 +130,7 @@ def run_sql_models_locally(
                 lineage_adapter=lineage_adapter,
                 artifacts=artifacts,
                 compiled_by_id=compiled_by_id,
-                database_path=database_path,
+                warehouse_root=warehouse_root,
                 environment=environment,
                 run_context=run_context,
             ),
@@ -135,7 +141,7 @@ def run_sql_models_locally(
             request=_build_quality_request(
                 run_context=run_context,
                 environment=environment,
-                database_path=database_path,
+                warehouse_root=warehouse_root,
                 execution_result=execution_result,
             ),
         )
@@ -197,7 +203,7 @@ def run_sql_models_locally(
                     for result in summary.validations
                     if not result.passed
                 ),
-                "database_path": str(database_path),
+                "warehouse_root": str(warehouse_root),
             },
         )
         if quality_summary is not None:
@@ -232,7 +238,7 @@ def run_sql_models_locally(
                 context=_build_audit_context(
                     environment=environment,
                     package_path=package_path,
-                    database_path=database_path,
+                    warehouse_root=warehouse_root,
                     root_path=root_path,
                     compiled_models=compiled_models,
                     partition_values=partition_values,
@@ -263,11 +269,11 @@ def run_sql_models_locally(
                 ],
                 outputs=[
                     DatasetRef(
-                        namespace="sqlite",
+                        namespace="spark_parquet",
                         name=record.target_table_name,
                         facets={
                             "model_id": record.model_id,
-                            "database_path": str(database_path),
+                            "warehouse_root": str(warehouse_root),
                             "load_mode": record.load_mode.value,
                             "row_count": record.row_count,
                         },
@@ -301,7 +307,7 @@ def _build_observer(
     lineage_adapter: LineageAdapter,
     artifacts: SqlRunArtifacts,
     compiled_by_id: dict[str, CompiledSqlModel],
-    database_path: Path,
+    warehouse_root: Path,
     environment: str,
     run_context: RunContext,
 ) -> Callable[[CompiledSqlModel, SqlExecutionRecord], None]:
@@ -332,7 +338,7 @@ def _build_observer(
                 job_name=run_context.job_name,
                 inputs=[
                     DatasetRef(
-                        namespace="sqlite",
+                        namespace="spark_parquet",
                         name=compiled_by_id[dependency_id].target_table_name,
                         facets={"model_id": dependency_id},
                     )
@@ -346,11 +352,11 @@ def _build_observer(
                 ],
                 outputs=[
                     DatasetRef(
-                        namespace="sqlite",
+                        namespace="spark_parquet",
                         name=record.target_table_name,
                         facets={
                             "model_id": model.model_id,
-                            "database_path": str(database_path),
+                            "warehouse_root": str(warehouse_root),
                             "stage": model.stage.value,
                             "domain": model.domain,
                             "load_mode": model.load_mode.value,
@@ -368,7 +374,7 @@ def _build_audit_context(
     *,
     environment: str,
     package_path: Path,
-    database_path: Path,
+    warehouse_root: Path,
     root_path: Path,
     compiled_models: list[CompiledSqlModel],
     partition_values: dict[str, str] | None,
@@ -383,7 +389,7 @@ def _build_audit_context(
     context = {
         "environment": environment,
         "package_path": str(package_path),
-        "database_path": str(database_path),
+        "warehouse_root": str(warehouse_root),
         "artifact_root": str(root_path),
         "model_count": str(len(compiled_models)),
         "selected_models": ",".join(model.model_id for model in compiled_models),
@@ -428,7 +434,7 @@ def _build_quality_request(
     *,
     run_context: RunContext,
     environment: str,
-    database_path: Path,
+    warehouse_root: Path,
     execution_result: SqlExecutionResult,
 ) -> QualityHookRequest:
     return QualityHookRequest(
@@ -440,9 +446,9 @@ def _build_quality_request(
             QualityDatasetRef(
                 dataset_id=record.model_id,
                 dataset_name=record.target_table_name,
-                materialization_type="sqlite_table",
+                materialization_type="spark_parquet",
                 target_name=record.target_table_name,
-                output_path=str(database_path),
+                output_path=str(warehouse_root / record.stage.value / record.target_table_name),
                 row_count=record.row_count,
                 metrics={"load_mode": record.load_mode.value},
             )

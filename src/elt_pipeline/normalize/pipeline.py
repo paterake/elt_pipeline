@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pyspark.sql import SparkSession
+
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.storage import LocalArtifactStore
 from elt_pipeline.integrations import (
@@ -16,7 +18,7 @@ from elt_pipeline.integrations import (
     quality_error_already_recorded,
     raise_for_blocking_quality_failures,
 )
-from elt_pipeline.normalize.level2_storage import LocalLevel2Writer
+from elt_pipeline.normalize.level2_storage import SparkLevel2Writer
 from elt_pipeline.normalize.models import Level2WriteSummary
 from elt_pipeline.normalize.partitioning import PartitionStrategy
 from elt_pipeline.normalize.runner import NormalizationRunner
@@ -40,6 +42,7 @@ def normalize_level1_to_local_level2(
     run_context: RunContext,
     manifest: Level1ArtifactManifest,
     payload: Any,
+    spark: SparkSession,
     partition_strategy: PartitionStrategy | None = None,
     normalization_runner: NormalizationRunner | None = None,
     quality_hook: QualityHookAdapter | None = None,
@@ -53,7 +56,7 @@ def normalize_level1_to_local_level2(
     lineage_adapter = build_lineage_adapter(root_path)
     quality_adapter = quality_hook or build_quality_hook(root_path)
     mapping_store = LocalMappingCatalogStore(root_path)
-    level2_writer = LocalLevel2Writer(root_path)
+    level2_writer = SparkLevel2Writer(root_path, spark)
 
     started_at = run_context.started_at
     environment = manifest.environment
@@ -340,12 +343,13 @@ def _build_quality_request(
             QualityDatasetRef(
                 dataset_id=table_manifest.artifact_id,
                 dataset_name=table_manifest.table_name,
-                materialization_type="local_jsonl_file",
+                materialization_type="spark_parquet",
                 target_name=table_manifest.table_name,
                 output_path=table_manifest.data_path,
                 row_count=table_manifest.record_count,
                 metrics={
-                    "file_size_bytes": table_manifest.file_size_bytes,
+                    "file_count": table_manifest.file_count,
+                    "total_file_size_bytes": table_manifest.total_file_size_bytes,
                     "mapping_version": table_manifest.mapping_version,
                 },
             )

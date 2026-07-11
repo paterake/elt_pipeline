@@ -10,9 +10,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+spark = [
+  "pyspark==4.1.2",
+]
 dev = [
   "pytest>=8.3,<9.0",
   "ruff>=0.12,<0.13",
+  "pyspark==4.1.2",
 ]
 
 [project.scripts]

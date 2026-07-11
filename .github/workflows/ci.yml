@@ -18,6 +18,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Java for Spark
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Sync development dependencies
         run: uv sync --extra dev
 

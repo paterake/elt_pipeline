@@ -77,8 +77,25 @@ python3 -m http.server 8000 --directory examples/data/rest_api
 ### SQL run succeeded but tables are missing or empty
 
 - Use `sql compile` or `sql run --validate-only` to confirm model selection and token values.
-- Check the target sqlite database path passed with `--database`.
-- Verify the upstream inputs expected by the SQL models were loaded into that sqlite database.
+- Check the target warehouse root passed with `--warehouse-root`; `level3`/`level4` tables land under `<warehouse-root>/level3/<table_name>/` and `<warehouse-root>/level4/<table_name>/`.
+- Verify `--root-path` points at the same runtime root that `normalize run` wrote `level2/` under.
+
+### `SQL_LEVEL2_SOURCE_NOT_FOUND`
+
+- A `level3` model's `sources` entry (`source_name`/`entity_name`/optional `table_name`) does not match any data under `<root-path>/level2/environment=<env>/source=<source_name>/entity=<entity_name>/`.
+- Confirm `normalize run` completed successfully for that source/entity against the same `--root-path` passed to `sql run`.
+- Confirm the `sources.table_name` (or `logical_name` when `table_name` is omitted) matches the physical table name normalize produced, visible in the normalize run's `table_manifests[].table_name`.
+
+### `SQL_DEPENDENCY_NOT_MATERIALIZED`
+
+- A model's `depends_on` entry was not included in the current run's model selection, so its output could not be read back from the warehouse.
+- Rerun with `--include-deps`, or explicitly select the dependency model as well.
+
+### Spark fails to start / `JAVA_HOME` errors
+
+- `normalize`, `sql`, and `publish` require a local JVM. Install Java 17+ and set `JAVA_HOME`.
+- Confirm `pyspark` is installed: `uv sync --extra dev --extra spark`.
+- Override the Spark master with `ELT_PIPELINE_SPARK_MASTER` if `local[*]` is unsuitable for the environment.
 
 ## Useful Inspection Commands
 

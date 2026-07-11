@@ -5,7 +5,8 @@ This runbook covers the local v1 operator flows for on-demand execution, targete
 ## Prerequisites
 
 - Run commands from the repository root.
-- Install dependencies with `uv sync --extra dev`.
+- Install dependencies with `uv sync --extra dev --extra spark`.
+- `normalize`, `sql`, and `publish` run on Apache Spark and require a local JVM (Java 17+) with `JAVA_HOME` set.
 - Use a writable runtime root such as `.tmp/runtime-demo`.
 - Validate configs before running jobs.
 
@@ -39,7 +40,8 @@ uv run elt-pipeline sql compile examples/sql/local_demo \
   --end-date 2026-01-31
 
 uv run elt-pipeline sql run examples/sql/local_demo \
-  --database .tmp/warehouse.db \
+  --root-path .tmp/runtime-demo \
+  --warehouse-root .tmp/warehouse \
   --environment default \
   --include-deps \
   --start-date 2026-01-01 \
@@ -58,14 +60,14 @@ uv run elt-pipeline publish explain examples/publish/local_demo \
 
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-demo \
-  --database .tmp/warehouse.db \
+  --warehouse-root .tmp/warehouse \
   --environment default \
   --publish daily_order_export \
   --window-label 2026-01
 
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-demo \
-  --database .tmp/warehouse.db \
+  --warehouse-root .tmp/warehouse \
   --environment default \
   --publish daily_order_export_tsv \
   --window-label 2026-01
@@ -78,14 +80,14 @@ uv run elt-pipeline publish explain examples/publish/local_demo \
 
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-demo \
-  --database .tmp/warehouse.db \
+  --warehouse-root .tmp/warehouse \
   --environment default \
   --publish daily_order_export_bundle \
   --window-label 2026-01
 
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-demo \
-  --database .tmp/warehouse.db \
+  --warehouse-root .tmp/warehouse \
   --window-start 2026-01-01T00:00:00+00:00 \
   --window-end 2026-01-31T23:59:59+00:00 \
   --window-label jan-2026 \
@@ -134,11 +136,12 @@ Notes:
 SQL reruns restore the prior model and window selection from SQL audit artifacts.
 
 1. Find the prior SQL `run_id` under `runs/stage=sql/`.
-2. Re-run with the same package path and database path.
+2. Re-run with the same package path, root path, and warehouse root.
 
 ```bash
 uv run elt-pipeline sql run examples/sql/local_demo \
-  --database .tmp/warehouse.db \
+  --root-path .tmp/runtime-demo \
+  --warehouse-root .tmp/warehouse \
   --rerun-run-id <prior-sql-run-id>
 ```
 
@@ -152,12 +155,12 @@ Notes:
 Publish reruns restore the prior publish selection and execution window from publish audit artifacts.
 
 1. Find the prior publish `run_id` under `runs/stage=publish/`.
-2. Re-run with the same runtime root, publish package, and database path.
+2. Re-run with the same runtime root, publish package, and warehouse root.
 
 ```bash
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path .tmp/runtime-demo \
-  --database .tmp/warehouse.db \
+  --warehouse-root .tmp/warehouse \
   --rerun-run-id <prior-publish-run-id>
 ```
 
@@ -262,7 +265,7 @@ Use `publish explain` when you want a dry preview of the paths a publish run wou
 - Review `archive_run_scoped_path` and `archive_stable_delivery_path` when a publish definition declares `delivery.packaging.archive_format: zip`.
 - Expect `stable_delivery_path` to be `null` in explain output when the publish definition uses `versioned_delivery`; only `overwrite_in_place` and `append_new_artifact` maintain a consumer-facing stable path.
 
-Use `publish run` only after the upstream `level4` table already exists in the target sqlite database.
+Use `publish run` only after the upstream `level4` parquet table already exists under the target warehouse root (produced by `sql run`).
 
 - The current implementation supports CSV, `jsonl`, and `tsv` outputs.
 - The current implementation supports `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact`.
@@ -279,7 +282,9 @@ Use `publish run` only after the upstream `level4` table already exists in the t
 A local runtime root persists these operator-visible directories:
 
 - `level1/`: landed payloads and manifest metadata
-- `level2/`: normalized outputs and mapping catalogs
+- `level2/`: Spark-written partitioned parquet tables and mapping catalogs
 - `artifacts/level5/`: publish/export delivery artifacts and run-scoped manifests
 - `runs/`: stage-scoped audit, logs, lineage, and rerun metadata
 - `state/`: checkpoint history used for incremental runs and backfills
+
+A separate warehouse root (passed via `--warehouse-root` to `sql run` and `publish run`) persists Spark-written `level3/` and `level4/` parquet tables, one directory per table.

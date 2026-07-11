@@ -164,9 +164,9 @@ def test_rest_example_runs_ingest(tmp_path: Path) -> None:
     assert payload["results"][0]["result"]["response_count"] == 1
 
 
-def test_sql_example_package_compile_and_run(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
-    _seed_example_warehouse(database_path)
+def test_sql_example_package_compile_and_run(tmp_path: Path, spark_session) -> None:
+    warehouse_root = tmp_path / "warehouse"
+    _seed_example_level2_orders(tmp_path)
 
     compile_result = _run_cli(
         [
@@ -194,8 +194,10 @@ def test_sql_example_package_compile_and_run(tmp_path: Path) -> None:
             "sql",
             "run",
             str(REPO_ROOT / "examples/sql/local_demo"),
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--environment",
             "default",
             "--include-deps",
@@ -209,25 +211,35 @@ def test_sql_example_package_compile_and_run(tmp_path: Path) -> None:
     assert run_payload["model_count"] == 2
     assert Path(run_payload["artifacts"]["audit_path"]).exists()
 
-    with sqlite3.connect(database_path) as connection:
-        rows = connection.execute(
-            "select order_date, total_amount from order_summary order by order_date"
-        ).fetchall()
-    assert rows == [("2026-01-01", 10), ("2026-01-02", 25)]
+    rows = sorted(
+        (
+            row.asDict()
+            for row in spark_session.read.parquet(
+                str(warehouse_root / "level4" / "order_summary")
+            ).collect()
+        ),
+        key=lambda row: row["order_date"],
+    )
+    assert [(row["order_date"], row["total_amount"]) for row in rows] == [
+        ("2026-01-01", 10),
+        ("2026-01-02", 25),
+    ]
 
 
 def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> None:
-    database_path = tmp_path / "warehouse.db"
+    warehouse_root = tmp_path / "warehouse"
     runtime_root = tmp_path / "runtime"
-    _seed_example_warehouse(database_path)
+    _seed_example_level2_orders(tmp_path)
 
     _run_cli(
         [
             "sql",
             "run",
             str(REPO_ROOT / "examples/sql/local_demo"),
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--environment",
             "default",
             "--include-deps",
@@ -272,7 +284,9 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
     assert explain_payload["publish_count"] == 4
     assert all("run_id=" in plan["run_scoped_path"] for plan in explain_payload["plans"])
     bundle_plan = next(
-        plan for plan in explain_payload["plans"] if plan["publish_id"] == "sales.daily_order_export_bundle"
+        plan
+        for plan in explain_payload["plans"]
+        if plan["publish_id"] == "sales.daily_order_export_bundle"
     )
     assert bundle_plan["archive_run_scoped_path"].endswith(".zip")
 
@@ -283,8 +297,8 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
             str(REPO_ROOT / "examples/publish/local_demo"),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--publish",
             "daily_order_export",
             "--window-label",
@@ -305,8 +319,8 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
             str(REPO_ROOT / "examples/publish/local_demo"),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--publish",
             "daily_order_export_windowed",
             "--window-label",
@@ -325,8 +339,8 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
             str(REPO_ROOT / "examples/publish/local_demo"),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--publish",
             "daily_order_export_tsv",
             "--window-label",
@@ -346,8 +360,8 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
             str(REPO_ROOT / "examples/publish/local_demo"),
             "--root-path",
             str(runtime_root),
-            "--database",
-            str(database_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--publish",
             "daily_order_export_bundle",
             "--window-label",
@@ -356,9 +370,8 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
     )
     bundle_run_payload = json.loads(bundle_run_result.stdout)
     assert bundle_run_payload["publish_count"] == 1
-    bundle_artifacts = {
-        artifact["output_format"]: artifact for artifact in bundle_run_payload["results"][0]["artifacts"]
-    }
+    bundle_results = bundle_run_payload["results"][0]["artifacts"]
+    bundle_artifacts = {artifact["output_format"]: artifact for artifact in bundle_results}
     assert set(bundle_artifacts) == {"csv", "zip"}
     assert Path(bundle_artifacts["csv"]["stable_delivery_path"]).exists()
     assert Path(bundle_artifacts["zip"]["stable_delivery_path"]).exists()
@@ -366,8 +379,7 @@ def test_publish_example_package_validate_explain_and_run(tmp_path: Path) -> Non
 
 def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
-    database_path = tmp_path / "warehouse.db"
-    _seed_example_warehouse(database_path)
+    warehouse_root = tmp_path / "warehouse"
 
     schedule_path = _write_modified_example_schedule(
         tmp_path,
@@ -381,7 +393,7 @@ def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> N
             "/absolute/path/to/sql-package": (
                 REPO_ROOT / "examples/sql/local_demo"
             ).as_posix(),
-            "/absolute/path/to/warehouse.db": database_path.as_posix(),
+            "/absolute/path/to/warehouse": warehouse_root.as_posix(),
         },
     )
 
@@ -416,25 +428,10 @@ def _seed_example_source_database(database_path: Path) -> None:
         connection.commit()
 
 
-def _seed_example_warehouse(database_path: Path) -> None:
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id text,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                ("A-100", 10, "2026-01-01"),
-                ("A-200", 25, "2026-01-02"),
-            ],
-        )
-        connection.commit()
+def _seed_example_level2_orders(root_path: Path) -> None:
+    config_path = REPO_ROOT / "examples/configs/local_object_storage_orders.yaml"
+    _run_cli(["ingest", "run", str(config_path), "--root-path", str(root_path)])
+    _run_cli(["normalize", "run", str(config_path), "--root-path", str(root_path)])
 
 
 def _write_modified_example_config(

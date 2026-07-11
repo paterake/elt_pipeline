@@ -64,8 +64,10 @@ Recommended starting points:
 
 This project uses `uv` for environment management.
 
+`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM. Install a Java runtime (Java 17+, e.g. via `sdk install java` or your platform's package manager) and ensure `JAVA_HOME` is set before running any command that touches `normalize`, `sql`, or `publish`.
+
 ```bash
-uv sync --extra dev
+uv sync --extra dev --extra spark
 ```
 
 Run the test suite:
@@ -119,13 +121,13 @@ uv run elt-pipeline normalize run path/to/pipeline.yaml --root-path path/to/runt
 uv run elt-pipeline normalize run path/to/pipeline.yaml --source my_source --entity my_entity --rerun-run-id prior-run-id
 ```
 
-Compile and execute SQL models:
+Compile and execute SQL models against a Spark-backed local parquet warehouse:
 
 ```bash
 uv run elt-pipeline sql compile examples/sql/local_demo --environment default --start-date 2026-01-01 --end-date 2026-01-31
-uv run elt-pipeline sql run examples/sql/local_demo --database path/to/warehouse.db --include-deps --start-date 2026-01-01 --end-date 2026-01-31
-uv run elt-pipeline sql run examples/sql/local_demo --database path/to/warehouse.db --validate-only --stage level3
-uv run elt-pipeline sql run examples/sql/local_demo --database path/to/warehouse.db --explain --stage level4
+uv run elt-pipeline sql run examples/sql/local_demo --root-path path/to/runtime --warehouse-root path/to/warehouse --include-deps --start-date 2026-01-01 --end-date 2026-01-31
+uv run elt-pipeline sql run examples/sql/local_demo --root-path path/to/runtime --warehouse-root path/to/warehouse --validate-only --stage level3
+uv run elt-pipeline sql run examples/sql/local_demo --root-path path/to/runtime --warehouse-root path/to/warehouse --explain --stage level4
 ```
 
 Validate, explain, and run `level5` publish definitions:
@@ -133,8 +135,8 @@ Validate, explain, and run `level5` publish definitions:
 ```bash
 uv run elt-pipeline publish validate path/to/publish_defs
 uv run elt-pipeline publish explain path/to/publish_defs --root-path path/to/runtime
-uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --database path/to/warehouse.db
-uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --database path/to/warehouse.db --rerun-run-id prior-publish-run-id
+uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --warehouse-root path/to/warehouse
+uv run elt-pipeline publish run path/to/publish_defs --root-path path/to/runtime --warehouse-root path/to/warehouse --rerun-run-id prior-publish-run-id
 ```
 
 Run a deterministic local schedule plan:
@@ -154,14 +156,16 @@ The local runtime is organized as a staged filesystem workflow:
 5. `publish run` exports approved `level4` datasets into run-scoped `level5` delivery artifacts
 6. `schedule run` orchestrates the above commands in a deterministic local sequence
 
-This reflects the currently implemented runtime path through `level5`. The current publish implementation supports local file-based delivery with run-scoped manifests, publish definition discovery/validation, explain-mode, CSV, `jsonl`, and `tsv` execution against sqlite-backed `level4` tables, optional zip packaging for file deliveries, the `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` replacement behaviors, and audit-driven publish reruns plus windowed backfill tagging. Broader delivery patterns remain follow-on work.
+This reflects the currently implemented runtime path through `level5`. `level2` through `level4` are Spark-backed parquet datasets under a local warehouse root: `normalize run` writes `level2` via Spark, `sql run` materializes `level3`/`level4` via Spark SQL reading `level2` sources declared on `level3` model manifests, and `publish run` reads `level4` parquet via Spark to produce local file-based `level5` deliveries. The current publish implementation supports run-scoped manifests, publish definition discovery/validation, explain-mode, CSV, `jsonl`, and `tsv` execution, optional zip packaging for file deliveries, the `versioned_delivery`, `overwrite_in_place`, and `append_new_artifact` replacement behaviors, and audit-driven publish reruns plus windowed backfill tagging. Broader delivery patterns remain follow-on work.
 
 Runtime metadata is persisted under the selected root path, including:
 
 - `level1/`: raw landed artifacts and manifests
-- `level2/`: normalized output tables and mapping catalogs
+- `level2/`: Spark-written partitioned parquet tables and mapping catalogs
 - `runs/`: audit, structured logs, lineage, and stage-scoped rerun artifacts
 - `state/`: local checkpoint history
+
+`sql run` and `publish run` take a separate `--warehouse-root`, distinct from `--root-path`, containing the Spark-written `level3/` and `level4/` parquet tables (one directory per table, flat-namespaced by `target.table_name`).
 
 ## Optional Lineage Backend
 
@@ -225,8 +229,8 @@ def run_publish(**context) -> None:
         subcommand=("publish", "run"),
         arguments=(
             "/path/to/publish_defs",
-            "--database",
-            "/path/to/warehouse.db",
+            "--warehouse-root",
+            "/path/to/warehouse",
             "--root-path",
             "/path/to/runtime",
             "--job-name",
@@ -303,10 +307,10 @@ The repository includes an example SQL package under `examples/sql/local_demo/` 
 
 1. Create or point to a pipeline YAML file for a local source.
 2. Run `ingest run` into a writable runtime root.
-3. Run `normalize run` against the same runtime root.
-4. Load or expose `level2` outputs to a local sqlite database when preparing SQL-stage inputs.
-5. Run `sql compile` or `sql run` against `examples/sql/local_demo/`.
-6. Run `publish validate`, `publish explain`, or `publish run` against `examples/publish/local_demo/`.
+3. Run `normalize run` against the same runtime root, producing `level2` parquet tables under it.
+4. Declare the resulting `level2` table(s) as `sources` on the relevant `level3` model manifest(s) in `examples/sql/local_demo/`.
+5. Run `sql compile` or `sql run` against `examples/sql/local_demo/`, pointing `--root-path` at the same runtime root and `--warehouse-root` at where `level3`/`level4` should be written.
+6. Run `publish validate`, `publish explain`, or `publish run` against `examples/publish/local_demo/`, pointing `--warehouse-root` at the same warehouse used by `sql run`.
 
 Example command sequence:
 
@@ -328,7 +332,8 @@ uv run elt-pipeline sql compile examples/sql/local_demo \
   --end-date 2026-01-31
 
 uv run elt-pipeline sql run examples/sql/local_demo \
-  --database path/to/warehouse.db \
+  --root-path path/to/runtime \
+  --warehouse-root path/to/warehouse \
   --environment default \
   --include-deps \
   --start-date 2026-01-01 \
@@ -342,7 +347,7 @@ uv run elt-pipeline publish explain examples/publish/local_demo \
 
 uv run elt-pipeline publish run examples/publish/local_demo \
   --root-path path/to/runtime \
-  --database path/to/warehouse.db \
+  --warehouse-root path/to/warehouse \
   --publish daily_order_export \
   --window-label 2026-01
 ```

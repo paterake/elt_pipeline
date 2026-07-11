@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.integrations import (
     QualityCheckResult,
     QualityCheckStatus,
     QualityHookPolicy,
     build_quality_hook,
 )
-from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.errors import PipelineError
@@ -47,7 +47,9 @@ def build_manifest(
     )
 
 
-def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(tmp_path: Path) -> None:
+def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(
+    tmp_path: Path, spark_session
+) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
     payload = {
@@ -60,17 +62,19 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(tmp_pat
         run_context=run_context,
         manifest=manifest,
         payload=payload,
+        spark=spark_session,
     )
 
     assert summary.table_manifests
     for table_manifest in summary.table_manifests:
         data_path = tmp_path / table_manifest.data_path
         manifest_path = tmp_path / table_manifest.manifest_path
-        assert data_path.exists()
+        assert data_path.is_dir()
         assert manifest_path.exists()
         assert "/ingest_date=2026-01-01/" in table_manifest.data_path
-        written_lines = data_path.read_text(encoding="utf-8").strip().splitlines()
-        assert len(written_lines) == table_manifest.record_count
+        written_df = spark_session.read.parquet(str(data_path))
+        assert written_df.count() == table_manifest.record_count
+        assert table_manifest.file_count == len(list(data_path.glob("*.parquet")))
 
     audit_path = (
         tmp_path
@@ -96,7 +100,7 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(tmp_pat
     assert lineage_events[1]["outputs"]
 
 
-def test_partition_strategy_supports_none_mode(tmp_path: Path) -> None:
+def test_partition_strategy_supports_none_mode(tmp_path: Path, spark_session) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
@@ -106,6 +110,7 @@ def test_partition_strategy_supports_none_mode(tmp_path: Path) -> None:
         run_context=run_context,
         manifest=manifest,
         payload=payload,
+        spark=spark_session,
         partition_strategy=PartitionStrategy(mode=PartitionMode.none),
     )
 
@@ -113,7 +118,7 @@ def test_partition_strategy_supports_none_mode(tmp_path: Path) -> None:
     assert all("/ingest_date=" not in table.data_path for table in summary.table_manifests)
 
 
-def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path) -> None:
+def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path, spark_session) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest(payload_format="csv")
     payload = "order_id,amount,status\nA-100,10,open\nA-200,25,closed\n"
@@ -123,18 +128,24 @@ def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path) -> None:
         run_context=run_context,
         manifest=manifest,
         payload=payload,
+        spark=spark_session,
     )
 
     assert len(summary.table_manifests) == 1
     table_manifest = summary.table_manifests[0]
     assert table_manifest.table_name == "orders"
     data_path = tmp_path / table_manifest.data_path
-    written_rows = [json.loads(line) for line in data_path.read_text(encoding="utf-8").splitlines()]
+    written_rows = sorted(
+        (row.asDict() for row in spark_session.read.parquet(str(data_path)).collect()),
+        key=lambda row: row["order_id"],
+    )
     assert [row["order_id"] for row in written_rows] == ["A-100", "A-200"]
     assert [row["amount"] for row in written_rows] == ["10", "25"]
 
 
-def test_normalize_pipeline_captures_quality_results_in_audit(tmp_path: Path) -> None:
+def test_normalize_pipeline_captures_quality_results_in_audit(
+    tmp_path: Path, spark_session
+) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
@@ -145,6 +156,7 @@ def test_normalize_pipeline_captures_quality_results_in_audit(tmp_path: Path) ->
         run_context=run_context,
         manifest=manifest,
         payload=payload,
+        spark=spark_session,
         quality_hook=quality_hook,
     )
 
@@ -166,7 +178,9 @@ def test_normalize_pipeline_captures_quality_results_in_audit(tmp_path: Path) ->
     assert audit_payload["metrics_summary"]["extra"]["quality.pass"] == 1
 
 
-def test_normalize_pipeline_fails_for_blocking_quality_results(tmp_path: Path) -> None:
+def test_normalize_pipeline_fails_for_blocking_quality_results(
+    tmp_path: Path, spark_session
+) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
@@ -182,6 +196,7 @@ def test_normalize_pipeline_fails_for_blocking_quality_results(tmp_path: Path) -
             run_context=run_context,
             manifest=manifest,
             payload=payload,
+            spark=spark_session,
             quality_hook=quality_hook,
         )
 
@@ -203,7 +218,7 @@ def test_normalize_pipeline_fails_for_blocking_quality_results(tmp_path: Path) -
 
 
 def test_normalize_pipeline_records_single_error_for_blocking_quality_backend_failure(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
@@ -220,6 +235,7 @@ def test_normalize_pipeline_records_single_error_for_blocking_quality_backend_fa
             run_context=run_context,
             manifest=manifest,
             payload=payload,
+            spark=spark_session,
             quality_hook=quality_hook,
         )
 
@@ -241,7 +257,7 @@ def test_normalize_pipeline_records_single_error_for_blocking_quality_backend_fa
 
 
 def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
-    tmp_path: Path,
+    tmp_path: Path, spark_session
 ) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
@@ -257,6 +273,7 @@ def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
         run_context=run_context,
         manifest=manifest,
         payload=payload,
+        spark=spark_session,
         quality_hook=quality_hook,
     )
 

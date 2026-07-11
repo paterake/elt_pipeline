@@ -62,7 +62,8 @@ class Level2TableManifest(BaseModel):
     normalize_started_at: datetime
     normalize_completed_at: datetime
     record_count: int
-    file_size_bytes: int
+    file_count: int
+    total_file_size_bytes: int
     data_path: str
     manifest_path: str
 

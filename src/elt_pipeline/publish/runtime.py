@@ -4,10 +4,11 @@ import csv
 import hashlib
 import json
 import shutil
-import sqlite3
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+
+from pyspark.sql import Row, SparkSession
 
 from elt_pipeline.ingest.storage import LocalArtifactStore
 from elt_pipeline.integrations import LineageAdapter, build_lineage_adapter
@@ -82,7 +83,8 @@ def run_publish_definitions_locally(
     run_context: RunContext,
     environment: str,
     package_path: Path,
-    database_path: Path,
+    warehouse_root: Path,
+    spark: SparkSession,
     definitions: list[DiscoveredPublishDefinition],
 ) -> PublishStageRunResult:
     if run_context.stage != StageName.publish:
@@ -118,7 +120,7 @@ def run_publish_definitions_locally(
             details={
                 "environment": environment,
                 "package_path": str(package_path),
-                "database_path": str(database_path),
+                "warehouse_root": str(warehouse_root),
                 "publish_count": len(definitions),
             },
         ),
@@ -132,7 +134,7 @@ def run_publish_definitions_locally(
             job_name=run_context.job_name,
             inputs=[
                 DatasetRef(
-                    namespace="sqlite",
+                    namespace="spark_parquet",
                     name=definition.manifest.source.dataset,
                     facets={
                         "publish_id": definition.publish_id,
@@ -145,22 +147,21 @@ def run_publish_definitions_locally(
     )
 
     try:
-        with sqlite3.connect(database_path) as connection:
-            connection.row_factory = sqlite3.Row
-            for definition in definitions:
-                result = _run_single_publish_definition(
-                    connection=connection,
-                    root_path=root_path,
-                    run_context=run_context,
-                    environment=environment,
-                    artifact_store=artifact_store,
-                    lineage_adapter=lineage_adapter,
-                    definition=definition,
-                )
-                results.append(result)
-                artifacts.export_manifest_path = (
-                    result.artifacts[0].run_scoped_path.parent / "manifest.json"
-                )
+        for definition in definitions:
+            result = _run_single_publish_definition(
+                spark=spark,
+                warehouse_root=warehouse_root,
+                root_path=root_path,
+                run_context=run_context,
+                environment=environment,
+                artifact_store=artifact_store,
+                lineage_adapter=lineage_adapter,
+                definition=definition,
+            )
+            results.append(result)
+            artifacts.export_manifest_path = (
+                result.artifacts[0].run_scoped_path.parent / "manifest.json"
+            )
         completed_at = datetime.now(tz=UTC)
     except PipelineError as exc:
         completed_at = datetime.now(tz=UTC)
@@ -189,7 +190,7 @@ def run_publish_definitions_locally(
             files_written=sum(len(result.artifacts) for result in results),
             extra={
                 "publish_count": len(results),
-                "database_path": str(database_path),
+                "warehouse_root": str(warehouse_root),
             },
         )
         for result in results:
@@ -221,7 +222,7 @@ def run_publish_definitions_locally(
                 context={
                     "environment": environment,
                     "package_path": str(package_path),
-                    "database_path": str(database_path),
+                    "warehouse_root": str(warehouse_root),
                     "artifact_root": str(root_path),
                     "publish_count": str(len(definitions)),
                     "selected_publish_ids": ",".join(
@@ -269,7 +270,7 @@ def run_publish_definitions_locally(
                 job_name=run_context.job_name,
                 inputs=[
                     DatasetRef(
-                        namespace="sqlite",
+                        namespace="spark_parquet",
                         name=definition.manifest.source.dataset,
                         facets={"publish_id": definition.publish_id},
                     )
@@ -314,9 +315,21 @@ def run_publish_definitions_locally(
     return PublishStageRunResult(results=results, artifacts=artifacts)
 
 
+def _register_level4_source(
+    *,
+    spark: SparkSession,
+    warehouse_root: Path,
+    definition: DiscoveredPublishDefinition,
+) -> None:
+    dataset_path = warehouse_root / "level4" / definition.manifest.source.dataset
+    dataframe = spark.read.parquet(str(dataset_path))
+    dataframe.createOrReplaceTempView(definition.manifest.source.dataset)
+
+
 def _run_single_publish_definition(
     *,
-    connection: sqlite3.Connection,
+    spark: SparkSession,
+    warehouse_root: Path,
     root_path: Path,
     run_context: RunContext,
     environment: str,
@@ -352,10 +365,11 @@ def _run_single_publish_definition(
             },
         )
 
+    _register_level4_source(spark=spark, warehouse_root=warehouse_root, definition=definition)
     sql_text = _build_publish_sql(definition)
-    cursor = connection.execute(sql_text)
-    column_names = [str(description[0]) for description in cursor.description or []]
-    rows = cursor.fetchall()
+    result_df = spark.sql(sql_text)
+    column_names = result_df.columns
+    rows = result_df.collect()
     validations = _validate_publish_output(
         definition=definition,
         column_names=column_names,
@@ -489,7 +503,7 @@ def _run_single_publish_definition(
             job_name=run_context.job_name,
             inputs=[
                 DatasetRef(
-                    namespace="sqlite",
+                    namespace="spark_parquet",
                     name=definition.manifest.source.dataset,
                     facets={"publish_id": definition.publish_id},
                 )
@@ -539,7 +553,7 @@ def _validate_publish_output(
     *,
     definition: DiscoveredPublishDefinition,
     column_names: list[str],
-    rows: list[sqlite3.Row],
+    rows: list[Row],
 ) -> list[PublishValidationResult]:
     validations: list[PublishValidationResult] = []
     missing_required_columns = [
@@ -590,7 +604,7 @@ def _write_publish_output(
     output_path: Path,
     output_format: PublishOutputFormat,
     column_names: list[str],
-    rows: list[sqlite3.Row],
+    rows: list[Row],
 ) -> None:
     if output_format == PublishOutputFormat.csv:
         with output_path.open("w", encoding="utf-8", newline="") as handle:
@@ -628,7 +642,7 @@ def _write_publish_output(
 
 def _row_to_serializable_mapping(
     *,
-    row: sqlite3.Row,
+    row: Row,
     column_names: list[str],
 ) -> dict[str, object]:
     return {column_name: row[column_name] for column_name in column_names}

@@ -9,6 +9,29 @@ from elt_pipeline.ingest import LocalCheckpointStore, LocalLevel1Writer
 from elt_pipeline.shared.runtime import RunContext, StageName
 
 
+def _seed_level2_table(
+    spark_session,
+    root_path: Path,
+    *,
+    environment: str = "default",
+    source_name: str = "orders_source",
+    entity_name: str = "orders",
+    table_name: str = "raw_orders",
+    rows: list[dict],
+) -> None:
+    data_dir = (
+        root_path
+        / "level2"
+        / f"environment={environment}"
+        / f"source={source_name}"
+        / f"entity={entity_name}"
+        / "mapping_version=v1"
+        / f"table={table_name}"
+        / "run_id=seed-run"
+    )
+    spark_session.createDataFrame(rows).write.mode("error").parquet(str(data_dir))
+
+
 def write_config(tmp_path: Path) -> Path:
     config_path = tmp_path / "pipeline.yaml"
     config_path.write_text(
@@ -451,10 +474,17 @@ def test_sql_compile_command(tmp_path: Path) -> None:
     assert "2026-01-31" in payload["models"][0]["compiled_sql"]
 
 
-def test_sql_run_command(tmp_path: Path) -> None:
+def test_sql_run_command(tmp_path: Path, spark_session) -> None:
     package_root = write_sql_package(tmp_path)
-    database_path = tmp_path / "warehouse.db"
-    _seed_sqlite_database(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     result = subprocess.run(
         [
@@ -467,8 +497,10 @@ def test_sql_run_command(tmp_path: Path) -> None:
             "--model",
             "order_summary",
             "--include-deps",
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--start-date",
             "2026-01-01",
             "--end-date",
@@ -488,10 +520,17 @@ def test_sql_run_command(tmp_path: Path) -> None:
     assert Path(payload["artifacts"]["lineage_path"]).exists()
 
 
-def test_sql_run_command_supports_rerun_run_id(tmp_path: Path) -> None:
+def test_sql_run_command_supports_rerun_run_id(tmp_path: Path, spark_session) -> None:
     package_root = write_sql_package(tmp_path)
-    database_path = tmp_path / "warehouse.db"
-    _seed_sqlite_database(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     initial_result = _run_cli(
         [
@@ -501,8 +540,10 @@ def test_sql_run_command_supports_rerun_run_id(tmp_path: Path) -> None:
             "--model",
             "order_summary",
             "--include-deps",
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--start-date",
             "2026-01-01",
             "--end-date",
@@ -516,8 +557,10 @@ def test_sql_run_command_supports_rerun_run_id(tmp_path: Path) -> None:
             "sql",
             "run",
             str(package_root),
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--rerun-run-id",
             initial_payload["run_id"],
         ]
@@ -588,10 +631,17 @@ def test_ingest_run_command_supports_backfill_checkpoint_seed(tmp_path: Path) ->
     }
 
 
-def test_sql_run_validate_only_command(tmp_path: Path) -> None:
+def test_sql_run_validate_only_command(tmp_path: Path, spark_session) -> None:
     package_root = write_sql_package(tmp_path)
-    database_path = tmp_path / "warehouse.db"
-    _seed_sqlite_database(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     result = subprocess.run(
         [
@@ -604,8 +654,10 @@ def test_sql_run_validate_only_command(tmp_path: Path) -> None:
             "--model",
             "order_summary",
             "--include-deps",
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--start-date",
             "2026-01-01",
             "--end-date",
@@ -625,20 +677,20 @@ def test_sql_run_validate_only_command(tmp_path: Path) -> None:
         "level4.sales.order_summary",
     ]
     assert all(model["validation_passed"] for model in payload["models"])
-
-    import sqlite3
-
-    with sqlite3.connect(database_path) as connection:
-        row = connection.execute(
-            "select name from sqlite_master where type = 'table' and name = 'order_summary'"
-        ).fetchone()
-    assert row is None
+    assert not (warehouse_root / "level4" / "order_summary").exists()
 
 
-def test_sql_run_explain_command(tmp_path: Path) -> None:
+def test_sql_run_explain_command(tmp_path: Path, spark_session) -> None:
     package_root = write_sql_package(tmp_path)
-    database_path = tmp_path / "warehouse.db"
-    _seed_sqlite_database(database_path)
+    warehouse_root = tmp_path / "warehouse"
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        rows=[
+            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
+        ],
+    )
 
     result = subprocess.run(
         [
@@ -651,8 +703,10 @@ def test_sql_run_explain_command(tmp_path: Path) -> None:
             "--model",
             "order_summary",
             "--include-deps",
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(tmp_path),
+            "--warehouse-root",
+            str(warehouse_root),
             "--start-date",
             "2026-01-01",
             "--end-date",
@@ -671,9 +725,9 @@ def test_sql_run_explain_command(tmp_path: Path) -> None:
     assert payload["models"][1]["query_plan"]
 
 
-def test_end_to_end_local_cli_flow_ingest_normalize_sql(tmp_path: Path) -> None:
+def test_end_to_end_local_cli_flow_ingest_normalize_sql(tmp_path: Path, spark_session) -> None:
     config_path, output_root = write_end_to_end_cli_fixture(tmp_path)
-    database_path = tmp_path / "warehouse.db"
+    warehouse_root = tmp_path / "warehouse"
     sql_package = write_level2_sql_package(tmp_path)
 
     ingest_result = _run_cli(
@@ -712,12 +766,6 @@ def test_end_to_end_local_cli_flow_ingest_normalize_sql(tmp_path: Path) -> None:
     assert normalize_payload["command"] == "normalize.run"
     assert normalize_payload["processed_count"] == 1
 
-    _load_level2_table_into_sqlite(
-        output_root=output_root,
-        table_manifest=normalize_payload["results"][0]["table_manifests"][0],
-        database_path=database_path,
-    )
-
     sql_result = _run_cli(
         [
             "sql",
@@ -726,8 +774,10 @@ def test_end_to_end_local_cli_flow_ingest_normalize_sql(tmp_path: Path) -> None:
             "--model",
             "order_summary",
             "--include-deps",
-            "--database",
-            str(database_path),
+            "--root-path",
+            str(output_root),
+            "--warehouse-root",
+            str(warehouse_root),
             "--start-date",
             "2026-01-01",
             "--end-date",
@@ -743,13 +793,19 @@ def test_end_to_end_local_cli_flow_ingest_normalize_sql(tmp_path: Path) -> None:
     ]
     assert Path(sql_payload["artifacts"]["audit_path"]).exists()
 
-    import sqlite3
-
-    with sqlite3.connect(database_path) as connection:
-        summary_rows = connection.execute(
-            "select order_date, total_amount from order_summary order by order_date"
-        ).fetchall()
-    assert summary_rows == [("2026-01-01", 10), ("2026-01-02", 35)]
+    summary_rows = sorted(
+        (
+            row.asDict()
+            for row in spark_session.read.parquet(
+                str(warehouse_root / "level4" / "order_summary")
+            ).collect()
+        ),
+        key=lambda row: row["order_date"],
+    )
+    assert [(row["order_date"], row["total_amount"]) for row in summary_rows] == [
+        ("2026-01-01", 10),
+        ("2026-01-02", 35),
+    ]
 
 
 def write_sql_package(tmp_path: Path) -> Path:
@@ -766,6 +822,10 @@ def write_sql_package(tmp_path: Path) -> Path:
             load_mode: full_refresh
             target:
               table_name: base_orders
+            sources:
+              - logical_name: raw_orders
+                source_name: orders_source
+                entity_name: orders
             owner:
               name: platform
             """
@@ -888,29 +948,6 @@ def write_sql_ingest_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     return config_path, output_root
-
-
-def _seed_sqlite_database(database_path: Path) -> None:
-    import sqlite3
-
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table raw_orders (
-                order_id integer,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into raw_orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (1, 10, "2026-01-01"),
-                (2, 20, "2026-01-03"),
-            ],
-        )
-        connection.commit()
 
 
 def write_object_storage_cli_fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -1150,6 +1187,10 @@ def write_level2_sql_package(tmp_path: Path) -> Path:
             load_mode: full_refresh
             target:
               table_name: base_orders
+            sources:
+              - logical_name: orders
+                source_name: local_files
+                entity_name: orders
             owner:
               name: platform
             """
@@ -1201,36 +1242,3 @@ def write_level2_sql_package(tmp_path: Path) -> Path:
     return package_root
 
 
-def _load_level2_table_into_sqlite(
-    *,
-    output_root: Path,
-    table_manifest: dict[str, object],
-    database_path: Path,
-) -> None:
-    data_path = output_root / str(table_manifest["data_path"])
-    rows = [
-        json.loads(line)
-        for line in data_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-
-    import sqlite3
-
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            create table orders (
-                order_id text,
-                amount integer,
-                order_date text
-            )
-            """
-        )
-        connection.executemany(
-            "insert into orders (order_id, amount, order_date) values (?, ?, ?)",
-            [
-                (row["order_id"], row["amount"], row["order_date"])
-                for row in rows
-            ],
-        )
-        connection.commit()

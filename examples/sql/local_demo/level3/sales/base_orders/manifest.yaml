@@ -6,5 +6,10 @@ materialization: table
 load_mode: full_refresh
 target:
   table_name: base_orders
+sources:
+  - logical_name: raw_orders
+    source_name: local_files
+    entity_name: orders
+    table_name: orders
 owner:
   name: platform

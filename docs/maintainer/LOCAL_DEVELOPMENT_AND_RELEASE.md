@@ -4,6 +4,8 @@ This repository uses `uv` for local development, test execution, and packaging.
 
 ## Local Development
 
+`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM (Java 17+) with `JAVA_HOME` set. The `dev` extra already pulls in `pyspark`; only the JVM itself is an external prerequisite.
+
 Sync the locked development environment from the repository root:
 
 ```bash
@@ -31,7 +33,7 @@ The automated smoke coverage validates:
 
 - example pipeline configs still parse and resolve
 - local connector happy paths still execute for object storage, SQL, Kafka, and REST
-- the bundled SQL package still compiles and runs against a local sqlite warehouse
+- the bundled SQL package still compiles and runs against a local Spark-backed parquet warehouse
 - the example schedule plan still executes after replacing its placeholder paths with real local values
 
 When changing example files or CLI behavior, run:
@@ -58,6 +60,7 @@ GitHub Actions runs the repository checks defined in `.github/workflows/ci.yml`.
 
 The workflow currently enforces:
 
+- a Temurin JDK 17 install (required for `pyspark`)
 - `uv sync --extra dev`
 - `uv run ruff check .`
 - `uv run pytest`
