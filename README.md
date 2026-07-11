@@ -15,6 +15,13 @@ The platform is designed to align with DAMA-DMBOK v2 principles for:
 
 The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` through `level5` naming used here. Instead, those levels are the platform's chosen architecture model for operationalizing DMBOK-aligned concerns in a concrete implementation.
 
+## Source Code references
+/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt
+/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg
+/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main
+/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main
+/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main
+
 ## Platform Model
 
 Within `elt_pipeline`, the levels mean:
