@@ -6,7 +6,7 @@ Run all example commands from the repository root so relative paths resolve corr
 
 - `examples/configs/local_object_storage_orders.yaml`: object storage ingest using bundled JSON sample data
 - `examples/configs/local_object_storage_orders_csv_bypass.yaml`: object storage ingest with CSV payloads and `bypass_level2`
-- `examples/configs/local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `examples/data/sql/source.db`
+- `examples/configs/local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `.ignore/example-source.db`
 - `examples/configs/local_kafka_orders_replay.yaml`: Kafka replay ingest from a bundled JSONL log
 - `examples/configs/local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint
 - `examples/publish/local_demo/`: runnable `level5` publish definitions for CSV, `jsonl`, `tsv`, and zip-bundled local exports
@@ -37,8 +37,8 @@ uv run elt-pipeline normalize run examples/configs/local_object_storage_orders_c
 Seed the example database once:
 
 ```bash
-rm -f examples/data/sql/source.db
-sqlite3 examples/data/sql/source.db < examples/data/sql/source_init.sql
+rm -f .ignore/example-source.db
+sqlite3 .ignore/example-source.db < examples/data/sql/source_init.sql
 ```
 
 Run the connector:

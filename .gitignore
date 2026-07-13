@@ -221,9 +221,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 # elt_pipeline local runtime output
-#   --root-path / --warehouse-root default to .ignore/runtime and .ignore/warehouse, so bare
-#   commands write all local scratch output into this single directory. Real runs pass explicit
-#   paths; the docs' example paths also live under .ignore/.
+#   --root-path / --warehouse-root default to .ignore/runtime and .ignore/warehouse, and the
+#   example sqlite source db is generated under .ignore/example-source.db, so bare commands and
+#   example setup write all local scratch into this single gitignored directory. Source-
+#   controlled example inputs (source_init.sql, sample data, configs) stay tracked under
+#   examples/. Real runs pass explicit paths.
 /.ignore/
-/tmp_provenance_ingest_review/
-/examples/data/sql/source.db

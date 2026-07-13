@@ -51,8 +51,8 @@ Use this guide when local runs fail or when outputs do not appear where expected
 - Seed the example database with:
 
 ```bash
-rm -f examples/data/sql/source.db
-sqlite3 examples/data/sql/source.db < examples/data/sql/source_init.sql
+rm -f .ignore/example-source.db
+sqlite3 .ignore/example-source.db < examples/data/sql/source_init.sql
 ```
 
 ### REST connector failures against the local example

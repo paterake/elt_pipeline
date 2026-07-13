@@ -293,7 +293,7 @@ The repository now includes runnable local connector configs under `examples/con
 
 - `local_object_storage_orders.yaml`: JSON object storage ingest plus normalization
 - `local_object_storage_orders_csv_bypass.yaml`: CSV ingest with `bypass_level2`
-- `local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `examples/data/sql/source.db`
+- `local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `.ignore/example-source.db`
 - `local_kafka_orders_replay.yaml`: Kafka replay ingest from `examples/data/kafka/orders-events.jsonl`
 - `local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint served from `examples/data/rest_api/`
 

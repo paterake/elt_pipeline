@@ -9,7 +9,7 @@ sources:
       - name: orders
         extraction:
           mode: delta
-          database: examples/data/sql/source.db
+          database: .ignore/example-source.db
           query:
             sql: select order_id, updated_at, amount, status from raw_orders where updated_at >= :watermark order by updated_at
             parameters:

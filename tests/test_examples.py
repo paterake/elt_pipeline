@@ -121,7 +121,7 @@ def test_sqlite_example_runs_ingest(tmp_path: Path) -> None:
     config_path = _write_modified_example_config(
         tmp_path,
         "examples/configs/local_sqlite_orders_delta.yaml",
-        {"examples/data/sql/source.db": database_path.as_posix()},
+        {".ignore/example-source.db": database_path.as_posix()},
     )
 
     result = _run_cli(
