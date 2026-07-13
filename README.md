@@ -161,11 +161,13 @@ This reflects the currently implemented runtime path through `level5`. `level2` 
 Runtime metadata is persisted under the selected root path, including:
 
 - `level1/`: raw landed artifacts and manifests
-- `level2/`: Spark-written partitioned parquet tables and mapping catalogs
+- `level2/`: Spark-written parquet datasets (source-aligned tables) and mapping catalogs; the `source=`, `entity=`, and `ingest_date=` path segments are addressing metadata, not queryable Spark partition columns
 - `runs/`: audit, structured logs, lineage, and stage-scoped rerun artifacts
 - `state/`: local checkpoint history
 
 `sql run` and `publish run` take a separate `--warehouse-root`, distinct from `--root-path`, containing the Spark-written `level3/` and `level4/` parquet tables (one directory per table, flat-namespaced by `target.table_name`).
+
+When omitted, `--root-path` defaults to `.ignore/runtime` and `--warehouse-root` defaults to `.ignore/warehouse` — both under a single gitignored `.ignore/` directory, so bare commands run from the repo do not pollute the working tree. Pass explicit paths for real runs.
 
 ## Optional Lineage Backend
 

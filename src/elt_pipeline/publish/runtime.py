@@ -369,6 +369,10 @@ def _run_single_publish_definition(
     sql_text = _build_publish_sql(definition)
     result_df = spark.sql(sql_text)
     column_names = result_df.columns
+    # NOTE: .collect() materializes the whole result set in driver memory so the delivery can be
+    # written as a single local file. This caps output size to driver memory. It is not a
+    # regression versus the prior sqlite fetchall() behaviour, but it is a real ceiling for very
+    # large level4 result sets. See docs/operator/LOCAL_OPERATOR_RUNBOOK.md "Known Limitations".
     rows = result_df.collect()
     validations = _validate_publish_output(
         definition=definition,

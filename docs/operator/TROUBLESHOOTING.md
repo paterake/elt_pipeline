@@ -97,22 +97,33 @@ python3 -m http.server 8000 --directory examples/data/rest_api
 - Confirm `pyspark` is installed: `uv sync --extra dev --extra spark`.
 - Override the Spark master with `ELT_PIPELINE_SPARK_MASTER` if `local[*]` is unsuitable for the environment.
 
+### Driver out-of-memory during `normalize run` or `publish run`
+
+- These stages have single-process memory ceilings by design (see `LOCAL_OPERATOR_RUNBOOK.md`
+  "Known Limitations"): `normalize` flattens each nested payload in the driver process, and
+  `publish` collects the full result set to the driver to write one file.
+- Reduce per-artifact payload size at ingest so `normalize` processes smaller units, or narrow
+  the `publish` selection/window so fewer rows are collected.
+- Raising driver memory (`ELT_PIPELINE_SPARK_MASTER` with a suitable local config, or Spark
+  driver-memory settings) helps only up to the single-node limit; genuinely large workloads
+  need the deferred distributed-relationalization / streamed-export work, not a config tweak.
+
 ## Useful Inspection Commands
 
 Pretty-print an audit artifact:
 
 ```bash
-python3 -m json.tool .tmp/runtime-demo/runs/stage=ingest/environment=default/job=ingest-run/run_id=<run_id>/audit.json
+python3 -m json.tool .ignore/runtime-demo/runs/stage=ingest/environment=default/job=ingest-run/run_id=<run_id>/audit.json
 ```
 
 List recent run artifacts:
 
 ```bash
-find .tmp/runtime-demo/runs -maxdepth 5 -type f | sort
+find .ignore/runtime-demo/runs -maxdepth 5 -type f | sort
 ```
 
 List checkpoint files:
 
 ```bash
-find .tmp/runtime-demo/state -type f | sort
+find .ignore/runtime-demo/state -type f | sort
 ```

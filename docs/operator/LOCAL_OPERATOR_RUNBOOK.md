@@ -7,7 +7,7 @@ This runbook covers the local v1 operator flows for on-demand execution, targete
 - Run commands from the repository root.
 - Install dependencies with `uv sync --extra dev --extra spark`.
 - `normalize`, `sql`, and `publish` run on Apache Spark and require a local JVM (Java 17+) with `JAVA_HOME` set.
-- Use a writable runtime root such as `.tmp/runtime-demo`.
+- Use a writable runtime root such as `.ignore/runtime-demo`.
 - Validate configs before running jobs.
 
 ```bash
@@ -20,14 +20,14 @@ Run ingest:
 
 ```bash
 uv run elt-pipeline ingest run examples/configs/local_object_storage_orders.yaml \
-  --root-path .tmp/runtime-demo
+  --root-path .ignore/runtime-demo
 ```
 
 Run normalization against the same root:
 
 ```bash
 uv run elt-pipeline normalize run examples/configs/local_object_storage_orders.yaml \
-  --root-path .tmp/runtime-demo
+  --root-path .ignore/runtime-demo
 ```
 
 Compile or run downstream SQL models:
@@ -40,8 +40,8 @@ uv run elt-pipeline sql compile examples/sql/local_demo \
   --end-date 2026-01-31
 
 uv run elt-pipeline sql run examples/sql/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --environment default \
   --include-deps \
   --start-date 2026-01-01 \
@@ -54,40 +54,40 @@ Validate, explain, or run downstream `level5` publish definitions:
 uv run elt-pipeline publish validate examples/publish/local_demo
 
 uv run elt-pipeline publish explain examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
+  --root-path .ignore/runtime-demo \
   --environment default \
   --window-label 2026-01
 
 uv run elt-pipeline publish run examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --environment default \
   --publish daily_order_export \
   --window-label 2026-01
 
 uv run elt-pipeline publish run examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --environment default \
   --publish daily_order_export_tsv \
   --window-label 2026-01
 
 uv run elt-pipeline publish explain examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
+  --root-path .ignore/runtime-demo \
   --environment default \
   --publish daily_order_export_bundle \
   --window-label 2026-01
 
 uv run elt-pipeline publish run examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --environment default \
   --publish daily_order_export_bundle \
   --window-label 2026-01
 
 uv run elt-pipeline publish run examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --window-start 2026-01-01T00:00:00+00:00 \
   --window-end 2026-01-31T23:59:59+00:00 \
   --window-label jan-2026 \
@@ -100,7 +100,7 @@ Use backfill mode when you want a historical ingest or normalization run to seed
 
 ```bash
 uv run elt-pipeline ingest run examples/configs/local_object_storage_orders.yaml \
-  --root-path .tmp/runtime-demo \
+  --root-path .ignore/runtime-demo \
   --window-start 2026-01-01T00:00:00+00:00 \
   --window-end 2026-01-31T23:59:59+00:00 \
   --window-label jan-2026 \
@@ -122,7 +122,7 @@ Normalize reruns reuse the exact input manifest captured by a prior normalize ru
 
 ```bash
 uv run elt-pipeline normalize run examples/configs/local_object_storage_orders.yaml \
-  --root-path .tmp/runtime-demo \
+  --root-path .ignore/runtime-demo \
   --rerun-run-id <prior-normalize-run-id>
 ```
 
@@ -140,8 +140,8 @@ SQL reruns restore the prior model and window selection from SQL audit artifacts
 
 ```bash
 uv run elt-pipeline sql run examples/sql/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --rerun-run-id <prior-sql-run-id>
 ```
 
@@ -159,8 +159,8 @@ Publish reruns restore the prior publish selection and execution window from pub
 
 ```bash
 uv run elt-pipeline publish run examples/publish/local_demo \
-  --root-path .tmp/runtime-demo \
-  --warehouse-root .tmp/warehouse \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse \
   --rerun-run-id <prior-publish-run-id>
 ```
 
@@ -277,12 +277,37 @@ Use `publish run` only after the upstream `level4` parquet table already exists 
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.
 
+## Known Limitations
+
+These are current, intentional constraints of the local-first Spark implementation. They are
+not bugs; know them before running at larger scale.
+
+- **`level1` -> `level2` relationalization is single-process.** The nested-structure flattening
+  runs in the driver's Python process (`normalize/runner.py`); Spark is used only to write the
+  result. A single very large or deeply nested source payload is held in memory during
+  normalization and can exhaust driver memory. Keep per-artifact payload sizes bounded at
+  ingest. A distributed (native-Spark) relationalization is deferred — see
+  `docs/todo/archive/TODO_SPARK_COMPLETED.md`.
+- **`publish run` collects results to the driver.** The publish SQL result set is materialized
+  in driver memory via `.collect()` so each delivery can be written as a single local file.
+  This caps output size to driver memory. It matches the prior sqlite `fetchall()` behaviour
+  (not a regression) but is a real ceiling for very large `level4` result sets.
+- **`level2` path segments are addressing metadata, not queryable columns.** `source`,
+  `entity`, `ingest_date`, and `mapping_version` organise the filesystem and drive read
+  resolution, but are not recovered as Spark columns and cannot be used in `WHERE` predicates at
+  `level2`. Genuine partition columns exist only at `level3`/`level4` (via a model's
+  `target.partition_columns` under `load_mode: partition_overwrite`). Broader path/partition
+  rework is tracked in `docs/todo/TODO_PATHING.md`.
+- **Two environments must not share one `--warehouse-root`.** `level3`/`level4` paths contain no
+  `environment=` segment, so environment isolation relies on pointing each environment at a
+  separate warehouse root. Sharing one root across environments would collide tables.
+
 ## Audit and State Locations
 
 A local runtime root persists these operator-visible directories:
 
 - `level1/`: landed payloads and manifest metadata
-- `level2/`: Spark-written partitioned parquet tables and mapping catalogs
+- `level2/`: Spark-written parquet datasets and mapping catalogs (the `source=`/`entity=`/`ingest_date=` path segments are addressing metadata, not queryable partition columns)
 - `artifacts/level5/`: publish/export delivery artifacts and run-scoped manifests
 - `runs/`: stage-scoped audit, logs, lineage, and rerun metadata
 - `state/`: checkpoint history used for incremental runs and backfills

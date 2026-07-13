@@ -219,3 +219,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# elt_pipeline local runtime output
+#   --root-path / --warehouse-root default to .ignore/runtime and .ignore/warehouse, so bare
+#   commands write all local scratch output into this single directory. Real runs pass explicit
+#   paths; the docs' example paths also live under .ignore/.
+/.ignore/
+/tmp_provenance_ingest_review/
+/examples/data/sql/source.db

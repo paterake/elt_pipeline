@@ -6,15 +6,16 @@ Use it to see which backlog documents exist, what each one is for, and whether i
 
 ## Current Status
 
-- Active implementation backlog documents: none
+- Active implementation backlog documents: `docs/todo/TODO_PATHING.md`
 - Archived implementation backlog documents: complete for the local-first implementation slice and the subsequent Spark-only engine correction
-- Current corrective workstream: none open
-- New scope or engine changes beyond the completed Spark correction (e.g. object storage URIs for `level2+`, a metastore, `elt_pipeline_cfg` wiring): require PRD review and a new tracker entry
+- Current workstream: review of path / partition / table-identity management (analysis complete, needs PRD decision before implementation)
+- New scope or engine changes beyond the above (e.g. object storage URIs for `level2+`, a metastore, `elt_pipeline_cfg` wiring): require PRD review and a new tracker entry
 
 ## Backlog Index
 
 | Document | Type | Status | Purpose |
 | --- | --- | --- | --- |
+| `docs/todo/TODO_PATHING.md` | Active backlog | Active | Path/partition/table-identity management review after the Spark migration; needs PRD decision before implementation |
 | `docs/todo/TODO_SPARK.md` | Backlog tracker | Archived / complete | Pointer for the completed Spark-only engine correction backlog |
 | `docs/todo/archive/TODO_SPARK_COMPLETED.md` | Completed snapshot | Archived / complete | Historical completed snapshot of the Spark correction backlog, including what was descoped |
 | `docs/todo/archive/IMPLEMENTATION_BACKLOG.md` | Backlog tracker | Archived / complete | Final working backlog pointer for the approved implementation scope |

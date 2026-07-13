@@ -70,6 +70,12 @@ from elt_pipeline.sql import (
 )
 from elt_pipeline.sql.models import SqlModelStage
 
+# Default local scratch locations for runtime output. Both live under a single gitignored
+# `.ignore/` directory so bare commands run from the repo do not pollute the working tree.
+# Override with --root-path / --warehouse-root for real runs.
+_DEFAULT_ROOT_PATH = Path(".ignore/runtime")
+_DEFAULT_WAREHOUSE_ROOT = Path(".ignore/warehouse")
+
 
 @dataclass(frozen=True)
 class _CheckpointOverride:
@@ -135,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_run_parser.add_argument("--environment", default="default")
     ingest_run_parser.add_argument("--source")
     ingest_run_parser.add_argument("--entity")
-    ingest_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    ingest_run_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
     ingest_run_parser.add_argument("--job-name", default="ingest-run")
     ingest_run_parser.add_argument("--trigger-type", default="manual")
     ingest_run_parser.add_argument(
@@ -177,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_run_parser.add_argument("--environment", default="default")
     normalize_run_parser.add_argument("--source")
     normalize_run_parser.add_argument("--entity")
-    normalize_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    normalize_run_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
     normalize_run_parser.add_argument("--job-name", default="normalize-run")
     normalize_run_parser.add_argument("--trigger-type", default="manual")
     normalize_run_parser.add_argument(
@@ -238,10 +244,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--root-path",
         type=Path,
-        required=True,
+        default=_DEFAULT_ROOT_PATH,
         help="Pipeline runtime root containing level1/level2 data and run artifacts.",
     )
-    run_parser.add_argument("--warehouse-root", type=Path, required=True)
+    run_parser.add_argument("--warehouse-root", type=Path, default=_DEFAULT_WAREHOUSE_ROOT)
     run_parser.add_argument("--job-name", default="sql-run")
     run_parser.add_argument("--trigger-type", default="manual")
     run_parser.add_argument(
@@ -279,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preview the artifacts a publish run would produce.",
     )
     _add_publish_selection_arguments(publish_explain_parser)
-    publish_explain_parser.add_argument("--root-path", type=Path, default=Path.cwd())
+    publish_explain_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
     publish_explain_parser.add_argument("--job-name", default="publish-explain")
     publish_explain_parser.add_argument("--trigger-type", default="manual")
     publish_explain_parser.add_argument("--window-start")
@@ -296,8 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run publish definitions against a Spark-backed parquet warehouse.",
     )
     _add_publish_selection_arguments(publish_run_parser)
-    publish_run_parser.add_argument("--root-path", type=Path, default=Path.cwd())
-    publish_run_parser.add_argument("--warehouse-root", type=Path, required=True)
+    publish_run_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
+    publish_run_parser.add_argument("--warehouse-root", type=Path, default=_DEFAULT_WAREHOUSE_ROOT)
     publish_run_parser.add_argument("--job-name", default="publish-run")
     publish_run_parser.add_argument("--trigger-type", default="manual")
     publish_run_parser.add_argument("--window-start")
