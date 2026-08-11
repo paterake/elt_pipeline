@@ -228,27 +228,34 @@ even if partition discovery is bypassed.
 **Status:** Blocked on P1. **Resolution:** Mercell re-co-location pattern.
 
 Once `source_name` + `ingest_date` are real L2 columns:
-- L3 defaults `partitionBy=["source_name", "ingest_date"]` on every model (see default
-  partition convention in Resolved Decisions).
-- L3 `partition_overwrite` semantics = overwrite the `(source_name, ingest_date)` tuple for
-  the source being run.
+- L3 defaults `partitionBy=["source_name", "business_date"]` on every model (see default
+  partition convention in Resolved Decisions). This matches the late-arrival-correct pattern:
+  output partitioned by event day from the payload, NOT arrival day.
+- L3 opt-in override: `partitionBy=["source_name", "ingest_date"]` for snapshot/audit tables
+  where arrival-day semantics are the question.
+- L3 `partition_overwrite` semantics = overwrite the `(source_name, business_date)` tuple (or
+  `(source_name, ingest_date)` if overridden) for the source being run. Dynamic overwrite
+  (session-level `partitionOverwriteMode=dynamic`) ensures only matching tuple is replaced.
 - Result: one canonical Spark table with `source_name` partitions side-by-side (e.g.
   `level3/canonical_notice/source_name=mercell/...` and `.../source_name=camelot/...` as peers).
+  Late arrivals from source X on ingest_date D1 correctly land in business_date D2 partition.
 - `source.*` token namespace is **optional** after P1 — SQL authors can just `SELECT source_name`
   from L2. Still add the token for ergonomics, but it is no longer a hard dependency.
 
 ### P3 — Governance-by-path is weakened at L3/L4
 **Status:** Blocked on P1 + P2. **Resolution:** Genuine partition columns = governance-by-path.
 
-When L3 writes `partitionBy(source_name, ingest_date)`, the physical layout becomes
-`level3/<table>/source_name=<src>/ingest_date=<date>/`, which directly supports:
+When L3 writes `partitionBy(source_name, business_date)` (the default), the physical layout
+becomes `level3/<table>/source_name=<src>/business_date=<date>/`, which directly supports:
 - IAM prefix policies: deny `level3/canonical_notice/source_name=external_partner/*` to
-  internal analysts.
+  internal analysts. `source_name` is the critical governance partition — date partition adds
+  time-windowed IAM granularity if needed.
 - ABAC filtering: `WHERE source_name = <current_user_allowed_sources>`.
 - Metastore-level GRANTs once a Glue/Hive metastore is added.
 
-This is a standard Spark pattern — the path IS the governance surface. Nothing custom needed
-beyond correct `partitionBy`.
+Snapshot/audit tables using the `ingest_date` override get identical governance structure, just
+with `ingest_date` as the date segment. This is a standard Spark pattern — the path IS the
+governance surface. Nothing custom needed beyond correct `partitionBy`.
 
 ### P4 — Non-uniform path grammar across levels
 **Status:** Open. **Resolution:** Unified within level-type (see Target State table).
