@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v1
+- Status: Draft v2 (pathing revision: default partitions, decouple partitionBy/load_mode, late-arrival flow)
 - Product area: `elt_pipeline`
 - Stages: `level2` -> `level3`, `level3` -> `level4`
 - Proposed implementation language: Python
@@ -73,6 +73,44 @@ It is responsible for:
 Consumers may analyze data directly from `level4` tables.
 
 This PRD intentionally stops at `level4`. Static file outputs, canned reports, and other downstream publish/export mechanics belong in `level5` and are defined separately.
+
+## Level 3 and Level 4 Path Grammar (Source-Aligned vs Canonical)
+
+L1/L2 (source-aligned levels) and L3/L4 (canonical/mart levels) serve different purposes and have two distinct but internally consistent sub-grammars. Environment is handled by per-env roots (never in-path), consistent with L1/L2.
+
+### Level 3 (Canonical) Path Grammar
+
+```
+level3/<table_name>/source_name=<src>/<date_col>=<date>/*.parquet
+```
+
+- `date_col` is `business_date` by default (event day from the payload). This is the late-arrival-correct convention: data received on `ingest_date=2026-08-10` whose business date is `2026-07-31` correctly lands in partition `business_date=2026-07-31/`.
+- `date_col` may be explicitly overridden to `ingest_date` for snapshot/audit tables where "what did the data look like on arrival day?" is the semantic question.
+- `source_name=<src>` partitions are the Mercell re-co-location pattern: one canonical Spark table, multiple sources co-located side-by-side as peer partitions. Each source's L3 pipeline independently overwrites only its own `(source_name, date_col)` tuple.
+
+### Level 4 (Consumer Mart) Path Grammar
+
+```
+level4/<table_name>/<date_col>=<date>/*.parquet
+```
+
+- `date_col` defaults to `business_date` for temporal marts.
+- `date_col` may be omitted only for non-temporal dimension tables that are always full-refreshed (no date partitioning needed).
+- `source_name` is not a default L4 partition — L4 marts are typically already conformed and joined, so source filtering is a column-level concern rather than a path-level concern. The option to include `source_name` explicitly via manifest `target.partition_columns` is retained.
+
+### Environment Handling (Consistent with L1/L2)
+
+- `environment` SHALL NOT appear in any L3 or L4 path segment.
+- Environment is handled exclusively by which `--warehouse-root` the pipeline is pointed at.
+- Each environment (dev, staging, prod) gets its own independent warehouse root / bucket.
+- Two environments sharing one `--warehouse-root` would write to the same `level3/<table>/` paths and collide; this is intentionally prevented by the per-env-roots convention.
+
+### Path Segments Are Real Spark `partitionBy` Columns
+
+All path segments above SHALL correspond 1:1 to actual Spark `partitionBy` columns on the write. This means:
+- Partition columns in the path MUST also exist as real data columns produced by the SQL model's SELECT (Spark requirement for metastore registration, filtering, and joins).
+- Spark dynamic partition overwrite (`spark.sql.sources.partitionOverwriteMode=dynamic`) is enabled at session level and is the mechanism that makes partition-scoped overwrites correct.
+- The base table path for `_table_path` remains `<warehouse_root>/level3/<table_name>` or `<warehouse_root>/level4/<table_name>`; `partitionBy()` adds the `<key>=<value>/` segments beneath it automatically.
 
 ## Goals
 
@@ -167,7 +205,6 @@ The preferred design is dependency metadata rather than only flat text ordering 
 ### FR4. Materialization Strategies
 
 The framework shall support:
-
 - full refresh,
 - append,
 - partition overwrite,
@@ -175,6 +212,56 @@ The framework shall support:
 - snapshot or slowly changing dimension patterns where needed.
 
 Each model must declare its materialization strategy explicitly.
+
+#### FR4.1. Default Partition Convention (Orthogonal to Load Mode)
+
+`partitionBy` (physical partitioning layout) and `load_mode` (write semantics — what gets overwritten) SHALL be **orthogonal** concerns. Partitioning controls how the data is laid out on disk; load mode controls whether overwrite replaces the whole table, appends, or overwrites only matching partitions. Both apply independently.
+
+Previously, `partitionBy` was applied only for `load_mode: partition_overwrite`. This is incorrect — partitions govern read efficiency and governance-by-path regardless of load mode. The corrected behavior is:
+
+**Effective partition columns are computed as follows:**
+| Stage | Manifest `target.partition_columns` | Effective partition columns |
+|---|---|---|
+| L3 | empty / unset | `["source_name", "business_date"]` (default) |
+| L3 | explicitly set to `["source_name", "ingest_date"]` | `["source_name", "ingest_date"]` (snapshot/audit override) |
+| L3 | explicitly set to custom list | custom list (override) |
+| L3 | explicitly set to `[]` (empty) AND `load_mode == full_refresh` | `[]` (no partitions, explicit opt-out) |
+| L4 | empty / unset | `["business_date"]` (default) |
+| L4 | explicitly set to custom list | custom list (override) |
+| L4 | explicitly set to `[]` (empty) | `[]` (no partitions, for non-temporal dimensions) |
+
+**Default rationale:**
+- L3 default `["source_name", "business_date"]`:
+  - `source_name` enables Mercell re-co-location (multiple sources side-by-side in one canonical table), per-source independent replay, and governance-by-path (IAM prefix controls per source).
+  - `business_date` is the late-arrival-correct default. Data received on `ingest_date=2026-08-10` with payload date `business_date=2026-07-31` correctly lands in the `business_date=2026-07-31` partition. Spark dynamic partition overwrite replaces only the matching `(source_name, business_date)` tuple.
+- L3 override `["source_name", "ingest_date"]`: Use for snapshot/audit tables where "what did the data look like on the day we received it?" is the semantic question. Arrival-day semantics, not event-day semantics.
+- L4 default `["business_date"]`: Consumer marts are typically already conformed, so `source_name` is no longer a required path-level partition. Date partitioning still provides query pruning and governance-by-time-window.
+- L4 empty `[]`: Only for non-temporal dimensions (reference tables, SCD Type 1 full snapshots) that are always full-refreshed.
+
+**Validation rule:** If the effective partition columns reference a column (e.g. `business_date`) that is not produced by the SQL model's SELECT, Spark will raise a readable error at write time. This is the correct enforcement mechanism — no extra validation layer needed.
+
+#### FR4.2. `partitionBy` Applies to All Three Load Modes
+
+The effective partition columns (per FR4.1) SHALL be applied via `.partitionBy(*effective_partition_columns)` for **all three** load modes, not only `partition_overwrite`:
+
+- `full_refresh`: `df.write.mode("overwrite").partitionBy(*cols).parquet(...)` — overwrites the whole table, but still partitions the new data (consistent layout, query pruning).
+- `append`: `df.write.mode("append").partitionBy(*cols).parquet(...)` — appends new rows into the correct partition directories.
+- `partition_overwrite`: `df.write.mode("overwrite").partitionBy(*cols).parquet(...)` — with session-level dynamic mode (`partitionOverwriteMode=dynamic`), replaces **only** the partitions whose values appear in the incoming dataframe. All other partitions (other dates, other sources) are untouched. This is the workhorse for incremental runs and per-source replay.
+
+This guarantees uniform physical layout across all load modes, so that a table switched from `append` to `full_refresh` (e.g., during a backfill) continues to produce the same partitioned directory structure.
+
+#### FR4.3. Dynamic Partition Overwrite Prerequisites
+
+The `partition_overwrite` mode relies on:
+1. Session-level `spark.sql.sources.partitionOverwriteMode=dynamic` already being configured.
+2. All partition columns existing in the output dataframe (enforced by Spark at write time).
+3. The model's SELECT producing the correct partition column values — these values drive which existing partitions get replaced.
+
+For the default L3 case, this means the SQL model MUST:
+- Produce a `source_name` column in its SELECT (already available from L2 via P1 lineage columns — just `SELECT source_name` from the L2 source).
+- Produce a `business_date` column in its SELECT (either pass through from payload, or derive from event timestamp fields).
+
+The model author does NOT need to inject these via tokens; they are plain columns from the L2 read.
 
 ### FR5. Runtime Parameterization
 
@@ -191,7 +278,6 @@ Tokenization must be simple, deterministic, and validated before execution.
 ### FR6. Backfills and Date Windows
 
 The platform shall support:
-
 - single-date runs,
 - date-range backfills,
 - partition-aware replay,
@@ -199,6 +285,45 @@ The platform shall support:
 - selective model reruns after SQL changes.
 
 The runtime must preserve a record of what dates, partitions, and model versions were executed.
+
+### FR6a. Late-Arriving Data Repartitioning (Camelot Capability, Preserved by Design)
+
+The platform SHALL preserve and improve upon the Camelot late-arriving data repartitioning capability. This is not a separate "repartition job" — it is the default behavior of any L3 model that selects `business_date` in its output.
+
+**Standard 4-step flow for late arrivals:**
+1. **L2 write (arrival day).** Data for a `business_date=2026-07-31` event arrives late on `ingest_date=2026-08-10`. The normalization step writes it to L2 under `level2/source=X/entity=Y/.../ingest_date=2026-08-10/...`. The L2 parquet row carries both:
+   - `ingest_date=2026-08-10` and `source_name=X` (mandatory lineage columns, per PRD 02 FR8.2), PLUS
+   - the payload column `business_date=2026-07-31` from the flattened source JSON.
+2. **L3 SQL model reads by `ingest_date`, writes by `business_date`.** The L3 model's SELECT is structured as:
+   ```sql
+   cte_src_base AS (
+     SELECT *, business_date
+     FROM t.level2_X_Y
+     WHERE ingest_date = '{{ window.start_date }}'
+   ),
+   cte_joined AS (...)
+   SELECT * FROM cte_joined
+   ```
+   The `WHERE ingest_date = ...` reads everything that arrived on the specified day (the replay unit). `business_date` is passed through in the output columns.
+3. **L3 write to the correct event-date partition.** The L3 writer applies the default partition convention (`partitionBy=["source_name", "business_date"]`) with `mode("overwrite")` and session-level dynamic partition overwrite. Spark writes the output to:
+   ```
+   level3/canonical_table/source_name=X/business_date=2026-07-31/
+   ```
+   replacing **only** the `(source_name=X, business_date=2026-07-31)` partition. Other date partitions and other sources are untouched.
+4. **Idempotent replay.** Re-running the same L3 model for `ingest_date=2026-08-10` produces the same output and overwrites the same `(source_name, business_date)` partition — safe and deterministic.
+
+**Why this is better than the Camelot implementation:**
+- No separate explicit "repartition" step or job needed. It's the default behavior of every L3 model that selects `business_date`.
+- `ingest_date` is preserved as a queryable data column at L3, so auditors can answer: "Which ingest_date run wrote these rows into business_date=2026-07-31?"
+- Dynamic partition overwrite + the fact that Spark restricts overwrite to partition values present in the output dataframe = zero risk of accidentally overwriting unrelated source or date partitions, even if the WHERE clause in the SELECT is wrong. This is a correctness guardrail.
+
+**Snapshot/audit override:** If the semantic question is "what did the data look like on arrival day?" rather than "what happened on event day?", the model manifest overrides `target.partition_columns` to `["source_name", "ingest_date"]`. This writes the output into `source_name=X/ingest_date=2026-08-10/` instead, preserving arrival-day semantics.
+
+**Key design invariants that make this work:**
+- At L1/L2, path date key = `ingest_date` (arrival day, immutable once written, unit of replay).
+- At L3/L4, default path date key = `business_date` (event day from payload, enables late-arrival repartitioning).
+- Both dates are always available as real data columns at L2 (lineage columns give `ingest_date`; payload gives `business_date`), so the L3 model's SELECT can read by one and write by the other.
+- `partitionBy` is applied for all load modes (not only `partition_overwrite`), so the physical layout is consistent no matter how the table is written.
 
 ### FR7. Data Quality Controls
 
@@ -339,7 +464,6 @@ To accelerate migration from the legacy platforms, the runtime should support:
 ## Data Contract for Level 3
 
 Each `level3` model must document:
-
 - business grain,
 - conformance rules applied,
 - source entities used,
@@ -347,16 +471,33 @@ Each `level3` model must document:
 - refresh pattern,
 - quality expectations.
 
+**Level 3 path and partition contract:**
+- Path grammar (default): `level3/<table_name>/source_name=<src>/business_date=<date>/*.parquet`
+- Path grammar (snapshot/audit override): `level3/<table_name>/source_name=<src>/ingest_date=<date>/*.parquet`
+- Default effective partition columns (when manifest is empty): `["source_name", "business_date"]`
+- Opt-out: manifest may set `target.partition_columns` explicitly to override or disable (empty list only allowed with `full_refresh`)
+- The SQL model's SELECT MUST produce the effective partition columns as real output columns (Spark enforces this at write time with a readable error)
+- `business_date` (default date partition) = event day from the payload, enables late-arrival repartitioning per FR6a
+- `ingest_date` (override) = arrival day, for snapshot/audit semantics
+- `source_name` = the source this data came from, enables Mercell re-co-location (multiple sources side-by-side in one canonical table) and governance-by-path
+
 ## Data Contract for Level 4
 
 Each `level4` model must document:
-
 - consumer use case,
 - business grain,
 - freshness SLA or expectation,
 - downstream dependency or audience,
 - quality expectations,
 - breaking change policy.
+
+**Level 4 path and partition contract:**
+- Path grammar (default): `level4/<table_name>/business_date=<date>/*.parquet`
+- Path grammar (no partitioning): `level4/<table_name>/*.parquet` (non-temporal dimensions only)
+- Default effective partition columns (when manifest is empty): `["business_date"]`
+- Opt-out: manifest may set `target.partition_columns = []` for non-temporal dimensions that are always full-refreshed
+- `source_name` is not a default L4 partition, but may be added explicitly via manifest `target.partition_columns` when a mart needs source-level partitioning for governance or query patterns
+- As with L3, effective partition columns MUST be produced by the SQL model's SELECT
 
 ## Success Metrics
 

@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v1
+- Status: Draft v2 (pathing revision: per-environment roots, no `environment=` in paths)
 - Product area: `elt_pipeline`
 - Stage: Source systems -> `level1`
 - Proposed implementation language: Python
@@ -201,16 +201,27 @@ For each extracted unit, the framework shall persist:
 
 The framework shall define a standard `level1` layout that is easy to query and replay.
 
-The storage path contract should include:
+The storage path contract shall be:
 
-- stage name,
-- environment,
-- source name,
-- entity name,
-- ingestion date or ingestion timestamp partition,
-- optional extraction window or batch id.
+```
+level1/source=<src>/entity=<entity>/ingest_date=<date>[/window=<label>]/run_id=<id>/<file>
+```
 
-The exact partition shape should be standardized across connectors.
+The standardized path segments are:
+- stage name: `level1`
+- source name: `source=<src>`
+- entity name: `entity=<entity>`
+- ingestion date partition: `ingest_date=<YYYY-MM-DD>` (always arrival day, immutable once written)
+- optional extraction window label: `window=<label>`
+- run identifier: `run_id=<id>`
+
+**IMPORTANT — Environment handling:**
+- `environment` SHALL NOT appear as an in-path segment.
+- Environment is handled exclusively by which `--root-path` (storage root / bucket) the pipeline is pointed at.
+- Each environment (dev, staging, prod) gets its own independent storage root; this aligns with cloud lakehouse patterns and preserves clean IAM prefix boundaries, point-in-time restore, and environment-to-environment promotion.
+- `environment` is still retained on manifests and `RunContext` for audit, logging, and config selection purposes — it is only removed from filesystem paths.
+
+The exact partition shape shall be standardized across connectors as described above.
 
 ### FR8. Idempotency and Deduplication
 

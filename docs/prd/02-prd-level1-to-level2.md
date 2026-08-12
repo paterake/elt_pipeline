@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v1
+- Status: Draft v2 (pathing revision: lineage columns, per-env roots, parent-directory reads)
 - Product area: `elt_pipeline`
 - Stage: `level1` -> `level2`
 - Proposed implementation language: Python
@@ -217,13 +217,64 @@ Disallowed behavior:
 ### FR8. Write Semantics
 
 The framework shall support:
-
 - append and overwrite modes where appropriate,
 - incremental loads for partitioned windows,
-- partitioning based on ingestion date, business date, or source-aligned keys,
 - physically efficient file/table output for downstream SQL use.
 
-### FR8a. Writer and Partition Strategy Separation
+#### FR8.1. Level 2 Path Grammar
+
+The `level2` storage path contract shall be:
+
+```
+level2/source=<src>/entity=<entity>/mapping_version=<v>/ingest_date=<date>/table=<tbl>/run_id=<id>/*.parquet
+```
+
+The standardized path segments are:
+- stage name: `level2`
+- source name: `source=<src>`
+- entity name: `entity=<entity>`
+- mapping version: `mapping_version=<v>` (the hash of the mapping catalog, changes only when the relational extraction structure changes)
+- ingestion date partition: `ingest_date=<YYYY-MM-DD>` (always arrival day from the L1 manifest, immutable once written)
+- table name: `table=<tbl>` (the physical name of the normalized child table or root table)
+- run identifier: `run_id=<id>`
+
+**Environment handling (consistent with L1):**
+- `environment` SHALL NOT appear as an in-path segment.
+- Environment is handled exclusively by which `--root-path` (storage root / bucket) the pipeline is pointed at.
+- Each environment (dev, staging, prod) gets its own independent storage root.
+- `environment` is still retained on manifests and `Level2TableManifest` for audit purposes.
+
+#### FR8.2. Mandatory Lineage Columns (Real Parquet Data Columns)
+
+Every `level2` parquet row SHALL carry the following three lineage columns as real, materialized parquet data columns (not just path segments or tokens):
+
+| Column | Type | Source | Purpose |
+|---|---|---|---|
+| `source_name` | STRING | L1 manifest `source_name` | Downstream SQL can SELECT this directly; enables L3 `source_name` partitioning |
+| `ingest_date` | DATE | L1 manifest `ingest_started_at.date()` | Enables L2 window filtering by arrival day; always present for L3 models to read |
+| `_run_id` | STRING | Run context `run_id` | Low-level audit: which specific normalization run produced this row |
+
+These three columns are injected by the normalization runner (primary) and safety-netted by the L2 writer (belt-and-suspenders, `withColumn` if missing before write). Every table in the normalized output, including child tables from array expansion, carries these columns on every row.
+
+This makes `level2` self-describing — the columns exist even if partition discovery is bypassed, and downstream SQL model authors do not need special tokens or configuration to access them.
+
+#### FR8.3. `ingest_date` vs `business_date` Distinction
+
+At `level2` (and `level1`), the date key in the path AND the materialized `ingest_date` column are **always arrival day** (= when the data was received into the platform). This value is immutable once written and serves as the unit of replay.
+
+A separate column `business_date` (= when the event actually happened, extracted from the payload content) may appear in the flattened source fields when the source provides it. Downstream `level3` models read L2 by `ingest_date` window and choose whether to re-partition their output by `business_date` (the default for canonical tables) or retain `ingest_date` partitioning (for snapshot/audit tables). This late-arriving data repartitioning flow is defined in PRD 03.
+
+#### FR8.4. Partitioning Strategy at Level 2
+
+`level2` path segments (`source`, `entity`, `mapping_version`, `ingest_date`) are embedded in the directory structure. These SHALL be recoverable as queryable Spark partition columns via parent-directory reads (see FR10.2), enabling `WHERE source = '...' AND ingest_date BETWEEN ...` filters to prune at the filesystem level.
+
+The `level2` writer does NOT apply Spark `partitionBy()`; the layout is achieved via explicit directory paths. The mandatory lineage columns (FR8.2) ensure the data is self-describing regardless.
+
+#### FR8.5. Load Mode Semantics at Level 2
+
+Writes are always run-scoped: one `run_id=<id>` directory per normalization run. The writer refuses to overwrite an existing run directory (error-on-existing). Replay is achieved by writing a new run, then downstream readers filter by run_id or rely on Spark dynamic partition overwrite at level3.
+
+#### FR8. Writer and Partition Strategy Separation
 
 The normalization runtime shall separate:
 
@@ -256,14 +307,30 @@ When parsing or typing fails, the system shall support:
 ### FR10. Level 1 Traceability
 
 Every `level2` record or partition must be traceable back to:
-
 - source name,
 - entity name,
 - `level1` artifact path or manifest reference,
 - run id,
 - normalization mapping version.
 
-### FR10a. Lineage Event Standard (OpenLineage)
+#### FR10.1. Real-Column Lineage over Tokens
+
+The primary mechanism for downstream SQL to access lineage information SHALL be the three real parquet data columns defined in FR8.2 (`source_name`, `ingest_date`, `_run_id`). SQL authors can `SELECT source_name, ingest_date FROM t.level2_table` without relying on template tokens or external configuration.
+
+An optional `source.*` token namespace may be added for ergonomics (e.g., `SELECT '{{ source.name }}' AS source_name`), but this is not required and SHALL NOT be the only mechanism for accessing this information.
+
+#### FR10.2. Parent-Directory Read Semantics (Spark Partition Discovery)
+
+The `level2` reader used by downstream SQL models SHALL read parent directories (NOT explicit leaf `run_id=*` paths) so that Spark auto-discovers path segments as queryable partition columns. Specifically:
+
+- **Read pattern:** Read the entity parent prefix (`level2/source=S/entity=E/mapping_version=V/`) or the level2 root prefix, NOT individual `run_id=*` leaf directories.
+- **Spark behavior:** When reading parent directories containing `key=value` segments, Spark automatically discovers these as partition columns and makes them available for WHERE-clause filtering with partition pruning (no full table scan).
+- **Filter pattern:** To narrow to specific runs or dates, apply `.where("run_id IN (...)")` or `.where("ingest_date BETWEEN ...")` after the read. Spark prunes filesystems partitions, so no extra data is scanned.
+- **Result columns:** After read, the dataframe contains all user payload columns + the three mandatory lineage columns (FR8.2) + Spark-discovered partition columns from the path (`source`, `entity`, `mapping_version`, `ingest_date`, `table`, `run_id`).
+
+This pattern avoids the anti-pattern of globbing explicit leaf paths, which suppresses Spark partition discovery and turns path segments into dead string fragments rather than queryable columns.
+
+#### FR10a. Lineage Event Standard (OpenLineage)
 
 The shared observability, audit, and error-handling contract for all stages is defined in [00-prd-shared-observability-audit-and-error-handling.md](00-prd-shared-observability-audit-and-error-handling.md).
 
@@ -417,7 +484,6 @@ The platform should support three source classes:
 ## Data Contract for Level 2
 
 Each `level2` entity must publish:
-
 - source name,
 - entity name,
 - schema version,
@@ -428,8 +494,23 @@ Each `level2` entity must publish:
 - record counts,
 - error and quarantine counts.
 
-The mapping catalog for a normalized source/entity must publish:
+Every `level2` parquet row SHALL include the following mandatory lineage columns (see FR8.2):
+| Column | Type | Present |
+|---|---|---|
+| `source_name` | STRING | Always, in every table (root + child) |
+| `ingest_date` | DATE | Always, in every table (root + child) |
+| `_run_id` | STRING | Always, in every table (root + child) |
 
+These are real, materialized data columns in the parquet files — not tokens, not path-only fragments. They are accessible via plain `SELECT` in any downstream SQL model.
+
+The `level2` path grammar (see FR8.1) is:
+```
+level2/source=<src>/entity=<entity>/mapping_version=<v>/ingest_date=<date>/table=<tbl>/run_id=<id>/*.parquet
+```
+
+`ingest_date` at level2 is **always arrival day** (when the data was received, from the L1 manifest). Event-date partitioning (`business_date`) happens downstream at L3, not here. See FR8.3 and PRD 03 for the late-arriving data repartitioning flow.
+
+The mapping catalog for a normalized source/entity must publish:
 - mapping version,
 - logical source path,
 - physical table name,

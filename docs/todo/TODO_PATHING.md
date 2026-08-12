@@ -7,14 +7,14 @@ the analysis.
 
 ## Status
 
-- Backlog status: active (decisions finalized, PRD update pending, implementation not started)
+- Backlog status: active (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, implementation not started)
 - Driver: architectural review after the Spark engine migration (see
   `docs/todo/archive/TODO_SPARK_COMPLETED.md`) + research validation against Spark medallion
   best practice
 - Gate: the changes below alter the `level2` data contract and the `level3`/`level4` path
   grammar, so per repo governance they require a PRD update
   (`docs/prd/02-*`, `docs/prd/03-*`, `docs/prd/00-prd-architecture-levels-and-governance.md`)
-  **before** implementation.
+  **before** implementation. **PRD update complete — see Phase 0 completed section below.**
 - Decision protocol: open questions resolved per research-based recommendation (see "Resolved
   Decisions" below). Ambiguities surfaced to user; user defaulted to Spark standard patterns.
 
@@ -347,15 +347,22 @@ direction has four pillars:
 Do these in order. Each phase is independently testable; do not skip phases. Late-arriving
 repartition end-to-end test runs as part of Phase 4 (it exercises P1 + Phase 3 + Phase 4 together).
 
-**Phase 0 — PRD update (gate, do first)**
-1. Update `docs/prd/01-prd-ingestion-raw-to-level1.md` with target L1 grammar (drop `environment=`; keep `ingest_date=` as the sole date key at L1).
-2. Update `docs/prd/02-prd-level1-to-level2.md` with target L2 grammar, lineage column contract (`source_name`, `ingest_date`, `_run_id` mandatory in every L2 parquet row), and parent-directory read semantics. Explicitly document the `ingest_date` vs `business_date` distinction: L2 partitions are always by arrival day; downstream rewrites by event day happen at L3.
-3. Update `docs/prd/03-prd-sql-level2-to-level3-and-level3-to-level4.md` with:
+**Phase 0 — PRD update (gate, DONE 2026-08-11)**
+1. ✅ Update `docs/prd/01-prd-ingestion-raw-to-level1.md` with target L1 grammar (drop `environment=`; keep `ingest_date=` as the sole date key at L1).
+2. ✅ Update `docs/prd/02-prd-level1-to-level2.md` with target L2 grammar, lineage column contract (`source_name`, `ingest_date`, `_run_id` mandatory in every L2 parquet row), and parent-directory read semantics. Explicitly document the `ingest_date` vs `business_date` distinction: L2 partitions are always by arrival day; downstream rewrites by event day happen at L3.
+3. ✅ Update `docs/prd/03-prd-sql-level2-to-level3-and-level3-to-level4.md` with:
    - Target L3/L4 grammar (`business_date` default date key, `ingest_date` override for snapshots).
    - Default partition convention (L3: `source_name` + `business_date`; L4: `business_date`) with per-model opt-out/override.
    - Decoupled `partitionBy` vs `load_mode` (partitions apply to all three load modes).
    - Late-arriving data flow: read L2 by `ingest_date` window → write L3 by `business_date` partition.
-4. Update `docs/prd/00-prd-architecture-levels-and-governance.md` governance-by-path section to reference L3 `(source_name, business_date)` partitions and per-env roots.
+4. ✅ Update `docs/prd/00-prd-architecture-levels-and-governance.md` governance-by-path section to reference L3 `(source_name, business_date)` partitions and per-env roots.
+
+**Phase 0 Pickup Point for a Fresh Session (2026-08-11):**
+- All five "Verified facts that matter" in the "Current State" section were re-verified against HEAD before PRD edits.
+- The four PRD documents are updated to v2 status headers and carry the new path grammar, lineage column contracts, partition conventions, and governance sections.
+- Next step = **Phase 1 (P1 linchpin): carry lineage columns in L2**. This is the one change that unblocks P2/P3/P4 simultaneously. Phases 2–5 depend on Phase 1 being complete.
+- Phase 1 implementation order: runner.py → level2_storage.py → tests (see items 5–7 below).
+- If a fresh session wants to verify nothing drifted since 2026-08-11, re-read the five code references (storage.py, level2_storage.py, level2_source.py, runner.py, compiler.py, spark_executor.py) and confirm the five "Verified facts" are still true before writing code.
 
 **Phase 1 — P1 (linchpin): carry lineage columns in L2**
 5. Modify [normalize/runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py) `NormalizationRunner.normalize_level1_json`: inject `source_name` (from manifest), `ingest_date` (from manifest `ingest_started_at.date()` or equivalent), `_run_id` (from run context — thread parameter through if not currently available) into every row of every table.
@@ -396,4 +403,4 @@ repartition end-to-end test runs as part of Phase 4 (it exercises P1 + Phase 3 +
 17. Add examples: new SQL model under `examples/sql/local_demo/level3/` that implements the late-arrival pattern: reads an L2 table, SELECTs `business_date` alongside other columns, and produces one canonical L3 table with multiple `(source_name, business_date)` partitions. Include a short comment in the SQL explaining the late-arrival flow.
 18. Update operator runbook in `docs/operator/LOCAL_OPERATOR_RUNBOOK.md` with: (a) per-env-roots setup convention (dev/staging/prod each get their own `--root-path` and `--warehouse-root`), (b) the standard late-arrival recovery procedure (replay an ingest_date window → L3 correctly rewrites only the affected business_date partitions).
 
-A fresh session picking this up should start at Phase 0 (PRD updates) after re-verifying the five code references in "Current State" against HEAD.
+A fresh session picking this up should start at **Phase 1 — P1 (linchpin): carry lineage columns in L2** (items 5–7 below) after re-verifying the five code references in "Current State" against HEAD per the pickup note above.

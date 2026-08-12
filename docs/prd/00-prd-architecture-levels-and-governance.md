@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v1
+- Status: Draft v2 (pathing revision: governance-by-path on L3 partitions, per-env roots)
 - Product area: `elt_pipeline`
 - Scope: all stages and levels
 
@@ -91,6 +91,33 @@ Level boundaries are intended to support clean RBAC and ABAC enforcement.
 The practical governance intent is that users can be locked out from a whole level at a filesystem/storage layer, independent of the query engine.
 
 Fine-grained policies (row/column controls) may be layered later via the query engine or catalog, but level boundaries provide a strong coarse-grained control plane.
+
+### Governance-by-Path on Level 3 Partitions
+
+Beyond level-wide boundaries, the canonical `level3` layer adds finer granularity via its partition structure, which SHALL be:
+
+```
+level3/<table_name>/source_name=<src>/business_date=<date>/*.parquet
+```
+
+This directly enables:
+- **IAM prefix policies:** Lock or grant access to a specific source within a canonical table, e.g. deny `level3/canonical_notice/source_name=external_partner/*` to internal analysts while granting the rest.
+- **Time-windowed IAM:** Date partitions add finer granularity for access windows (e.g. allow analysts to query only `business_date` within the last 13 months).
+- **ABAC column filtering:** `WHERE source_name IN (<current_user_allowed_sources>)` works uniformly in queries because `source_name` is both a real data column and a path partition key.
+- **Metastore-level GRANTs:** Once a Glue/Hive/Iceberg catalog is added, `source_name` and `business_date` become registered partition columns that can be GRANTed on directly.
+
+Audit/snapshot tables using the `ingest_date` override get identical governance structure, just with `ingest_date` as the date segment. This is a standard Spark pattern — the path IS the governance surface, and no custom tooling is needed beyond correct `partitionBy` on write.
+
+### Per-Environment Roots / Buckets (No `environment=` In-Path)
+
+Environment isolation SHALL NOT be implemented by baking `environment=<env>` into the filesystem path at any level. Instead:
+
+- **L1 + L2 (raw root):** Each environment (dev, staging, prod) points at its own independent `--root-path` (storage bucket / account / directory).
+- **L3 + L4 (warehouse root):** Each environment points at its own independent `--warehouse-root`.
+- **Audit trail:** `environment` is retained on manifests, `RunContext`, logs, and audit records — it is only removed from filesystem paths.
+- **Rationale:** This is the cloud lakehouse standard pattern (Databricks workspaces = per-env storage accounts; EMR = per-env buckets; Glue = per-env catalog IDs). In-path environment segments break point-in-time restore, env-to-env promotion, and clean IAM prefix boundaries. Sharing one root across two environments would cause the same `level3/<table>/` path to be written by both environments and collide.
+
+The two-root split (raw vs curated) is retained for the same reason: raw data (L1/L2) and curated data (L3/L4) have different lifecycles, retention policies, RBAC profiles, and encryption requirements. This is also standard medallion practice.
 
 ## References
 
