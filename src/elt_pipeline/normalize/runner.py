@@ -69,6 +69,8 @@ class NormalizationRunner:
         state = _RunnerState(
             source_name=manifest.source_name,
             entity_name=manifest.entity_name,
+            ingest_date=manifest.ingest_started_at.date().isoformat(),
+            run_id=manifest.run_id,
             max_identifier_length=self.max_identifier_length,
             separator=self.separator,
             value_column_name=self.value_column_name,
@@ -135,6 +137,8 @@ class NormalizationRunner:
         state = _RunnerState(
             source_name=manifest.source_name,
             entity_name=manifest.entity_name,
+            ingest_date=manifest.ingest_started_at.date().isoformat(),
+            run_id=manifest.run_id,
             max_identifier_length=self.max_identifier_length,
             separator=self.separator,
             value_column_name=self.value_column_name,
@@ -381,12 +385,16 @@ class _RunnerState:
         *,
         source_name: str,
         entity_name: str,
+        ingest_date: str,
+        run_id: str,
         max_identifier_length: int,
         separator: str,
         value_column_name: str,
     ) -> None:
         self.source_name = source_name
         self.entity_name = entity_name
+        self.ingest_date = ingest_date
+        self.run_id = run_id
         self.max_identifier_length = max_identifier_length
         self.separator = separator
         self.value_column_name = value_column_name
@@ -435,6 +443,10 @@ class _RunnerState:
         tables: list[NormalizedTable] = []
         for logical_path in self._table_order:
             table_state = self._tables_by_logical_path[logical_path]
+            for row in table_state.rows:
+                row.setdefault("source_name", self.source_name)
+                row.setdefault("ingest_date", self.ingest_date)
+                row.setdefault("_run_id", self.run_id)
             tables.append(
                 NormalizedTable(
                     logical_path=table_state.logical_path,

@@ -79,6 +79,37 @@ def test_normalization_runner_flattens_nested_payloads_into_parent_child_tables(
     assert catalog_entries["$.items"].join_key_columns == ["_parent_row_id"]
     assert catalog_entries["$.tags"].column_mappings[0].physical_name == "value"
 
+    for table in result.tables:
+        assert table.rows, f"Table {table.physical_name} has no rows"
+        for row in table.rows:
+            assert row["source_name"] == "rest_source"
+            assert row["ingest_date"] == "2026-01-01"
+            assert row["_run_id"] == "run-001"
+
+
+def test_normalization_runner_lineage_columns_are_injected_in_every_table_json() -> None:
+    runner = NormalizationRunner()
+    manifest = build_manifest()
+    payload = {
+        "order_id": "A-100",
+        "items": [
+            {"sku": "SKU-1", "subitems": [{"part": "P1"}, {"part": "P2"}]},
+            {"sku": "SKU-2"},
+        ],
+    }
+
+    result = runner.normalize_level1_json(manifest=manifest, payload=payload)
+
+    expected_paths = {"$", "$.items", "$.items.subitems"}
+    assert {table.logical_path for table in result.tables} == expected_paths
+
+    for table in result.tables:
+        assert len(table.rows) >= 1
+        for row in table.rows:
+            assert row["source_name"] == manifest.source_name
+            assert row["ingest_date"] == manifest.ingest_started_at.date().isoformat()
+            assert row["_run_id"] == manifest.run_id
+
 
 def test_mapping_version_is_structure_based_and_catalog_can_be_persisted(tmp_path: Path) -> None:
     runner = NormalizationRunner()
@@ -126,9 +157,10 @@ def test_table_name_hash_fallback_only_applies_when_sanitized_names_collide() ->
 def test_normalization_runner_supports_csv_payloads_as_single_source_aligned_table() -> None:
     runner = NormalizationRunner()
     payload = "order_id,amount,status\nA-100,10,open\nA-200,25,closed\n"
+    manifest = build_manifest(payload_format="csv")
 
     result = runner.normalize_level1(
-        manifest=build_manifest(payload_format="csv"),
+        manifest=manifest,
         payload=payload,
     )
 
@@ -139,6 +171,11 @@ def test_normalization_runner_supports_csv_payloads_as_single_source_aligned_tab
     assert root_table.rows[0]["order_id"] == "A-100"
     assert root_table.rows[0]["amount"] == "10"
     assert root_table.rows[1]["status"] == "closed"
+
+    for row in root_table.rows:
+        assert row["source_name"] == manifest.source_name
+        assert row["ingest_date"] == manifest.ingest_started_at.date().isoformat()
+        assert row["_run_id"] == manifest.run_id
 
     catalog_entry = result.mapping_catalog.entries[0]
     assert catalog_entry.logical_path == "$"

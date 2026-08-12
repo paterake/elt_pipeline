@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import lit
 from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
@@ -111,6 +112,14 @@ class SparkLevel2Writer:
             )
 
         dataframe = _rows_to_dataframe(self.spark, table.rows)
+        if "source_name" not in dataframe.columns:
+            dataframe = dataframe.withColumn("source_name", lit(manifest.source_name))
+        if "ingest_date" not in dataframe.columns:
+            dataframe = dataframe.withColumn(
+                "ingest_date", lit(manifest.ingest_started_at.date().isoformat())
+            )
+        if "_run_id" not in dataframe.columns:
+            dataframe = dataframe.withColumn("_run_id", lit(run_context.run_id))
         try:
             dataframe.write.mode("error").parquet(str(data_dir))
         except Exception as exc:

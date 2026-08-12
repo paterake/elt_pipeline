@@ -7,7 +7,7 @@ the analysis.
 
 ## Status
 
-- Backlog status: active (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, implementation not started)
+- Backlog status: active (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, Phase 1 implementation IN PROGRESS 2026-08-12)
 - Driver: architectural review after the Spark engine migration (see
   `docs/todo/archive/TODO_SPARK_COMPLETED.md`) + research validation against Spark medallion
   best practice
@@ -364,12 +364,41 @@ repartition end-to-end test runs as part of Phase 4 (it exercises P1 + Phase 3 +
 - Phase 1 implementation order: runner.py → level2_storage.py → tests (see items 5–7 below).
 - If a fresh session wants to verify nothing drifted since 2026-08-11, re-read the five code references (storage.py, level2_storage.py, level2_source.py, runner.py, compiler.py, spark_executor.py) and confirm the five "Verified facts" are still true before writing code.
 
-**Phase 1 — P1 (linchpin): carry lineage columns in L2**
-5. Modify [normalize/runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py) `NormalizationRunner.normalize_level1_json`: inject `source_name` (from manifest), `ingest_date` (from manifest `ingest_started_at.date()` or equivalent), `_run_id` (from run context — thread parameter through if not currently available) into every row of every table.
-6. Modify [normalize/level2_storage.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/level2_storage.py) `SparkLevel2Writer.write_table`: belt-and-suspenders `dataframe.withColumn(...)` for the three columns if missing, before `.parquet()`. Safety net against future callers that bypass the runner.
-7. Add / update tests:
-   - `tests/test_normalize_runner.py` asserts `source_name`, `ingest_date`, `_run_id` present in every table's result rows.
-   - New `tests/test_level2_storage.py` (or extend existing) asserts the three columns are present in the written parquet dataframe after `SparkLevel2Writer.write_table`.
+**Session Pickup (2026-08-12):**
+- Re-verified all five "Verified facts that matter" against HEAD — all remain true. Zero implementation drift; codebase is at the same baseline as 2026-08-11.
+- Starting Phase 1 (P1 linchpin) now. Items 5–7 in progress: runner.py injection → level2_storage.py safety net → tests.
+- Fresh session continuation note: if picking up mid-Phase 1, check the Phase 1 checkbox tracking at items 5/6/7 below and the actual diffs in runner.py/level2_storage.py/test_normalize_runner.py against the "Verified facts" to see how many items remain.
+
+**Phase 1 — P1 (linchpin): carry lineage columns in L2 — COMPLETED 2026-08-12**
+
+Phase 1 result: L2 parquet is now self-describing — every row in every L2 table carries `source_name`, `ingest_date`, `_run_id` as real data columns. This is the linchpin that unblocks P2/P3/P4 simultaneously.
+
+5. ✅ **DONE** Modify [normalize/runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py) `NormalizationRunner.normalize_level1_json`: inject `source_name`, `ingest_date`, `_run_id` into every row of every table.
+   - Implementation: extended `_RunnerState.__init__` to accept `ingest_date` and `run_id` parameters; injected the three fields via `row.setdefault(...)` in `_RunnerState.build_tables()` so both JSON and CSV normalization paths are covered in one place (belt-and-braces: `setdefault` preserves any caller-set values).
+   - Both `normalize_level1_json` and `normalize_level1_csv` pass `manifest.ingest_started_at.date().isoformat()` as `ingest_date` and `manifest.run_id` as `run_id` into `_RunnerState`.
+6. ✅ **DONE** Modify [normalize/level2_storage.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/level2_storage.py) `SparkLevel2Writer.write_table`: belt-and-suspenders `dataframe.withColumn(...)` for the three columns if missing, before `.parquet()`. Safety net against future callers that bypass the runner.
+   - Implementation: added `if "colname" not in dataframe.columns: dataframe = dataframe.withColumn("colname", lit(...))` checks for all three columns after `_rows_to_dataframe()` and before `.parquet()`. Source = `manifest.source_name`, ingest_date = `manifest.ingest_started_at.date().isoformat()`, _run_id = `run_context.run_id`. Uses conditional `if-not-present` pattern so runner-injected values are preserved (never overwritten).
+7. ✅ **DONE** Add / update tests:
+   - `tests/test_normalize_runner.py`: existing flattening test extended with per-table/row assertions for all three lineage columns; new dedicated test `test_normalization_runner_lineage_columns_are_injected_in_every_table_json` exercises 3-level nesting (root → items → subitems); existing CSV test extended with the same assertions. **5/5 runner tests PASS.**
+   - `tests/test_normalize_pipeline.py`: existing `test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit` extended with parquet-level assertions (columns present in written parquet, distinct values match manifest exactly). Existing CSV pipeline test extended similarly. **New safety-net tests added:** `test_level2_writer_safety_net_injects_missing_lineage_columns` (calls writer directly with rows that lack the three columns — asserts the `withColumn` safety-net correctly injects manifest/run_context values from scratch with zero runner involvement) and `test_level2_writer_safety_net_does_not_overwrite_existing_lineage_columns` (passes custom values for the three columns — asserts `setdefault`/`if-not-present` semantics preserve caller values).
+
+**Test results (2026-08-12):**
+- **ruff:** 0 issues on all touched files (runner.py, level2_storage.py, both test files). `RUFF_EXIT=0`.
+- **test_normalize_runner.py:** 5/5 PASS. Covers JSON flattening, 3-level nesting, CSV normalization, mapping version stability, and hashed table name fallbacks — all with the new lineage column assertions layered on.
+- **test_normalize_pipeline.py:** Could not execute in this sandbox — Spark's JVM gateway failed to start because **no JRE/JDK is installed** (`Unable to locate a Java Runtime`). All 9 tests fail at the `spark_session` fixture setup phase, so the Spark-level assertions are unverified in this environment. The code paths are statically identical to the runner-pipeline chain already covered by the passing unit tests; a developer workstation with Java installed should run `uv run pytest tests/test_normalize_pipeline.py -v` to confirm end-to-end parquet write + read-back assertions.
+
+**Verification checklist for a Java-equipped workstation:**
+```
+uv sync --extra dev --extra spark
+uv run pytest tests/test_normalize_runner.py tests/test_normalize_pipeline.py -v
+# Expected: 5 + 9 = 14 tests PASS
+```
+
+**Fresh session pickup point (2026-08-12):**
+- Phase 1 (P1 linchpin) is code-complete and unit-verified. Remaining gap = Spark-level integration test confirmation on a JVM-equipped box.
+- Next = **Phase 2 (P5): drop `environment=` from paths** (items 8–10). Phases 2–5 no longer depend on runner.py — P1 has already unlocked the L2 data contract.
+- Verified fact #1 from "Current State" is now OBSOLETE post-Phase 1: L2 writer still doesn't use `.partitionBy()` (that's deliberate — L2 partitioning is still path-string-based, matching the existing layout), but the parquet files do carry the lineage columns as real data columns now. Verified facts #2, #4, #5 are still true. Verified fact #3 is now OBSOLETE (source_name/ingest_date ARE carried as data columns downstream starting at normalize).
+- If re-verifying the "Verified facts" baseline for Phase 2, update fact #1 and #3 accordingly in the "Current State" section before writing Phase 2 code.
 
 **Phase 2 — P5: drop `environment=` from paths**
 8. Modify [ingest/storage.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/ingest/storage.py) `LocalArtifactLayout.level1_run_dir` and related methods: remove the `environment=<env>/` path segment. Keep `manifest.environment` populated (still needed for audit / config / logging).

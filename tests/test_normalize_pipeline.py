@@ -11,6 +11,8 @@ from elt_pipeline.integrations import (
     QualityHookPolicy,
     build_quality_hook,
 )
+from elt_pipeline.normalize.level2_storage import SparkLevel2Writer
+from elt_pipeline.normalize.models import NormalizedTable
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.errors import PipelineError
@@ -75,6 +77,16 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(
         written_df = spark_session.read.parquet(str(data_path))
         assert written_df.count() == table_manifest.record_count
         assert table_manifest.file_count == len(list(data_path.glob("*.parquet")))
+        assert "source_name" in written_df.columns
+        assert "ingest_date" in written_df.columns
+        assert "_run_id" in written_df.columns
+        lineage_cols = ["source_name", "ingest_date", "_run_id"]
+        lineage_values = written_df.select(*lineage_cols).distinct().collect()
+        assert len(lineage_values) == 1
+        row = lineage_values[0]
+        assert row["source_name"] == manifest.source_name
+        assert row["ingest_date"] == manifest.ingest_started_at.date().isoformat()
+        assert row["_run_id"] == manifest.run_id
 
     audit_path = (
         tmp_path
@@ -135,12 +147,20 @@ def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path, spark_session)
     table_manifest = summary.table_manifests[0]
     assert table_manifest.table_name == "orders"
     data_path = tmp_path / table_manifest.data_path
+    written_df = spark_session.read.parquet(str(data_path))
     written_rows = sorted(
-        (row.asDict() for row in spark_session.read.parquet(str(data_path)).collect()),
+        (row.asDict() for row in written_df.collect()),
         key=lambda row: row["order_id"],
     )
     assert [row["order_id"] for row in written_rows] == ["A-100", "A-200"]
     assert [row["amount"] for row in written_rows] == ["10", "25"]
+    assert "source_name" in written_df.columns
+    assert "ingest_date" in written_df.columns
+    assert "_run_id" in written_df.columns
+    for row_dict in written_rows:
+        assert row_dict["source_name"] == manifest.source_name
+        assert row_dict["ingest_date"] == manifest.ingest_started_at.date().isoformat()
+        assert row_dict["_run_id"] == manifest.run_id
 
 
 def test_normalize_pipeline_captures_quality_results_in_audit(
@@ -292,6 +312,81 @@ def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
     )
 
     assert quality_event["severity"] == "WARNING"
+
+
+def test_level2_writer_safety_net_injects_missing_lineage_columns(
+    tmp_path: Path, spark_session
+) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest()
+    table_without_lineage = NormalizedTable(
+        logical_path="$",
+        physical_name="orders",
+        parent_table_name=None,
+        rows=[
+            {"_row_id": "r1", "order_id": "A-100", "amount": 10},
+            {"_row_id": "r2", "order_id": "A-200", "amount": 25},
+        ],
+    )
+
+    writer = SparkLevel2Writer(root_path=tmp_path, spark=spark_session)
+    table_manifest = writer.write_table(
+        run_context=run_context,
+        manifest=manifest,
+        mapping_version="mv-test",
+        table=table_without_lineage,
+        partition={},
+    )
+
+    data_path = tmp_path / table_manifest.data_path
+    written_df = spark_session.read.parquet(str(data_path))
+    assert written_df.count() == 2
+    assert "source_name" in written_df.columns
+    assert "ingest_date" in written_df.columns
+    assert "_run_id" in written_df.columns
+
+    written_rows = written_df.collect()
+    for row in written_rows:
+        assert row["source_name"] == manifest.source_name
+        assert row["ingest_date"] == manifest.ingest_started_at.date().isoformat()
+        assert row["_run_id"] == run_context.run_id
+
+
+def test_level2_writer_safety_net_does_not_overwrite_existing_lineage_columns(
+    tmp_path: Path, spark_session
+) -> None:
+    run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
+    manifest = build_manifest()
+    table_with_custom_lineage = NormalizedTable(
+        logical_path="$",
+        physical_name="orders",
+        parent_table_name=None,
+        rows=[
+            {
+                "_row_id": "r1",
+                "order_id": "A-100",
+                "source_name": "custom_source",
+                "ingest_date": "2020-01-01",
+                "_run_id": "custom-run",
+            },
+        ],
+    )
+
+    writer = SparkLevel2Writer(root_path=tmp_path, spark=spark_session)
+    table_manifest = writer.write_table(
+        run_context=run_context,
+        manifest=manifest,
+        mapping_version="mv-test",
+        table=table_with_custom_lineage,
+        partition={},
+    )
+
+    data_path = tmp_path / table_manifest.data_path
+    written_df = spark_session.read.parquet(str(data_path))
+    written_row = written_df.collect()[0]
+    assert written_row["source_name"] == "custom_source"
+    assert written_row["ingest_date"] == "2020-01-01"
+    assert written_row["_run_id"] == "custom-run"
 
 
 class _PassingNormalizeQualityBackend:
