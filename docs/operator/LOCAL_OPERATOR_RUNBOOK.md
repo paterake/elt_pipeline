@@ -277,6 +277,114 @@ Use `publish run` only after the upstream `level4` parquet table already exists 
 - A successful run writes the exported file and `manifest.json` under `artifacts/level5/`, and writes stage audit/log/lineage records under `runs/stage=publish/`.
 - Reuse the same runtime root for repeatable operator workflows so historical run artifacts remain available for inspection.
 
+## Environment and Storage Root Convention
+
+The pipeline uses a **two-root, per-environment** storage layout. Environment is NEVER embedded in filesystem paths — isolation is achieved entirely by pointing each environment at its own pair of roots. This matches standard cloud lakehouse patterns (Databricks per-env storage accounts, EMR per-env buckets, Glue per-env catalog IDs) and enables clean env-to-env promotion, point-in-time restore, and IAM prefix boundaries.
+
+| Root | Purpose | Contents | Managed by flag |
+|---|---|---|---|
+| `--root-path` | Raw / source-aligned storage | `level1/` landed payloads, `level2/` normalized parquet, `runs/` audit/logs, `state/` checkpoints, `artifacts/` level5 exports | All stages (`ingest`, `normalize`, `sql`, `publish`) |
+| `--warehouse-root` | Curated / canonical warehouse | `level3/` canonical tables, `level4/` mart tables | `sql run`, `publish run`, `sql plan/explain` |
+
+**Setup convention — one pair per environment:**
+
+```bash
+# Local / development
+DEV_ROOT=.ignore/runtime-dev
+DEV_WAREHOUSE=.ignore/warehouse-dev
+
+# Staging
+STAGING_ROOT=/data/elt/staging-runtime
+STAGING_WAREHOUSE=/data/elt/staging-warehouse
+
+# Production
+PROD_ROOT=/data/elt/prod-runtime
+PROD_WAREHOUSE=/data/elt/prod-warehouse
+```
+
+**Always pass both roots together** for the same environment. Never mix a dev root with a prod warehouse:
+
+```bash
+uv run elt-pipeline ingest run examples/configs/local_object_storage_orders.yaml \
+  --root-path $DEV_ROOT
+
+uv run elt-pipeline normalize run examples/configs/local_object_storage_orders.yaml \
+  --root-path $DEV_ROOT
+
+uv run elt-pipeline sql run examples/sql/local_demo \
+  --root-path $DEV_ROOT \
+  --warehouse-root $DEV_WAREHOUSE \
+  --environment dev \
+  --start-date 2026-01-01 --end-date 2026-01-31
+```
+
+Operator guidance:
+
+- Keep `--environment` values consistent across runs for the same logical env (dev/staging/prod). Environment is still recorded in audit/logs/manifests for traceability even though it is not in paths.
+- Two environments sharing one `--root-path` or `--warehouse-root` will collide — every env MUST have its own pair.
+- In cloud deployments, map each pair to its own bucket / storage account with env-scoped IAM policies.
+
+## Late-Arriving Data Recovery
+
+Canonical `level3` tables follow the **Camelot late-arrival repartitioning pattern**: L2 rows carry both `ingest_date` (arrival day, for filtering the read window) and `business_date` (event day from the payload, for output partitioning). This means a row that arrived late (e.g. received on 2026-08-10 but describing an event that happened on 2026-07-31) is correctly written into the `business_date=2026-07-31` partition when the L3 model reads the `ingest_date=2026-08-10` window.
+
+The `level3` default partition convention (`partitionBy(source_name, business_date)`) combined with Spark's `partitionOverwriteMode=dynamic` ensures that re-running a window **only overwrites the exact `(source_name, business_date)` tuples present in the incoming batch** — all other dates and sources are left untouched. The replay is safe and idempotent.
+
+**Standard recovery procedure — replay a late-arrival window:**
+
+1. **Identify which ingest_date window contains the late-arriving rows.** For example: late data for `business_date=2026-07-31` landed in `ingest_date=2026-08-10`. (You can audit L2 manifests under `level2/source=*/entity=*/ingest_date=2026-08-10/` or the run audit record to confirm which run it was in.)
+
+2. **Re-run normalize for the affected ingest_date window** to make sure the L2 parquet is fresh:
+
+   ```bash
+   uv run elt-pipeline normalize run examples/configs/local_object_storage_orders.yaml \
+     --root-path $DEV_ROOT \
+     --window-start 2026-08-10T00:00:00+00:00 \
+     --window-end 2026-08-10T23:59:59+00:00
+   ```
+
+   (Or use `--rerun-run-id <normalize-run-id>` if you have the exact run.)
+
+3. **Re-run the L3 SQL models with the same ingest_date window:**
+
+   ```bash
+   uv run elt-pipeline sql run examples/sql/local_demo \
+     --root-path $DEV_ROOT \
+     --warehouse-root $DEV_WAREHOUSE \
+     --environment dev \
+     --stage level3 \
+     --start-date 2026-08-10 \
+     --end-date 2026-08-10
+   ```
+
+4. **Verify** by checking the destination `business_date` partition under the warehouse:
+
+   ```bash
+   ls -la $DEV_WAREHOUSE/level3/canonical_orders/source_name=local_files/business_date=2026-07-31/
+   ```
+
+   The `.parquet` files in this directory should be freshly written. Because `partitionOverwriteMode=dynamic` is enabled at the session level, only this specific partition was replaced; `business_date=2026-06-01` or any unrelated date is untouched.
+
+5. **Re-run downstream L4 models** if they consume the updated canonical `level3` table:
+
+   ```bash
+   uv run elt-pipeline sql run examples/sql/local_demo \
+     --root-path $DEV_ROOT \
+     --warehouse-root $DEV_WAREHOUSE \
+     --environment dev \
+     --stage level4 \
+     --include-deps \
+     --start-date 2026-07-31 \
+     --end-date 2026-07-31
+   ```
+
+Operator guidance:
+
+- A replayed window is idempotent — running it twice with identical inputs produces the same output row counts and leaves the same files. No deduplication step is needed.
+- When replaying **multiple consecutive ingest_dates**, batch the `--start-date` / `--end-date` range. Spark will overwrite each `(source_name, business_date)` tuple that appears in any of the replayed L2 rows.
+- If you are unsure which `ingest_date` window carried the late rows, use Spark shell or a quick L2 query to find them: L2 carries `ingest_date` as both a Spark-discovered partition column and an in-data column, so `SELECT DISTINCT ingest_date FROM level2_parquet WHERE business_date = '2026-07-31'` gives you the exact windows to replay.
+- The reference example `examples/sql/local_demo/level3/sales/canonical_orders/` implements this pattern end-to-end; use it as a template for new L3 models.
+
 ## Known Limitations
 
 These are current, intentional constraints of the local-first Spark implementation. They are
@@ -292,22 +400,27 @@ not bugs; know them before running at larger scale.
   in driver memory via `.collect()` so each delivery can be written as a single local file.
   This caps output size to driver memory. It matches the prior sqlite `fetchall()` behaviour
   (not a regression) but is a real ceiling for very large `level4` result sets.
-- **`level2` path segments are addressing metadata, not queryable columns.** `source`,
-  `entity`, `ingest_date`, and `mapping_version` organise the filesystem and drive read
-  resolution, but are not recovered as Spark columns and cannot be used in `WHERE` predicates at
-  `level2`. Genuine partition columns exist only at `level3`/`level4` (via a model's
-  `target.partition_columns` under `load_mode: partition_overwrite`). Broader path/partition
-  rework is tracked in `docs/todo/TODO_PATHING.md`.
-- **Two environments must not share one `--warehouse-root`.** `level3`/`level4` paths contain no
-  `environment=` segment, so environment isolation relies on pointing each environment at a
-  separate warehouse root. Sharing one root across environments would collide tables.
+- **`level2` source/entity filtering is structural via the entity_root path.** `source` and
+  `entity` are baked into the `level2/source=S/entity=E` parent directory the reader points at,
+  so narrowing to a source/entity pair happens at the filesystem level. `mapping_version`,
+  `ingest_date`, `table`, and `run_id` path segments below that are recovered by Spark as
+  genuine discovered partition columns and can appear in `WHERE` predicates for automatic
+  partition pruning. Additionally, every `level2` row carries `source_name`, `ingest_date`,
+  and `_run_id` as real in-data columns, so `level3` SQL models can also filter or project them
+  without relying on path metadata. See `docs/todo/TODO_PATHING.md` for the full pathing and
+  partition contract.
+- **`--warehouse-root` isolation is per-environment by convention.** There is no `environment=`
+  segment in `level3`/`level4` paths, so each environment (dev/staging/prod) MUST point at
+  its own warehouse root pair. See the **Environment and Storage Root Convention** section
+  above for the standard setup pattern. Sharing one `--warehouse-root` between environments
+  will collide tables.
 
 ## Audit and State Locations
 
 A local runtime root persists these operator-visible directories:
 
 - `level1/`: landed payloads and manifest metadata
-- `level2/`: Spark-written parquet datasets and mapping catalogs (the `source=`/`entity=`/`ingest_date=` path segments are addressing metadata, not queryable partition columns)
+- `level2/`: Spark-written parquet datasets and mapping catalogs. The `source=`/`entity=` prefix narrows the reader structurally; below that, `mapping_version=`/`ingest_date=`/`table=`/`run_id=` are Spark-discovered partition columns, and every row also carries `source_name`/`ingest_date`/`_run_id` as in-data columns.
 - `artifacts/level5/`: publish/export delivery artifacts and run-scoped manifests
 - `runs/`: stage-scoped audit, logs, lineage, and rerun metadata
 - `state/`: checkpoint history used for incremental runs and backfills

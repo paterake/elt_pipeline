@@ -1,0 +1,15 @@
+name: canonical_orders
+stage: level3
+domain: sales
+description: Canonical orders table implementing the Camelot late-arrival repartitioning pattern. Reads L2 by ingest_date (arrival day), writes L3 by business_date (event day) so late-arriving data lands in the correct historical partition automatically via dynamic partition overwrite.
+materialization: table
+load_mode: partition_overwrite
+target:
+  table_name: canonical_orders
+sources:
+  - logical_name: raw_orders
+    source_name: local_files
+    entity_name: orders
+    table_name: orders
+owner:
+  name: platform

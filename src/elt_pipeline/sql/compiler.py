@@ -15,15 +15,27 @@ def compile_sql_model(
     *,
     token_context: Mapping[str, Any],
 ) -> CompiledSqlModel:
+    source_defaults: dict[str, Any] = {}
+    if model.manifest.sources:
+        first_source = model.manifest.sources[0]
+        source_defaults = {
+            "source": {
+                "name": first_source.source_name,
+                "entity": first_source.entity_name,
+                "table": first_source.table_name or "",
+            },
+        }
+    effective_context = _deep_merge(source_defaults, dict(token_context))
     token_values: dict[str, str] = {}
 
     def replace_token(match: re.Match[str]) -> str:
         token_name = match.group(1)
-        resolved = _resolve_token_value(token_context, token_name, model=model)
+        resolved = _resolve_token_value(effective_context, token_name, model=model)
         token_values[token_name] = resolved
         return resolved
 
     compiled_sql = _TOKEN_PATTERN.sub(replace_token, model.sql_text)
+
     return CompiledSqlModel(
         model_id=model.model_id,
         stage=model.manifest.stage,
