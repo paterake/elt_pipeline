@@ -127,6 +127,90 @@ def test_compile_sql_model_resolves_tokens(tmp_path: Path) -> None:
     assert compiled.sources[0].logical_name == "raw_orders"
 
 
+def test_compile_sql_model_resolves_source_namespace_tokens(tmp_path: Path) -> None:
+    package_root = tmp_path / "sql_models"
+    model_dir = package_root / "level3" / "sales" / "source_token_test"
+    model_dir.mkdir(parents=True)
+    (model_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: source_token_test
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: full_refresh
+            target:
+              table_name: source_token_test
+            sources:
+              - logical_name: t
+                source_name: orders_source
+                entity_name: orders
+                table_name: orders_table
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (model_dir / "model.sql").write_text(
+        dedent(
+            """
+            select
+              '{{ source.name }}' as source_name,
+              '{{ source.entity }}' as entity_name,
+              '{{ source.table }}' as table_name
+            from t
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    models = discover_sql_models(package_root)
+    model = models[0]
+
+    compiled_explicit = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-1",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+            start_date="2026-01-01",
+            end_date="2026-01-31",
+            source_name="EXPLICIT_source",
+            source_entity="EXPLICIT_entity",
+            source_table="EXPLICIT_table",
+        ),
+    )
+    assert "'EXPLICIT_source' as source_name" in compiled_explicit.compiled_sql
+    assert "'EXPLICIT_entity' as entity_name" in compiled_explicit.compiled_sql
+    assert "'EXPLICIT_table' as table_name" in compiled_explicit.compiled_sql
+    assert compiled_explicit.token_values["source.name"] == "EXPLICIT_source"
+    assert compiled_explicit.token_values["source.entity"] == "EXPLICIT_entity"
+    assert compiled_explicit.token_values["source.table"] == "EXPLICIT_table"
+
+    compiled_implicit = compile_sql_model(
+        model,
+        token_context=build_token_context(
+            environment="dev",
+            run_id="run-2",
+            stage=model.manifest.stage.value,
+            domain=model.manifest.domain,
+            model_name=model.manifest.name,
+            target_table_name=model.manifest.target.table_name,
+            start_date="2026-01-01",
+            end_date="2026-01-31",
+        ),
+    )
+    assert "'orders_source' as source_name" in compiled_implicit.compiled_sql
+    assert "'orders' as entity_name" in compiled_implicit.compiled_sql
+    assert "'orders_table' as table_name" in compiled_implicit.compiled_sql
+    assert compiled_implicit.token_values["source.name"] == "orders_source"
+    assert compiled_implicit.token_values["source.entity"] == "orders"
+    assert compiled_implicit.token_values["source.table"] == "orders_table"
+
+
 def test_compile_sql_model_fails_for_missing_token(tmp_path: Path) -> None:
     package_root = _write_basic_sql_package(tmp_path)
     model = discover_sql_models(package_root)[0]

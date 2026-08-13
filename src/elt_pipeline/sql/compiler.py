@@ -71,6 +71,14 @@ def build_token_context(
     source_table: str | None = None,
     extra_values: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    source_context: dict[str, str] = {}
+    if source_name:
+        source_context["name"] = source_name
+    if source_entity:
+        source_context["entity"] = source_entity
+    if source_table:
+        source_context["table"] = source_table
+
     context: dict[str, Any] = {
         "environment": environment,
         "run_id": run_id,
@@ -85,12 +93,9 @@ def build_token_context(
             "end_date": end_date or "",
         },
         "partition": partition_values or {},
-        "source": {
-            "name": source_name or "",
-            "entity": source_entity or "",
-            "table": source_table or "",
-        },
     }
+    if source_context:
+        context["source"] = source_context
     if extra_values:
         context = _deep_merge(context, dict(extra_values))
     return context

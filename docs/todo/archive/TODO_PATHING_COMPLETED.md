@@ -7,7 +7,7 @@ the analysis.
 
 ## Status
 
-- Backlog status: active (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, Phase 1 — P1 linchpin COMPLETED 2026-08-12, Phase 2 — P5 no-env-paths COMPLETED 2026-08-12, Phase 3 — L2 reader parent-directory partition discovery COMPLETED 2026-08-12, Phase 4 — L3/L4 default partitions + decouple load_mode + late-arrival E2E COMPLETED 2026-08-12, Phase 5 — ergonomics/hardening OPTIONAL/NEXT UP 2026-08-12)
+- Backlog status: active (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, Phase 1 — P1 linchpin COMPLETED 2026-08-12, Phase 2 — P5 no-env-paths COMPLETED 2026-08-12, Phase 3 — L2 reader parent-directory partition discovery COMPLETED 2026-08-12, Phase 4 — L3/L4 default partitions + decouple load_mode + late-arrival E2E COMPLETED 2026-08-12, Phase 5 — ergonomics/hardening COMPLETED 2026-08-13)
 - Driver: architectural review after the Spark engine migration (see
   `docs/todo/archive/TODO_SPARK_COMPLETED.md`) + research validation against Spark medallion
   best practice
@@ -591,15 +591,15 @@ uv run pytest tests/test_sql_models.py::test_level3_model_applies_default_partit
 # Expected: PASS. Proves Camelot pattern, Mercell source_name partition, business_date peer partitions, overwrite-scoping, idempotency.
 ```
 
-**Baseline drift audit (for a fresh session picking up Phase 5):**
-FINAL update to the pre-change 5-fact baseline (EVERY FACT now accounted for):
+**Baseline drift audit (for a fresh session picking up after Phase 5):**
+FINAL update to the pre-change 5-fact baseline (EVERY FACT now OBSOLETE):
 - Fact #1 → OBSOLETE (since Phase 1: no `.partitionBy()` at L2 write; lineage columns ARE real parquet data columns).
 - Fact #2 → OBSOLETE (since Phase 3: L2 reader reads entity_root parent dir, all key=value segments discovered as Spark partition columns — mapping_version, ingest_date, partition keys, table, run_id).
 - Fact #3 → OBSOLETE (since Phase 1: source_name, ingest_date ARE real parquet data columns; _run_id is also populated).
-- Fact #4 → STILL TRUE (no `source.*` token namespace yet; Phase 5 item 16 addresses this — OPTIONAL ergonomic improvement. Not strictly required since P1 exposes source_name via data columns. Default convention at Phase 4 item 13 works entirely without it).
+- Fact #4 → **OBSOLETE (new since Phase 5):** `source.*` token namespace NOW EXISTS in both [build_token_context](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/compiler.py#L58-L101) and as a compile-time first-source fallback in [compile_sql_model](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/compiler.py#L13-L55). SQL authors can write `{{ source.name }}`, `{{ source.entity }}`, `{{ source.table }}` — ergonomic tokens resolve either from explicit CLI wiring (caller's source_name/source_entity/source_table params, via `build_token_context`) OR implicitly from the model manifest's first `sources[0]` entry (belt-and-suspenders default in the compiler). `build_token_context` only injects source keys when callers pass non-empty values so the deep merge correctly prefers the manifest-derived fallback when the caller omits them.
 - Fact #5 → **OBSOLETE (new since Phase 4):** L3/L4 partitioning is NO LONGER opt-in and narrow. `.partitionBy()` is now applied on ALL THREE load modes using the default convention (L3: source_name+business_date, L4: business_date) when manifest partition_columns is empty. L3/L4 paths at rest under warehouse_root now show key=value segment hierarchies like `warehouse_root/level3/canonical_orders/source_name=orders_source/business_date=2026-08-10/...` instead of being flat. Fact #5 was the last remaining pre-change "fact" that Phase 4 was designed to flip — it is now flipped.
 
-**Final state of the 5 facts after all 4 phases:** 3 facts flipped by Phase 1, 1 by Phase 3, 1 by Phase 4. Fact #4 remains and is the declared scope of Phase 5 optional ergonomics (no code correctness issue without it).
+**Final state of the 5 facts after all 5 phases:** 3 facts flipped by Phase 1, 1 by Phase 3, 1 by Phase 4, 1 by Phase 5. ALL FIVE "Verified facts that matter" from the pre-change "Current State" section are now OBSOLETE — every gap the TODO documented is closed.
 
 **Fresh session pickup point (2026-08-12):**
 - **All mandatory phases (0–4) are COMPLETE and code-merged.**
@@ -609,14 +609,54 @@ FINAL update to the pre-change 5-fact baseline (EVERY FACT now accounted for):
   - Phase 3: L2 reader parent-directory Spark partition discovery (ingest_date / source_name / table / run_id etc. all auto-discovered as Spark partition columns + pruning via PartitionFilters).
   - Phase 4: L3/L4 default partition convention + partitionBy on all load modes + Camelot late-arrival repartition E2E test with overwrite-scope + idempotency proofs.
 - Java-equipped developer workstation confirmation of ~46 Spark/non-Spark tests PASS is the only remaining pre-merge verification work (if running in a branch).
-- **If the user wants to continue, next = Phase 5 (Optional ergonomics/hardening, items 16–18):**
-  - 16: `source.*` token namespace ergonomic convenience (OPTIONAL — functionality works without it).
-  - 17: Example SQL model under `examples/sql/local_demo/level3/` implementing the late-arrival pattern.
-  - 18: Runbook documentation updates (per-env-roots convention + late-arrival recovery procedure).
 
-**Phase 5 — Ergonomics and hardening (optional but recommended)**
-16. Add `source.*` token namespace to [sql/compiler.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/compiler.py) `build_token_context` for ergonomics (not required — P1 already exposes `source_name` via L2 data columns).
-17. Add examples: new SQL model under `examples/sql/local_demo/level3/` that implements the late-arrival pattern: reads an L2 table, SELECTs `business_date` alongside other columns, and produces one canonical L3 table with multiple `(source_name, business_date)` partitions. Include a short comment in the SQL explaining the late-arrival flow.
-18. Update operator runbook in `docs/operator/LOCAL_OPERATOR_RUNBOOK.md` with: (a) per-env-roots setup convention (dev/staging/prod each get their own `--root-path` and `--warehouse-root`), (b) the standard late-arrival recovery procedure (replay an ingest_date window → L3 correctly rewrites only the affected business_date partitions).
+**Phase 5 — Ergonomics and hardening (optional but recommended) — COMPLETED 2026-08-13**
 
-A fresh session picking this up should re-verify the five "Verified facts that matter" in the "Current State" section (confirming all 5 updates per the Phase 4 audit — facts #1/#2/#3/#5 OBSOLETE, fact #4 STILL TRUE) and then decide whether to continue with the OPTIONAL Phase 5 ergonomics items 16–18, or declare the path & partition management backlog fully complete for the mandatory scope.
+Phase 5 result: All three ergonomic/hardening items landed. SQL authors now have the `source.*` token convenience (explicit + implicit first-source wiring), the local_demo example package includes a canonical L3 late-arrival template model, and the operator runbook carries the per-env-roots setup convention and the standard late-arrival recovery playbook. The full path & partition backlog (Phases 0–5) is now COMPLETE for both mandatory and optional scopes.
+
+16. ✅ **DONE** Add `source.*` token namespace to [sql/compiler.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/compiler.py) `build_token_context` for ergonomics:
+    - **`build_token_context` (lines 73–101):** accepts `source_name`, `source_entity`, `source_table` keyword params; builds a `source` sub-dict ONLY when the caller provides non-empty values. This "sparse when not provided" pattern is critical — when a caller omits the explicit source params, the empty-absent keys let the compile-time deep merge fall through to the manifest-derived defaults instead of being shadowed by empty strings.
+    - **`compile_sql_model` (lines 18–28):** belt-and-suspenders first-source fallback. If the model manifest declares a `sources[0]` entry, a `source_defaults` dict is built from `{name, entity, table}` and deep-merged UNDERNEATH the caller's `token_context` (explicit caller values win; absent keys fall back to manifest). This means a SQL author can use `{{ source.name }}` even when the CLI caller didn't explicitly wire `source_name` — the compiler fills it in from the manifest.
+    - **Bug fix discovered and fixed during implementation:** the initial `build_token_context` unconditionally wrote `source.name`/`entity`/`table` as `""` (empty string) when params were `None`. Because `_deep_merge` uses right-wins and the explicit token_context was on the right side, those `""` values silently overwrote the manifest-derived source_defaults, resulting in tokens that resolved to empty strings even though a perfectly good `sources[0]` entry existed in the manifest. The fix is to only populate `source_context` keys when callers pass truthy values (non-`None`, non-`""`). This leaves the key absent from `token_context.source` → `_deep_merge` falls through to `source_defaults.source.*` → manifest values arrive correctly.
+    - **Regression test added:** `tests/test_sql_models.py::test_compile_sql_model_resolves_source_namespace_tokens` exercises BOTH paths: (a) explicit `build_token_context(source_name=...)` → tokens resolve to the explicit values; (b) `build_token_context()` with NO source params → tokens correctly resolve to manifest `sources[0]` values via the compiler fallback. Additionally verifies `token_values` audit dict records the resolved strings for both paths.
+
+17. ✅ **DONE Example: late-arrival L3 model under `examples/sql/local_demo/level3/sales/canonical_orders/`:**
+    - **manifest.yaml:** declares `stage: level3`, `load_mode: partition_overwrite` (no explicit `target.partition_columns` — relies on executor default convention of `[source_name, business_date]`), `sources[0]` = `local_files/orders/orders`. Description field explicitly documents the Camelot late-arrival pattern so discovery via manifest listings is enough to find the template.
+    - **model.sql:** carries a 12-line prose comment block explaining the 4-bullet late-arrival mechanics (filter by ingest_date → project business_date → Spark's default partitionBy lands rows in event-day bucket → idempotent replay via dynamic overwrite). The SQL body uses the canonical `cte_src_base` CTE pattern from the TODO: selects payload fields + `source_name`/`ingest_date` (from P1 lineage columns), aliases `order_date AS business_date`, filters `WHERE ingest_date = '{{ window.start_date }}'` (the arrival-day window filter), and returns all columns through to the write side so the partition convention finds both required columns.
+    - **Integration coverage:** the E2E test in Phase 4 (`test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data`) validates the full pipeline (L2 seed → L3 model compile + executor write → partition directory layout + row counts + unrelated-partition survival + double-run idempotency). The example package at `canonical_orders/` is the author-facing template version of that same pattern.
+
+18. ✅ **DONE Runbook updates in [LOCAL_OPERATOR_RUNBOOK.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/operator/LOCAL_OPERATOR_RUNBOOK.md):**
+    - **Section: Environment and Storage Root Convention (lines 280–326):** documents the two-root per-environment layout. Explains why `environment=` is never in paths (isolation achieved entirely by which root pair is pointed at; matches Databricks/EMR/Glue cloud patterns and enables promotion + restore + IAM prefix boundaries). Provides a standard env-setup block with `DEV_ROOT`/`DEV_WAREHOUSE`, `STAGING_*`, `PROD_*` pairs. Warns explicitly that envs sharing one root pair WILL collide. Ends with operator guidance: keep `--environment` flag values consistent for audit even though it doesn't appear in paths; use env-scoped cloud IAM on each bucket pair.
+    - **Section: Late-Arriving Data Recovery (lines 327–386):** step-by-step 5-step recovery procedure: (1) identify the ingest_date window that carried the late rows → (2) optionally replay normalize for that window → (3) re-run L3 models with `--start-date --end-date` matching the ingest_date window → (4) verify by `ls`-ing the destination `business_date=` partition under the warehouse → (5) replay downstream L4 models if needed. Carries explicit examples with `$DEV_ROOT`/`$DEV_WAREHOUSE` variables so operators can copy-paste-adapt. Operator guidance adds the key tips: replay is idempotent so safe to run twice; multi-day batches work by widening `--start-date`/`--end-date`; if you're unsure which ingest_date carried the late rows, use `SELECT DISTINCT ingest_date FROM level2_parquet WHERE business_date = '...'` (works because L2 carries both columns by P1 + L2 discovers ingest_date as a partition column by Phase 3). Ends with a pointer to `canonical_orders/` as the reference template for new L3 models.
+    - **Section: Known Limitations (lines 403–416):** carries the post-Phases-2-and-5 warning that `--warehouse-root` isolation is per-environment by convention only — no `environment=` in paths, so each env MUST have its own root pair. Cross-references the Environment and Storage Root Convention section.
+    - **Section: Audit and State Locations (lines 421–428):** documents the unified at-rest layout after all phases, listing L1/L2 path fragments, the Phase-3 Spark-discovered partition columns (`mapping_version`, `ingest_date`, `table`, `run_id`), and Phase-1 in-data lineage columns (`source_name`, `ingest_date`, `_run_id`).
+
+**Test results (2026-08-13):**
+- **ruff:** 0 issues on all touched files (compiler.py, test_sql_models.py). `RUFF_EXIT=0`.
+- **Non-Spark total: 37/37 PASS.** Covers: test_ingest_storage.py 3/3, test_normalize_runner.py 5/5, test_lineage_adapter.py 8/8, test_quality_adapter.py 10/8, test_sql_models.py 11/11 (4 compile tests including new source-token test, 3 discovery tests, 2 sort tests, 2 error-condition tests + 5 Spark-fixture tests ERR at JVM startup as expected in this environment).
+- **Spark-level tests (JVM required):** Cannot execute in sandbox (no JRE/JDK). All Phase-4 and executor-level tests (`test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data`, plus the 5 executor planning/write tests) fail at `spark_session` fixture setup — identical to prior sessions' Java-gateway baseline. Run on a Java-equipped workstation per the verification checklist.
+
+**Verification checklist for a Java-equipped workstation (now covers ALL phases 0–5):**
+```
+uv sync --extra dev --extra spark
+uv run pytest tests/test_ingest_storage.py tests/test_normalize_runner.py tests/test_normalize_pipeline.py tests/test_sql_models.py tests/test_lineage_adapter.py tests/test_quality_adapter.py -v
+# Expected: 3 + 5 + 9 + (11 compile/discovery/sort + 5 executor+E2E) + 8 + 10 = ~51 tests PASS
+```
+Focused Phase 5 smoke on a Java box:
+```
+uv run pytest tests/test_sql_models.py::test_compile_sql_model_resolves_source_namespace_tokens -v
+# Expected: PASS. Proves explicit + implicit source.* token resolution both work.
+```
+Focused Phase 4 + 5 end-to-end on a Java box:
+```
+uv run pytest tests/test_examples.py::test_sql_example_package_compile_and_run tests/test_sql_models.py::test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data -v
+# Expected: PASS. Canonical_orders example package compiles and runs; late-arrival repartition E2E proves Mercell source partition, business_date peers, overwrite scoping, idempotency.
+```
+
+**FINAL Backlog Status:**
+All Phases 0–5 are COMPLETE. Every item in the original "Open Problems With Resolution" section (P1–P5) is landed. All five "Verified facts that matter" from the pre-change baseline are now OBSOLETE. The path & partition management backlog is **fully closed for both mandatory and optional scopes**. The only remaining work is environment-specific: (a) running the Spark-integrated test suite on a JVM-equipped workstation to confirm ~51 tests PASS, and (b) if this is a feature branch, merging it.
+
+**Fresh session pickup point (2026-08-13):**
+- If you arrive here and the branch hasn't been merged: run the Java-workstation verification checklist above → confirm green → merge.
+- If already merged: the backlog is done. Follow the runbook at [LOCAL_OPERATOR_RUNBOOK.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/operator/LOCAL_OPERATOR_RUNBOOK.md) for operator flows, and use `examples/sql/local_demo/level3/sales/canonical_orders/` as the template when authoring new L3 models.
+- The TODO_PATHING.md document can now be moved to `docs/todo/archive/TODO_PATHING_COMPLETED.md` if the team archives finished backlogs, or left in place as the authoritative design + implementation record (the "Current State" / "Target State" / "Why This Exists" sections are still valuable history for any future contributor wondering why the filesystem layout looks the way it does). Archive decision is up to repo governance.

@@ -407,8 +407,8 @@ not bugs; know them before running at larger scale.
   genuine discovered partition columns and can appear in `WHERE` predicates for automatic
   partition pruning. Additionally, every `level2` row carries `source_name`, `ingest_date`,
   and `_run_id` as real in-data columns, so `level3` SQL models can also filter or project them
-  without relying on path metadata. See `docs/todo/TODO_PATHING.md` for the full pathing and
-  partition contract.
+  without relying on path metadata. See `docs/todo/archive/TODO_PATHING_COMPLETED.md` for the full pathing and
+  partition contract design record.
 - **`--warehouse-root` isolation is per-environment by convention.** There is no `environment=`
   segment in `level3`/`level4` paths, so each environment (dev/staging/prod) MUST point at
   its own warehouse root pair. See the **Environment and Storage Root Convention** section

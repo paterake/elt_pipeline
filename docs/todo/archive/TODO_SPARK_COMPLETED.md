@@ -1,13 +1,13 @@
 # Spark Correction Backlog (Completed Snapshot)
 
-This file is the completed snapshot of the Spark correction backlog. It is kept for historical continuity; see `docs/todo/TODO_SPARK.md` for the current archived pointer.
+This file is the completed snapshot of the Spark correction backlog. It is the authoritative history; a summary entry is indexed in `docs/todo/TODO.md` under Archived backlogs.
 
 ## Completion Summary
 
 All completion criteria below were met:
 
 - No downstream runtime path (`normalize`, `sql`, `publish`) depends on sqlite for `level2`, `level3`, `level4`, or `level5`. `src/elt_pipeline/sql/executor.py` (sqlite-based) was deleted and replaced by `src/elt_pipeline/sql/spark_executor.py`.
-- `level2` is written as Spark parquet via `SparkLevel2Writer` (`src/elt_pipeline/normalize/level2_storage.py`). Note: written with plain `.parquet(path)`, not `.partitionBy()`; the `source=`/`entity=`/`ingest_date=` path segments are addressing metadata, not queryable partition columns. See `docs/todo/TODO_PATHING.md` for the follow-up on path/partition management.
+- `level2` is written as Spark parquet via `SparkLevel2Writer` (`src/elt_pipeline/normalize/level2_storage.py`). Note: written with plain `.parquet(path)`, not `.partitionBy()`; the `source=`/`entity=`/`ingest_date=` path segments are addressing metadata, not queryable partition columns. See `docs/todo/archive/TODO_PATHING_COMPLETED.md` for the completed path/partition management backlog that followed this one.
 - `level3`/`level4` are materialized as Spark-written parquet under an explicit `--warehouse-root`, one directory per table, flat-namespaced by `target.table_name` (`src/elt_pipeline/sql/spark_executor.py`).
 - The level2->level3 gap identified during this work (no code previously loaded level2 into the SQL stage) was closed by adding an explicit `sources` field to level3 model manifests (`SqlModelSourceRef`), resolved via `src/elt_pipeline/sql/level2_source.py` (`Level2DatasetLocator`) into Spark temp views.
 - `publish` reads `level4` parquet via Spark (`src/elt_pipeline/publish/runtime.py`) instead of a sqlite connection.
