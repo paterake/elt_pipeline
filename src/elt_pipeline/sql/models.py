@@ -103,14 +103,6 @@ class SqlModelManifest(BaseModel):
         return cleaned_values
 
     @model_validator(mode="after")
-    def validate_partition_requirements(self) -> "SqlModelManifest":
-        if self.load_mode == SqlLoadMode.partition_overwrite and not self.target.partition_columns:
-            raise ValueError(
-                "target.partition_columns must be set when load_mode is partition_overwrite"
-            )
-        return self
-
-    @model_validator(mode="after")
     def validate_sources(self) -> "SqlModelManifest":
         if self.sources and self.stage != SqlModelStage.level3:
             raise ValueError("sources may only be declared on level3 models")

@@ -49,6 +49,12 @@ def _append_jsonl_file(path: Path, payload: BaseModel | dict[str, Any]) -> None:
         handle.write("\n")
 
 
+_NO_ENV_IN_PATH_MESSAGE = (
+    "Generated path contains 'environment=' segment; per P5 decision, environment is "
+    "handled exclusively by which root path is pointed at, never as an in-path segment."
+)
+
+
 class LocalArtifactLayout:
     def __init__(self, root_path: Path) -> None:
         self.root_path = root_path
@@ -63,36 +69,42 @@ class LocalArtifactLayout:
         run_id: str,
         window_label: str | None = None,
     ) -> Path:
+        _ = environment
         path = (
             self.root_path
             / "level1"
-            / f"environment={_sanitize_path_fragment(environment)}"
             / f"source={_sanitize_path_fragment(source_name)}"
             / f"entity={_sanitize_path_fragment(entity_name)}"
             / f"ingest_date={ingested_at.date().isoformat()}"
         )
         if window_label:
             path /= f"window={_sanitize_path_fragment(window_label)}"
-        return path / f"run_id={run_id}"
+        result = path / f"run_id={run_id}"
+        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+        return result
 
     def run_dir(self, *, run_context: RunContext, environment: str) -> Path:
-        return (
+        _ = environment
+        result = (
             self.root_path
             / "runs"
             / f"stage={run_context.stage.value}"
-            / f"environment={_sanitize_path_fragment(environment)}"
             / f"job={_sanitize_path_fragment(run_context.job_name)}"
             / f"run_id={run_context.run_id}"
         )
+        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+        return result
 
     def state_file(self, *, environment: str, source_name: str, entity_name: str) -> Path:
-        return (
+        _ = environment
+        result = (
             self.root_path
             / "state"
-            / f"environment={_sanitize_path_fragment(environment)}"
             / f"source={_sanitize_path_fragment(source_name)}"
             / f"entity={_sanitize_path_fragment(entity_name)}.json"
         )
+        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+        return result
 
 
 class LocalLevel1Writer:

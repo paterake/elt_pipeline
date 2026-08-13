@@ -22,17 +22,22 @@ class Level2DatasetLocator:
         self.spark = spark
 
     def read(self, *, source_ref: SqlModelSourceRef, environment: str) -> DataFrame:
+        _ = environment
         table_name = source_ref.table_name or source_ref.logical_name
+        sanitized_table = _sanitize_path_fragment(table_name)
         entity_root = (
             self.root_path
             / "level2"
-            / f"environment={_sanitize_path_fragment(environment)}"
             / f"source={_sanitize_path_fragment(source_ref.source_name)}"
             / f"entity={_sanitize_path_fragment(source_ref.entity_name)}"
         )
+        assert "environment=" not in entity_root.as_posix(), (
+            "Generated L2 read path contains 'environment=' segment; per P5 decision, "
+            "environment is handled exclusively by which root path is pointed at."
+        )
         matches = sorted(
             path
-            for path in entity_root.glob(f"**/table={_sanitize_path_fragment(table_name)}/run_id=*")
+            for path in entity_root.glob(f"**/table={sanitized_table}/run_id=*")
             if path.is_dir()
         )
         if not matches:
@@ -47,10 +52,11 @@ class Level2DatasetLocator:
                     "source_name": source_ref.source_name,
                     "entity_name": source_ref.entity_name,
                     "table_name": table_name,
+                    "sanitized_table_name": sanitized_table,
                     "environment": environment,
                     "search_root": str(entity_root),
                 },
             )
-        return self.spark.read.option("mergeSchema", "true").parquet(
-            *[str(path) for path in matches]
-        )
+        dataframe = self.spark.read.option("mergeSchema", "true").parquet(str(entity_root))
+        dataframe = dataframe.filter(dataframe["table"] == sanitized_table)
+        return dataframe

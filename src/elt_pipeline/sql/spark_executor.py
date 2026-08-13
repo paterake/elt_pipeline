@@ -167,16 +167,24 @@ class SparkSqlModelExecutor:
         select_sql = model.compiled_sql.rstrip().rstrip(";")
         dataframe = self.spark.sql(select_sql)
         target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
+        effective_partition_columns = self._effective_partition_columns(model=model)
 
         if model.load_mode == SqlLoadMode.full_refresh:
-            dataframe.write.mode("overwrite").parquet(str(target_path))
+            writer = dataframe.write.mode("overwrite")
+            if effective_partition_columns:
+                writer = writer.partitionBy(*effective_partition_columns)
+            writer.parquet(str(target_path))
         elif model.load_mode == SqlLoadMode.append:
-            dataframe.write.mode("append").parquet(str(target_path))
+            writer = dataframe.write.mode("append")
+            if effective_partition_columns:
+                writer = writer.partitionBy(*effective_partition_columns)
+            writer.parquet(str(target_path))
         elif model.load_mode == SqlLoadMode.partition_overwrite:
             self._validate_partition_requirements(model=model)
-            dataframe.write.mode("overwrite").partitionBy(*model.partition_columns).parquet(
-                str(target_path)
-            )
+            writer = dataframe.write.mode("overwrite")
+            if effective_partition_columns:
+                writer = writer.partitionBy(*effective_partition_columns)
+            writer.parquet(str(target_path))
         else:
             raise build_sql_runtime_error(
                 message=f"Unsupported SQL load mode '{model.load_mode.value}'",
@@ -282,11 +290,21 @@ class SparkSqlModelExecutor:
 
         return summary
 
+    def _effective_partition_columns(self, *, model: CompiledSqlModel) -> list[str]:
+        if model.partition_columns:
+            return list(model.partition_columns)
+        if model.load_mode == SqlLoadMode.full_refresh:
+            return []
+        if model.stage == SqlModelStage.level3:
+            return ["source_name", "business_date"]
+        return ["business_date"]
+
     def _validate_partition_requirements(self, *, model: CompiledSqlModel) -> None:
+        effective_columns = self._effective_partition_columns(model=model)
         if model.load_mode != SqlLoadMode.partition_overwrite:
             return
         missing_columns = sorted(
-            column for column in model.partition_columns if column not in self.partition_values
+            column for column in effective_columns if column not in self.partition_values
         )
         if missing_columns:
             raise build_sql_runtime_error(

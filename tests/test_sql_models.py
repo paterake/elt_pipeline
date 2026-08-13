@@ -37,18 +37,29 @@ def _seed_level2_table(
     entity_name: str = "orders",
     table_name: str = "raw_orders",
     rows: list[dict],
+    ingest_date: str = "2026-01-15",
+    run_id: str = "seed-run",
 ) -> None:
+    _ = environment
     data_dir = (
         root_path
         / "level2"
-        / f"environment={environment}"
         / f"source={source_name}"
         / f"entity={entity_name}"
         / "mapping_version=v1"
         / f"table={table_name}"
-        / "run_id=seed-run"
+        / f"run_id={run_id}"
     )
-    spark_session.createDataFrame(rows).write.mode("error").parquet(str(data_dir))
+    enriched_rows = [
+        {
+            **row,
+            "source_name": source_name,
+            "ingest_date": ingest_date,
+            "_run_id": run_id,
+        }
+        for row in rows
+    ]
+    spark_session.createDataFrame(enriched_rows).write.mode("error").parquet(str(data_dir))
 
 
 def test_discover_sql_models_reads_valid_package(tmp_path: Path) -> None:
@@ -661,7 +672,6 @@ quality:
         tmp_path
         / "runs"
         / "stage=sql"
-        / "environment=dev"
         / "job=sql-run"
         / f"run_id={run_context.run_id}"
         / "audit.json"
@@ -669,6 +679,7 @@ quality:
     error_path = audit_path.with_name("errors.jsonl")
 
     audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert "environment=" not in str(audit_path)
     error_lines = error_path.read_text(encoding="utf-8").strip().splitlines()
     base_orders_validation = audit_payload["validation_results"][0]
     failed_checks = [
@@ -792,12 +803,12 @@ def test_run_sql_models_locally_fails_for_blocking_quality_results(
         tmp_path
         / "runs"
         / "stage=sql"
-        / "environment=dev"
         / "job=sql-run"
         / f"run_id={run_context.run_id}"
         / "audit.json"
     )
     audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert "environment=" not in str(audit_path)
     quality_summary = audit_payload["validation_results"][-1]
 
     assert audit_payload["status"] == "failed"
@@ -915,11 +926,11 @@ def test_run_sql_models_locally_records_single_error_for_blocking_quality_backen
         tmp_path
         / "runs"
         / "stage=sql"
-        / "environment=dev"
         / "job=sql-run"
         / f"run_id={run_context.run_id}"
         / "errors.jsonl"
     )
+    assert "environment=" not in str(errors_path)
     error_records = [
         json.loads(line) for line in errors_path.read_text(encoding="utf-8").splitlines() if line
     ]
@@ -986,6 +997,136 @@ def test_local_sql_model_executor_returns_structured_partition_error_code(
 
     assert exc_info.value.error_code == SqlRuntimeErrorCode.partition_value_missing
     assert exc_info.value.error_category.value == "config_error"
+
+
+def test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data(
+    tmp_path: Path, spark_session
+) -> None:
+    _seed_level2_table(
+        spark_session,
+        tmp_path,
+        source_name="orders_source",
+        entity_name="orders",
+        table_name="raw_orders",
+        ingest_date="2026-08-10",
+        run_id="seed-late-run",
+        rows=[
+            {"order_id": 1001, "amount": 50, "business_date": "2026-07-31"},
+            {"order_id": 1002, "amount": 75, "business_date": "2026-07-31"},
+            {"order_id": 1003, "amount": 20, "business_date": "2026-08-10"},
+            {"order_id": 1004, "amount": 40, "business_date": "2026-08-10"},
+            {"order_id": 1005, "amount": 60, "business_date": "2026-08-10"},
+        ],
+    )
+
+    warehouse_root = tmp_path / "warehouse"
+    pre_seed_path = (
+        warehouse_root
+        / "level3"
+        / "canonical_orders"
+        / "source_name=orders_source"
+        / "business_date=2026-06-01"
+    )
+    pre_seed_path.mkdir(parents=True, exist_ok=True)
+    spark_session.createDataFrame(
+        [
+            {
+                "order_id": 9990,
+                "amount": 100,
+                "business_date": "2026-06-01",
+                "source_name": "orders_source",
+            },
+            {
+                "order_id": 9991,
+                "amount": 200,
+                "business_date": "2026-06-01",
+                "source_name": "orders_source",
+            },
+        ]
+    ).write.mode("overwrite").parquet(str(pre_seed_path))
+
+    package_root = _write_late_arrival_level3_sql_package(tmp_path)
+    model = discover_sql_models(package_root)[0]
+    assert model.manifest.target.partition_columns == [], (
+        "Test fixture must declare NO manifest partition_columns to exercise the default convention"
+    )
+
+    def compile_and_run(run_id: str):
+        compiled = compile_sql_model(
+            model,
+            token_context=build_token_context(
+                environment="dev",
+                run_id=run_id,
+                stage=model.manifest.stage.value,
+                domain=model.manifest.domain,
+                model_name=model.manifest.name,
+                target_table_name=model.manifest.target.table_name,
+            ),
+        )
+        return SparkSqlModelExecutor(
+            spark=spark_session,
+            warehouse_root=warehouse_root,
+            root_path=tmp_path,
+            environment="dev",
+            partition_values={"source_name": "orders_source", "business_date": "2026-08-10"},
+        ).execute([compiled])
+
+    first_result = compile_and_run("run-late-1")
+    assert first_result.executed_models[0].load_mode.value == "partition_overwrite"
+
+    canonical_root = warehouse_root / "level3" / "canonical_orders"
+    source_partitions = sorted(
+        p.name
+        for p in canonical_root.iterdir()
+        if p.is_dir() and p.name.startswith("source_name=")
+    )
+    assert source_partitions == ["source_name=orders_source"]
+
+    business_partition_dirs = sorted(
+        p.name
+        for p in (canonical_root / "source_name=orders_source").iterdir()
+        if p.is_dir() and p.name.startswith("business_date=")
+    )
+    assert business_partition_dirs == [
+        "business_date=2026-06-01",
+        "business_date=2026-07-31",
+        "business_date=2026-08-10",
+    ]
+
+    pre_seed_count = spark_session.read.parquet(str(pre_seed_path)).count()
+    assert pre_seed_count == 2, (
+        "Unrelated pre-seed partition must survive dynamic partition overwrite"
+    )
+
+    jul31_count = spark_session.read.parquet(
+        str(canonical_root / "source_name=orders_source" / "business_date=2026-07-31")
+    ).count()
+    aug10_count = spark_session.read.parquet(
+        str(canonical_root / "source_name=orders_source" / "business_date=2026-08-10")
+    ).count()
+    assert jul31_count == 2, (
+        "Late-arriving 2026-07-31 data must be co-located in its own business_date partition"
+    )
+    assert aug10_count == 3
+
+    second_result = compile_and_run("run-late-2")
+    assert second_result.executed_models[0].row_count == first_result.executed_models[0].row_count
+
+    post_idempotency_dirs = sorted(
+        p.name
+        for p in (canonical_root / "source_name=orders_source").iterdir()
+        if p.is_dir() and p.name.startswith("business_date=")
+    )
+    assert post_idempotency_dirs == business_partition_dirs
+
+    post_jul31 = spark_session.read.parquet(
+        str(canonical_root / "source_name=orders_source" / "business_date=2026-07-31")
+    ).count()
+    post_aug10 = spark_session.read.parquet(
+        str(canonical_root / "source_name=orders_source" / "business_date=2026-08-10")
+    ).count()
+    assert post_jul31 == jul31_count, "Idempotent re-run must produce identical partition contents"
+    assert post_aug10 == aug10_count
 
 
 def _write_basic_sql_package(
@@ -1319,4 +1460,45 @@ def _write_missing_dependency_sql_package(base_path: Path) -> Path:
         encoding="utf-8",
     )
     (model_dir / "model.sql").write_text("select 1 as value", encoding="utf-8")
+    return package_root
+
+
+def _write_late_arrival_level3_sql_package(base_path: Path) -> Path:
+    package_root = base_path / "late_arrival_sql_models"
+    model_dir = package_root / "level3" / "sales" / "canonical_orders"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "manifest.yaml").write_text(
+        dedent(
+            """
+            name: canonical_orders
+            stage: level3
+            domain: sales
+            materialization: table
+            load_mode: partition_overwrite
+            target:
+              table_name: canonical_orders
+            sources:
+              - logical_name: raw_orders
+                source_name: orders_source
+                entity_name: orders
+            owner:
+              name: platform
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
+    (model_dir / "model.sql").write_text(
+        dedent(
+            """
+            select
+              source_name,
+              order_id,
+              amount,
+              business_date
+            from raw_orders
+            where ingest_date = '2026-08-10'
+            """
+        ).strip(),
+        encoding="utf-8",
+    )
     return package_root

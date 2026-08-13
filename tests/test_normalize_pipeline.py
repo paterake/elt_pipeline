@@ -39,11 +39,11 @@ def build_manifest(
         content_hash="abc123",
         file_size_bytes=128,
         data_path=(
-            f"level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/orders."
+            f"level1/source=rest_source/entity=orders/run_id=run-001/orders."
             f"{payload_format}"
         ),
         manifest_path=(
-            "level1/environment=dev/source=rest_source/entity=orders/run_id=run-001/"
+            "level1/source=rest_source/entity=orders/run_id=run-001/"
             f"orders.{payload_format}.manifest.json"
         ),
     )
@@ -74,6 +74,8 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(
         assert data_path.is_dir()
         assert manifest_path.exists()
         assert "/ingest_date=2026-01-01/" in table_manifest.data_path
+        assert "environment=" not in table_manifest.data_path
+        assert "level2/source=rest_source/entity=orders" in table_manifest.data_path
         written_df = spark_session.read.parquet(str(data_path))
         assert written_df.count() == table_manifest.record_count
         assert table_manifest.file_count == len(list(data_path.glob("*.parquet")))
@@ -92,12 +94,12 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(
         tmp_path
         / "runs"
         / "stage=normalize"
-        / "environment=dev"
         / "job=normalize-orders"
         / f"run_id={run_context.run_id}"
         / "audit.json"
     )
     assert audit_path.exists()
+    assert "environment=" not in str(audit_path)
     audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
     assert audit_payload["status"] == "success"
     assert audit_payload["metrics_summary"]["files_written"] == len(summary.table_manifests)
@@ -184,11 +186,11 @@ def test_normalize_pipeline_captures_quality_results_in_audit(
         tmp_path
         / "runs"
         / "stage=normalize"
-        / "environment=dev"
         / "job=normalize-orders"
         / f"run_id={run_context.run_id}"
         / "audit.json"
     )
+    assert "environment=" not in str(audit_path)
     audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
 
     assert summary.table_manifests
@@ -224,11 +226,11 @@ def test_normalize_pipeline_fails_for_blocking_quality_results(
         tmp_path
         / "runs"
         / "stage=normalize"
-        / "environment=dev"
         / "job=normalize-orders"
         / f"run_id={run_context.run_id}"
         / "audit.json"
     )
+    assert "environment=" not in str(audit_path)
     audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
 
     assert audit_payload["status"] == "failed"
@@ -263,11 +265,11 @@ def test_normalize_pipeline_records_single_error_for_blocking_quality_backend_fa
         tmp_path
         / "runs"
         / "stage=normalize"
-        / "environment=dev"
         / "job=normalize-orders"
         / f"run_id={run_context.run_id}"
         / "errors.jsonl"
     )
+    assert "environment=" not in str(errors_path)
     error_records = [
         json.loads(line) for line in errors_path.read_text(encoding="utf-8").splitlines() if line
     ]
@@ -301,11 +303,11 @@ def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
         tmp_path
         / "runs"
         / "stage=normalize"
-        / "environment=dev"
         / "job=normalize-orders"
         / f"run_id={run_context.run_id}"
         / "logs.jsonl"
     )
+    assert "environment=" not in str(log_path)
     log_events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     quality_event = next(
         event for event in log_events if event["event_type"] == "quality_hook_complete"

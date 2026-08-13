@@ -43,7 +43,8 @@ def test_local_level1_writer_persists_payload_and_manifest(tmp_path: Path) -> No
     assert data_path.exists()
     assert manifest_path.exists()
     assert data_path.read_text(encoding="utf-8") == '{"items":[1,2,3]}'
-    assert "level1/environment=dev/source=rest_source/entity=orders" in manifest.data_path
+    assert "level1/source=rest_source/entity=orders" in manifest.data_path
+    assert "environment=" not in manifest.data_path
     assert f"run_id={run_context.run_id}" in manifest.data_path
 
     stored_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -113,7 +114,8 @@ def test_local_artifact_store_persists_run_artifacts(tmp_path: Path) -> None:
     assert log_path.exists()
     assert error_path.exists()
     assert lineage_path.exists()
-    assert "runs/stage=ingest/environment=dev/job=orders-ingest" in str(audit_path)
+    assert "runs/stage=ingest/job=orders-ingest" in str(audit_path)
+    assert "environment=" not in str(audit_path)
 
     stored_audit = json.loads(audit_path.read_text(encoding="utf-8"))
     stored_log = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]

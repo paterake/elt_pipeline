@@ -210,10 +210,10 @@ def test_quality_hook_records_non_blocking_backend_failures(tmp_path: Path) -> N
         tmp_path
         / "runs"
         / "stage=normalize"
-        / "environment=dev"
         / "job=normalize-orders"
         / f"run_id={run_context.run_id}"
     )
+    assert "environment=" not in str(run_dir)
     assert json.loads((run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines()[0])[
         "error_code"
     ] == "QUALITY_BACKEND_EXECUTION_FAILED"

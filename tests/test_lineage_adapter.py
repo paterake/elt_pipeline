@@ -96,8 +96,9 @@ def test_lineage_adapter_raises_for_blocking_remote_failures(tmp_path: Path) -> 
             ),
         )
 
-    run_dir = tmp_path / "runs" / "stage=shared" / "environment=default" / "job=lineage-test"
+    run_dir = tmp_path / "runs" / "stage=shared" / "job=lineage-test"
     run_dir = run_dir / f"run_id={run_context.run_id}"
+    assert "environment=" not in str(run_dir)
     assert exc_info.value.error_code == "LINEAGE_BACKEND_EMISSION_FAILED"
     assert (run_dir / "lineage.jsonl").exists()
     assert _read_jsonl(run_dir / "errors.jsonl")[0]["error_code"] == (

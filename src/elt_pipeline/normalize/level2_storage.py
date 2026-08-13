@@ -19,6 +19,11 @@ from elt_pipeline.spark.errors import SparkRuntimeErrorCode, build_spark_runtime
 
 _SAFE_PATH_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 
+_NO_ENV_IN_PATH_MESSAGE = (
+    "Generated path contains 'environment=' segment; per P5 decision, environment is "
+    "handled exclusively by which root path is pointed at, never as an in-path segment."
+)
+
 _EMPTY_TABLE_SCHEMA = StructType(
     [
         StructField("_row_id", StringType(), nullable=False),
@@ -63,10 +68,10 @@ class LocalLevel2Layout:
         table_name: str,
         run_id: str,
     ) -> Path:
+        _ = environment
         path = (
             self.root_path
             / "level2"
-            / f"environment={_sanitize_path_fragment(environment)}"
             / f"source={_sanitize_path_fragment(source_name)}"
             / f"entity={_sanitize_path_fragment(entity_name)}"
             / f"mapping_version={_sanitize_path_fragment(mapping_version)}"
@@ -74,7 +79,9 @@ class LocalLevel2Layout:
         for key in sorted(partition):
             path /= f"{_sanitize_path_fragment(key)}={_sanitize_path_fragment(partition[key])}"
         path /= f"table={_sanitize_path_fragment(table_name)}"
-        return path / f"run_id={_sanitize_path_fragment(run_id)}"
+        result = path / f"run_id={_sanitize_path_fragment(run_id)}"
+        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+        return result
 
 
 class SparkLevel2Writer:
