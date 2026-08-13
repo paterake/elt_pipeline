@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
@@ -13,7 +13,17 @@ from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.normalize.models import Level2TableManifest, NormalizedTable
-from elt_pipeline.shared.errors import ErrorCategory, PipelineError
+from elt_pipeline.shared.errors import PipelineError
+from elt_pipeline.shared.path_utils import (
+    _StorageScheme,
+    detect_scheme,
+    join_paths,
+    path_glob,
+    path_parent,
+    path_read_bytes,
+    path_relative_to,
+    strip_file_scheme,
+)
 from elt_pipeline.shared.runtime import RunContext
 from elt_pipeline.spark.errors import SparkRuntimeErrorCode, build_spark_runtime_error
 
@@ -38,11 +48,26 @@ def _sanitize_path_fragment(value: str) -> str:
     return cleaned or "unknown"
 
 
-def _write_json_file(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+def _write_json_file(path: str, payload: Any) -> None:
+    import posixpath
+
+    from elt_pipeline.shared.path_utils import (
+        path_mkdir,
+        path_parent,
+        path_replace,
+        path_with_suffix,
+        path_write_text,
+    )
+
+    path_mkdir(path_parent(path), parents=True, exist_ok=True)
+    temp_path = path_with_suffix(path, f"{posixpath.splitext(path)[1]}.tmp")
+    path_write_text(
+        temp_path,
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+        atomic=True,
+    )
+    path_replace(temp_path, path)
 
 
 def _rows_to_dataframe(spark: SparkSession, rows: list[dict[str, Any]]) -> DataFrame:
@@ -53,8 +78,38 @@ def _rows_to_dataframe(spark: SparkSession, rows: list[dict[str, Any]]) -> DataF
     return spark.read.json(rdd)
 
 
+def _summarize_parquet_dir(data_dir: str) -> tuple[int, int]:
+    try:
+        part_files = sorted(path_glob(join_paths(data_dir, "*.parquet")))
+    except PipelineError:
+        return (0, 0)
+    file_count = len(part_files)
+    total_bytes = 0
+    for part_file in part_files:
+        scheme = detect_scheme(part_file)
+        if scheme in (_StorageScheme.file, _StorageScheme.local_unschemed):
+            local_path = strip_file_scheme(part_file)
+            try:
+                total_bytes += os.stat(local_path).st_size
+            except OSError:
+                continue
+        else:
+            try:
+                total_bytes += len(path_read_bytes(part_file))
+            except PipelineError:
+                continue
+    return (file_count, total_bytes)
+
+
+def _basename_named_manifest(data_dir: str) -> str:
+    import posixpath
+
+    name = posixpath.basename(data_dir.rstrip("/"))
+    return join_paths(path_parent(data_dir), f"{name}.manifest.json")
+
+
 class LocalLevel2Layout:
-    def __init__(self, root_path: Path) -> None:
+    def __init__(self, root_path: str) -> None:
         self.root_path = root_path
 
     def table_run_dir(
@@ -67,25 +122,28 @@ class LocalLevel2Layout:
         partition: dict[str, str],
         table_name: str,
         run_id: str,
-    ) -> Path:
+    ) -> str:
         _ = environment
-        path = (
-            self.root_path
-            / "level2"
-            / f"source={_sanitize_path_fragment(source_name)}"
-            / f"entity={_sanitize_path_fragment(entity_name)}"
-            / f"mapping_version={_sanitize_path_fragment(mapping_version)}"
-        )
+        segments = [
+            self.root_path,
+            "level2",
+            f"source={_sanitize_path_fragment(source_name)}",
+            f"entity={_sanitize_path_fragment(entity_name)}",
+            f"mapping_version={_sanitize_path_fragment(mapping_version)}",
+        ]
         for key in sorted(partition):
-            path /= f"{_sanitize_path_fragment(key)}={_sanitize_path_fragment(partition[key])}"
-        path /= f"table={_sanitize_path_fragment(table_name)}"
-        result = path / f"run_id={_sanitize_path_fragment(run_id)}"
-        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+            segments.append(
+                f"{_sanitize_path_fragment(key)}={_sanitize_path_fragment(partition[key])}"
+            )
+        segments.append(f"table={_sanitize_path_fragment(table_name)}")
+        segments.append(f"run_id={_sanitize_path_fragment(run_id)}")
+        result = join_paths(*segments)
+        assert "environment=" not in result, _NO_ENV_IN_PATH_MESSAGE
         return result
 
 
 class SparkLevel2Writer:
-    def __init__(self, root_path: Path, spark: SparkSession) -> None:
+    def __init__(self, root_path: str, spark: SparkSession) -> None:
         self.layout = LocalLevel2Layout(root_path)
         self.spark = spark
 
@@ -109,15 +167,6 @@ class SparkLevel2Writer:
             table_name=table.physical_name,
             run_id=run_context.run_id,
         )
-        if data_dir.exists() and any(data_dir.iterdir()):
-            raise PipelineError(
-                message=f"Refusing to overwrite existing level2 artifact: {data_dir}",
-                error_code="LEVEL2_ARTIFACT_EXISTS",
-                error_category=ErrorCategory.storage_write_error,
-                retryable=False,
-                context={"path": str(data_dir)},
-            )
-
         dataframe = _rows_to_dataframe(self.spark, table.rows)
         if "source_name" not in dataframe.columns:
             dataframe = dataframe.withColumn("source_name", lit(manifest.source_name))
@@ -128,21 +177,19 @@ class SparkLevel2Writer:
         if "_run_id" not in dataframe.columns:
             dataframe = dataframe.withColumn("_run_id", lit(run_context.run_id))
         try:
-            dataframe.write.mode("error").parquet(str(data_dir))
+            dataframe.write.mode("error").parquet(data_dir)
         except Exception as exc:
             raise build_spark_runtime_error(
                 code=SparkRuntimeErrorCode.write_failed,
                 message=f"Failed to write level2 parquet dataset: {data_dir}",
-                context={"path": str(data_dir)},
+                context={"path": data_dir},
             ) from exc
 
-        part_files = sorted(data_dir.glob("*.parquet"))
-        file_count = len(part_files)
-        total_file_size_bytes = sum(part_file.stat().st_size for part_file in part_files)
+        file_count, total_file_size_bytes = _summarize_parquet_dir(data_dir)
 
-        relative_data_path = data_dir.relative_to(self.layout.root_path).as_posix()
-        manifest_path = data_dir.parent / f"{data_dir.name}.manifest.json"
-        relative_manifest_path = manifest_path.relative_to(self.layout.root_path).as_posix()
+        relative_data_path = path_relative_to(data_dir, self.layout.root_path)
+        manifest_path = _basename_named_manifest(data_dir)
+        relative_manifest_path = path_relative_to(manifest_path, self.layout.root_path)
         artifact_id = hashlib.sha256(
             f"{run_context.run_id}:{relative_data_path}".encode("utf-8")
         ).hexdigest()[:24]

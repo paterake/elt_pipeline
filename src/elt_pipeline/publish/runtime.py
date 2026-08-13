@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
+import posixpath
 import shutil
 import zipfile
 from datetime import UTC, datetime
@@ -33,12 +35,25 @@ from elt_pipeline.shared.errors import (
 )
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
+from elt_pipeline.shared.path_utils import (
+    _StorageScheme,
+    detect_scheme,
+    join_paths,
+    path_basename,
+    path_mkdir,
+    path_parent,
+    path_read_bytes,
+    path_with_suffix,
+    path_write_bytes,
+    path_write_text,
+    strip_file_scheme,
+)
 from elt_pipeline.shared.runtime import RunContext, StageName
 
 
 def explain_publish_definitions(
     *,
-    root_path: Path,
+    root_path: str,
     run_context: RunContext,
     definitions: list[DiscoveredPublishDefinition],
 ) -> list[dict[str, object]]:
@@ -58,18 +73,20 @@ def explain_publish_definitions(
             "selection_mode": definition.manifest.source.selection_mode.value,
             "output_format": definition.manifest.delivery.output_format.value,
             "replacement_mode": definition.manifest.delivery.replacement_mode.value,
-            "run_scoped_path": str(run_scoped_path),
+            "run_scoped_path": run_scoped_path,
             "stable_delivery_path": (
-                str(stable_delivery_path) if stable_delivery_path is not None else None
+                stable_delivery_path if stable_delivery_path is not None else None
             ),
         }
         packaging = definition.manifest.delivery.packaging
         if packaging is not None and packaging.archive_format is not None:
             archive_extension = packaging.archive_format.value
-            archive_run_scoped_path = run_scoped_path.with_suffix(f".{archive_extension}")
-            payload["archive_run_scoped_path"] = str(archive_run_scoped_path)
+            archive_run_scoped_path = path_with_suffix(
+                run_scoped_path, f".{archive_extension}"
+            )
+            payload["archive_run_scoped_path"] = archive_run_scoped_path
             payload["archive_stable_delivery_path"] = (
-                str(stable_delivery_path.with_suffix(f".{archive_extension}"))
+                path_with_suffix(stable_delivery_path, f".{archive_extension}")
                 if stable_delivery_path is not None
                 else None
             )
@@ -79,11 +96,11 @@ def explain_publish_definitions(
 
 def run_publish_definitions_locally(
     *,
-    root_path: Path,
+    root_path: str,
     run_context: RunContext,
     environment: str,
     package_path: Path,
-    warehouse_root: Path,
+    warehouse_root: str,
     spark: SparkSession,
     definitions: list[DiscoveredPublishDefinition],
 ) -> PublishStageRunResult:
@@ -120,7 +137,7 @@ def run_publish_definitions_locally(
             details={
                 "environment": environment,
                 "package_path": str(package_path),
-                "warehouse_root": str(warehouse_root),
+                "warehouse_root": warehouse_root,
                 "publish_count": len(definitions),
             },
         ),
@@ -159,8 +176,8 @@ def run_publish_definitions_locally(
                 definition=definition,
             )
             results.append(result)
-            artifacts.export_manifest_path = (
-                result.artifacts[0].run_scoped_path.parent / "manifest.json"
+            artifacts.export_manifest_path = join_paths(
+                path_parent(result.artifacts[0].run_scoped_path), "manifest.json"
             )
         completed_at = datetime.now(tz=UTC)
     except PipelineError as exc:
@@ -190,7 +207,7 @@ def run_publish_definitions_locally(
             files_written=sum(len(result.artifacts) for result in results),
             extra={
                 "publish_count": len(results),
-                "warehouse_root": str(warehouse_root),
+                "warehouse_root": warehouse_root,
             },
         )
         for result in results:
@@ -222,8 +239,8 @@ def run_publish_definitions_locally(
                 context={
                     "environment": environment,
                     "package_path": str(package_path),
-                    "warehouse_root": str(warehouse_root),
-                    "artifact_root": str(root_path),
+                    "warehouse_root": warehouse_root,
+                    "artifact_root": root_path,
                     "publish_count": str(len(definitions)),
                     "selected_publish_ids": ",".join(
                         definition.publish_id for definition in definitions
@@ -247,13 +264,16 @@ def run_publish_definitions_locally(
                     or "",
                     "export_manifest_paths": json.dumps(
                         [
-                            str(result.artifacts[0].run_scoped_path.parent / "manifest.json")
+                            join_paths(
+                                path_parent(result.artifacts[0].run_scoped_path),
+                                "manifest.json",
+                            )
                             for result in results
                         ]
                     ),
                     "run_scoped_artifact_paths": json.dumps(
                         [
-                            str(artifact.run_scoped_path)
+                            artifact.run_scoped_path
                             for result in results
                             for artifact in result.artifacts
                         ]
@@ -279,13 +299,13 @@ def run_publish_definitions_locally(
                 outputs=[
                     DatasetRef(
                         namespace="file",
-                        name=artifact.run_scoped_path.as_posix(),
+                        name=artifact.run_scoped_path,
                         facets={
                             "publish_id": result.publish_id,
                             "output_format": artifact.output_format.value,
                             "row_count": artifact.row_count,
                             "stable_delivery_path": (
-                                artifact.stable_delivery_path.as_posix()
+                                artifact.stable_delivery_path
                                 if artifact.stable_delivery_path is not None
                                 else ""
                             ),
@@ -318,19 +338,19 @@ def run_publish_definitions_locally(
 def _register_level4_source(
     *,
     spark: SparkSession,
-    warehouse_root: Path,
+    warehouse_root: str,
     definition: DiscoveredPublishDefinition,
 ) -> None:
-    dataset_path = warehouse_root / "level4" / definition.manifest.source.dataset
-    dataframe = spark.read.parquet(str(dataset_path))
+    dataset_path = join_paths(warehouse_root, "level4", definition.manifest.source.dataset)
+    dataframe = spark.read.parquet(dataset_path)
     dataframe.createOrReplaceTempView(definition.manifest.source.dataset)
 
 
 def _run_single_publish_definition(
     *,
     spark: SparkSession,
-    warehouse_root: Path,
-    root_path: Path,
+    warehouse_root: str,
+    root_path: str,
     run_context: RunContext,
     environment: str,
     artifact_store: LocalArtifactStore,
@@ -369,10 +389,6 @@ def _run_single_publish_definition(
     sql_text = _build_publish_sql(definition)
     result_df = spark.sql(sql_text)
     column_names = result_df.columns
-    # NOTE: .collect() materializes the whole result set in driver memory so the delivery can be
-    # written as a single local file. This caps output size to driver memory. It is not a
-    # regression versus the prior sqlite fetchall() behaviour, but it is a real ceiling for very
-    # large level4 result sets. See docs/operator/LOCAL_OPERATOR_RUNBOOK.md "Known Limitations".
     rows = result_df.collect()
     validations = _validate_publish_output(
         definition=definition,
@@ -386,7 +402,7 @@ def _run_single_publish_definition(
         if _supports_stable_delivery_copy(definition.manifest.delivery.replacement_mode)
         else None
     )
-    run_scoped_path.parent.mkdir(parents=True, exist_ok=True)
+    path_mkdir(path_parent(run_scoped_path), parents=True, exist_ok=True)
 
     _write_publish_output(
         output_path=run_scoped_path,
@@ -395,12 +411,12 @@ def _run_single_publish_definition(
         rows=rows,
     )
 
-    checksum_sha256 = hashlib.sha256(run_scoped_path.read_bytes()).hexdigest()
-    file_size_bytes = run_scoped_path.stat().st_size
+    checksum_sha256 = hashlib.sha256(path_read_bytes(run_scoped_path)).hexdigest()
+    file_size_bytes = _file_size_bytes(run_scoped_path)
 
     if stable_delivery_path is not None:
-        stable_delivery_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(run_scoped_path, stable_delivery_path)
+        path_mkdir(path_parent(stable_delivery_path), parents=True, exist_ok=True)
+        _copy_file(run_scoped_path, stable_delivery_path)
 
     artifacts: list[PublishArtifactRecord] = [
         PublishArtifactRecord(
@@ -418,27 +434,34 @@ def _run_single_publish_definition(
         and definition.manifest.delivery.packaging.archive_format is not None
     ):
         archive_extension = definition.manifest.delivery.packaging.archive_format.value
-        archive_run_scoped_path = run_scoped_path.with_suffix(f".{archive_extension}")
+        archive_run_scoped_path = path_with_suffix(
+            run_scoped_path, f".{archive_extension}"
+        )
         archive_stable_delivery_path = (
-            stable_delivery_path.with_suffix(f".{archive_extension}")
+            path_with_suffix(stable_delivery_path, f".{archive_extension}")
             if stable_delivery_path is not None
             else None
         )
         with zipfile.ZipFile(
-            archive_run_scoped_path,
+            _local_path_or_exception(archive_run_scoped_path),
             "w",
             compression=zipfile.ZIP_DEFLATED,
         ) as archive_handle:
-            archive_handle.write(run_scoped_path, arcname=run_scoped_path.name)
+            archive_handle.write(
+                _local_path_or_exception(run_scoped_path),
+                arcname=path_basename(run_scoped_path),
+            )
 
         archive_checksum_sha256 = hashlib.sha256(
-            archive_run_scoped_path.read_bytes()
+            path_read_bytes(archive_run_scoped_path)
         ).hexdigest()
-        archive_file_size_bytes = archive_run_scoped_path.stat().st_size
+        archive_file_size_bytes = _file_size_bytes(archive_run_scoped_path)
 
         if archive_stable_delivery_path is not None:
-            archive_stable_delivery_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(archive_run_scoped_path, archive_stable_delivery_path)
+            path_mkdir(
+                path_parent(archive_stable_delivery_path), parents=True, exist_ok=True
+            )
+            _copy_file(archive_run_scoped_path, archive_stable_delivery_path)
 
         artifacts.append(
             PublishArtifactRecord(
@@ -450,7 +473,7 @@ def _run_single_publish_definition(
                 checksum_sha256=archive_checksum_sha256,
             )
         )
-    manifest_path = run_scoped_path.parent / "manifest.json"
+    manifest_path = join_paths(path_parent(run_scoped_path), "manifest.json")
     output_manifest = PublishOutputManifest(
         run_id=run_context.run_id,
         rerun_of_run_id=_string_or_none(run_context.attributes.get("rerun_of_run_id")),
@@ -473,7 +496,8 @@ def _run_single_publish_definition(
         validation_results=validations,
         artifacts=artifacts,
     )
-    manifest_path.write_text(
+    path_write_text(
+        manifest_path,
         json.dumps(output_manifest.model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
     )
@@ -490,9 +514,9 @@ def _run_single_publish_definition(
             details={
                 "publish_id": definition.publish_id,
                 "row_count": len(rows),
-                "run_scoped_path": str(run_scoped_path),
+                "run_scoped_path": run_scoped_path,
                 "stable_delivery_path": (
-                    str(stable_delivery_path) if stable_delivery_path is not None else ""
+                    stable_delivery_path if stable_delivery_path is not None else ""
                 ),
                 "packaged_artifact_count": len(artifacts),
             },
@@ -515,10 +539,10 @@ def _run_single_publish_definition(
             outputs=[
                 DatasetRef(
                     namespace="file",
-                    name=run_scoped_path.as_posix(),
+                    name=run_scoped_path,
                     facets={
                         "publish_id": definition.publish_id,
-                        "manifest_path": manifest_path.as_posix(),
+                        "manifest_path": manifest_path,
                         "output_format": definition.manifest.delivery.output_format.value,
                         "row_count": len(rows),
                     },
@@ -527,14 +551,14 @@ def _run_single_publish_definition(
             + [
                 DatasetRef(
                     namespace="file",
-                    name=artifact.run_scoped_path.as_posix(),
+                    name=artifact.run_scoped_path,
                     facets={
                         "publish_id": definition.publish_id,
-                        "manifest_path": manifest_path.as_posix(),
+                        "manifest_path": manifest_path,
                         "output_format": artifact.output_format.value,
                         "row_count": artifact.row_count,
                         "stable_delivery_path": (
-                            artifact.stable_delivery_path.as_posix()
+                            artifact.stable_delivery_path
                             if artifact.stable_delivery_path is not None
                             else ""
                         ),
@@ -551,6 +575,47 @@ def _run_single_publish_definition(
         artifacts=artifacts,
         validations=validations,
     )
+
+
+def _file_size_bytes(path_str: str) -> int:
+    scheme = detect_scheme(path_str)
+    if scheme in (_StorageScheme.file, _StorageScheme.local_unschemed):
+        try:
+            return os.stat(strip_file_scheme(path_str)).st_size
+        except OSError:
+            return 0
+    try:
+        return len(path_read_bytes(path_str))
+    except PipelineError:
+        return 0
+
+
+def _local_path_or_exception(path_str: str) -> str:
+    scheme = detect_scheme(path_str)
+    if scheme not in (_StorageScheme.file, _StorageScheme.local_unschemed):
+        raise ConfigValidationError(
+            message="Publish runtime (zip/csv write via local Python tools) requires "
+            "POSIX/local file:// or unschemed paths. Configure a POSIX root_path for publish "
+            "or defer packaging to a delivery layer.",
+            context={
+                "path": path_str,
+                "scheme": scheme.value if scheme else "unknown",
+            },
+        )
+    return strip_file_scheme(path_str)
+
+
+def _copy_file(src: str, dst: str) -> None:
+    src_scheme = detect_scheme(src)
+    dst_scheme = detect_scheme(dst)
+    if (
+        src_scheme in (_StorageScheme.file, _StorageScheme.local_unschemed)
+        and dst_scheme in (_StorageScheme.file, _StorageScheme.local_unschemed)
+    ):
+        shutil.copyfile(strip_file_scheme(src), strip_file_scheme(dst))
+        return
+    data = path_read_bytes(src)
+    path_write_bytes(dst, data, atomic=True)
 
 
 def _validate_publish_output(
@@ -605,13 +670,14 @@ def _validate_publish_output(
 
 def _write_publish_output(
     *,
-    output_path: Path,
+    output_path: str,
     output_format: PublishOutputFormat,
     column_names: list[str],
     rows: list[Row],
 ) -> None:
+    local_output_path = _local_path_or_exception(output_path)
     if output_format == PublishOutputFormat.csv:
-        with output_path.open("w", encoding="utf-8", newline="") as handle:
+        with open(local_output_path, "w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=column_names)
             writer.writeheader()
             for row in rows:
@@ -619,7 +685,7 @@ def _write_publish_output(
         return
 
     if output_format == PublishOutputFormat.tsv:
-        with output_path.open("w", encoding="utf-8", newline="") as handle:
+        with open(local_output_path, "w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=column_names, delimiter="\t")
             writer.writeheader()
             for row in rows:
@@ -627,7 +693,7 @@ def _write_publish_output(
         return
 
     if output_format == PublishOutputFormat.jsonl:
-        with output_path.open("w", encoding="utf-8", newline="") as handle:
+        with open(local_output_path, "w", encoding="utf-8", newline="") as handle:
             for row in rows:
                 handle.write(
                     json.dumps(
@@ -667,37 +733,41 @@ def _build_publish_sql(definition: DiscoveredPublishDefinition) -> str:
 
 
 def _resolve_run_scoped_output_path(
-    root_path: Path,
+    root_path: str,
     run_context: RunContext,
     definition: DiscoveredPublishDefinition,
-) -> Path:
-    rendered_relative_path = _render_output_path_template(run_context, definition)
-    return (
-        root_path
-        / "artifacts"
-        / "level5"
-        / rendered_relative_path.parent
-        / f"run_id={run_context.run_id}"
-        / rendered_relative_path.name
+) -> str:
+    rendered_relative_parent, rendered_relative_name = _render_output_path_template_parts(
+        run_context, definition
+    )
+    return join_paths(
+        root_path,
+        "artifacts",
+        "level5",
+        rendered_relative_parent,
+        f"run_id={run_context.run_id}",
+        rendered_relative_name,
     )
 
 
 def _resolve_stable_delivery_path(
-    root_path: Path,
+    root_path: str,
     run_context: RunContext,
     definition: DiscoveredPublishDefinition,
-) -> Path:
-    rendered_path = _render_output_path_template(run_context, definition)
+) -> str:
+    parent, name = _render_output_path_template_parts(run_context, definition)
     if definition.manifest.delivery.replacement_mode == PublishReplacementMode.append_new_artifact:
-        delivery_name = f"{rendered_path.stem}.run_id={run_context.run_id}{rendered_path.suffix}"
-        rendered_path = rendered_path.with_name(delivery_name)
-    return root_path / "artifacts" / "level5" / rendered_path
+        stem, ext = posixpath.splitext(name)
+        delivery_name = f"{stem}.run_id={run_context.run_id}{ext}"
+    else:
+        delivery_name = name
+    return join_paths(root_path, "artifacts", "level5", parent, delivery_name)
 
 
-def _render_output_path_template(
+def _render_output_path_template_parts(
     run_context: RunContext,
     definition: DiscoveredPublishDefinition,
-) -> Path:
+) -> tuple[str, str]:
     window_label = (
         _string_or_none(run_context.attributes.get("window_label")) or "open_window"
     )
@@ -708,7 +778,10 @@ def _render_output_path_template(
         window_label=window_label,
         output_extension=definition.manifest.delivery.output_format.value,
     )
-    return Path(rendered)
+    normalized = rendered.replace("\\", "/")
+    parent = posixpath.dirname(normalized) or ""
+    name = posixpath.basename(normalized) or "output"
+    return parent, name
 
 
 def _supports_stable_delivery_copy(replacement_mode: PublishReplacementMode) -> bool:

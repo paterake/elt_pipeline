@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from elt_pipeline.ingest.connectors.kafka import (
@@ -15,6 +14,7 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalLevel1Writer
 from elt_pipeline.shared.errors import ConfigValidationError, ErrorCategory, PipelineError
+from elt_pipeline.shared.path_utils import path_exists, path_read_text
 from elt_pipeline.shared.runtime import RunContext
 
 _SAFE_ARTIFACT_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
@@ -31,8 +31,8 @@ class LocalKafkaConnector(KafkaConnectorBase):
         *,
         config: KafkaConnectorConfig,
         run_context: RunContext,
-        root_path: Path,
-        log_path: Path,
+        root_path: str,
+        log_path: str,
     ) -> None:
         super().__init__(config=config, run_context=run_context)
         self.writer = LocalLevel1Writer(root_path)
@@ -41,13 +41,13 @@ class LocalKafkaConnector(KafkaConnectorBase):
 
     def validate_config(self) -> KafkaConnectorConfig:
         config = super().validate_config()
-        if not self.log_path.exists():
+        if not path_exists(self.log_path):
             raise ConfigValidationError(
                 message="Local Kafka connector requires an existing log_path",
                 context={
                     "source_name": config.source_name,
                     "entity_name": config.entity_name,
-                    "log_path": str(self.log_path),
+                    "log_path": self.log_path,
                 },
             )
         return config
@@ -68,48 +68,18 @@ class LocalKafkaConnector(KafkaConnectorBase):
     ) -> list[KafkaMessage]:
         messages: list[KafkaMessage] = []
         try:
-            with self.log_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    document = json.loads(stripped)
-                    topic = str(document.get("topic") or "")
-                    partition = int(document.get("partition", 0))
-                    offset = int(document.get("offset", -1))
-                    if topic != self.config.topic or partition != self.config.partition:
-                        continue
-                    if offset < start_offset:
-                        continue
-
-                    timestamp = _parse_timestamp(document.get("timestamp"))
-                    headers = document.get("headers") or {}
-                    if not isinstance(headers, dict):
-                        headers = {}
-                    key = _coerce_optional_bytes(document.get("key"))
-                    value = _coerce_optional_bytes(document.get("value"))
-                    messages.append(
-                        KafkaMessage(
-                            topic=topic,
-                            partition=partition,
-                            offset=offset,
-                            timestamp=timestamp,
-                            key=key,
-                            value=value,
-                            headers={str(k): str(v) for k, v in headers.items()},
-                            metadata={},
-                        )
-                    )
-        except json.JSONDecodeError as exc:
+            payload = path_read_text(self.log_path, encoding="utf-8")
+        except PipelineError as exc:
             raise PipelineError(
-                message=f"Kafka log_path contained invalid JSON: {exc}",
-                error_code="KAFKA_LOG_INVALID_JSON",
-                error_category=ErrorCategory.input_contract_error,
+                message=f"Kafka log_path read failed: {exc}",
+                error_code="KAFKA_LOG_READ_FAILED",
+                error_category=ErrorCategory.processing_error,
                 retryable=False,
                 context={
                     "source_name": self.config.source_name,
                     "entity_name": self.config.entity_name,
-                    "log_path": str(self.log_path),
+                    "log_path": self.log_path,
+                    "error_type": type(exc).__name__,
                 },
             ) from exc
         except OSError as exc:
@@ -121,8 +91,52 @@ class LocalKafkaConnector(KafkaConnectorBase):
                 context={
                     "source_name": self.config.source_name,
                     "entity_name": self.config.entity_name,
-                    "log_path": str(self.log_path),
+                    "log_path": self.log_path,
                     "error_type": type(exc).__name__,
+                },
+            ) from exc
+        try:
+            for line in payload.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                document = json.loads(stripped)
+                topic = str(document.get("topic") or "")
+                partition = int(document.get("partition", 0))
+                offset = int(document.get("offset", -1))
+                if topic != self.config.topic or partition != self.config.partition:
+                    continue
+                if offset < start_offset:
+                    continue
+
+                timestamp = _parse_timestamp(document.get("timestamp"))
+                headers = document.get("headers") or {}
+                if not isinstance(headers, dict):
+                    headers = {}
+                key = _coerce_optional_bytes(document.get("key"))
+                value = _coerce_optional_bytes(document.get("value"))
+                messages.append(
+                    KafkaMessage(
+                        topic=topic,
+                        partition=partition,
+                        offset=offset,
+                        timestamp=timestamp,
+                        key=key,
+                        value=value,
+                        headers={str(k): str(v) for k, v in headers.items()},
+                        metadata={},
+                    ),
+                )
+        except json.JSONDecodeError as exc:
+            raise PipelineError(
+                message=f"Kafka log_path contained invalid JSON: {exc}",
+                error_code="KAFKA_LOG_INVALID_JSON",
+                error_category=ErrorCategory.input_contract_error,
+                retryable=False,
+                context={
+                    "source_name": self.config.source_name,
+                    "entity_name": self.config.entity_name,
+                    "log_path": self.log_path,
                 },
             ) from exc
 
@@ -189,7 +203,7 @@ class LocalKafkaConnector(KafkaConnectorBase):
                 _safe_artifact_fragment(self.config.topic),
                 f"p{message.partition}",
                 f"o{message.offset}",
-            ]
+            ],
         )
 
 

@@ -124,7 +124,7 @@ def test_build_quality_hook_uses_env_configured_row_count_backend(
     monkeypatch.setenv("ELT_PIPELINE_QUALITY_ROW_COUNT_MIN", "2")
     monkeypatch.setenv("ELT_PIPELINE_QUALITY_POLICY", "blocking")
 
-    adapter = build_quality_hook(tmp_path)
+    adapter = build_quality_hook(str(tmp_path))
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     summary = adapter.evaluate(
         run_context=run_context,
@@ -152,7 +152,7 @@ def test_build_quality_hook_normalizes_env_configured_values(
     monkeypatch.setenv("ELT_PIPELINE_QUALITY_POLICY", " BLOCKING ")
     monkeypatch.setenv("ELT_PIPELINE_QUALITY_STAGES", " Normalize , SQL ")
 
-    adapter = build_quality_hook(tmp_path)
+    adapter = build_quality_hook(str(tmp_path))
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     summary = adapter.evaluate(
         run_context=run_context,
@@ -185,7 +185,7 @@ def test_build_quality_hook_normalizes_env_configured_values(
 def test_quality_hook_records_non_blocking_backend_failures(tmp_path: Path) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     adapter = build_quality_hook(
-        tmp_path,
+        str(tmp_path),
         backend=_FailingQualityBackend(),
         policy=QualityHookPolicy.best_effort,
     )
@@ -230,7 +230,7 @@ def test_build_quality_hook_rejects_invalid_env_configuration(
     monkeypatch.setenv("ELT_PIPELINE_QUALITY_ROW_COUNT_MIN", "abc")
 
     with pytest.raises(ConfigValidationError) as exc_info:
-        build_quality_hook(tmp_path)
+        build_quality_hook(str(tmp_path))
 
     assert exc_info.value.context["row_count_min"] == "abc"
 
@@ -238,7 +238,7 @@ def test_build_quality_hook_rejects_invalid_env_configuration(
 def test_quality_hook_raises_for_blocking_backend_failures(tmp_path: Path) -> None:
     run_context = new_run_context(stage=StageName.sql, job_name="sql-run")
     adapter = build_quality_hook(
-        tmp_path,
+        str(tmp_path),
         backend=_FailingQualityBackend(),
         policy=QualityHookPolicy.blocking,
     )

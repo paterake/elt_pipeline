@@ -119,7 +119,7 @@ def test_local_object_storage_connector_delta_run_copies_files_and_updates_check
             job_name="object-storage-ingest",
             trigger_type="scheduled_batch",
         ),
-        root_path=tmp_path,
+        root_path=str(tmp_path),
     )
 
     result = connector.run()
@@ -137,8 +137,8 @@ def test_local_object_storage_connector_delta_run_copies_files_and_updates_check
     assert result.checkpoint_after["last_synced_at"] == "2026-01-01T10:00:00+00:00"
     assert checkpoint_document.current_checkpoint["last_synced_at"] == "2026-01-01T10:00:00+00:00"
 
-    manifest_paths = [tmp_path / manifest.manifest_path for manifest in result.manifests]
-    data_paths = [tmp_path / manifest.data_path for manifest in result.manifests]
+    manifest_paths = [tmp_path / Path(manifest.manifest_path) for manifest in result.manifests]
+    data_paths = [tmp_path / Path(manifest.data_path) for manifest in result.manifests]
     assert all(path.exists() for path in manifest_paths)
     assert all(path.exists() for path in data_paths)
 
@@ -154,7 +154,7 @@ def test_local_object_storage_connector_uses_saved_checkpoint_on_next_delta_run(
     (bucket / "a.txt").write_text("alpha", encoding="utf-8")
     _set_mtime(bucket / "a.txt", datetime(2026, 1, 1, 9, 0, tzinfo=UTC))
 
-    checkpoint_store = LocalCheckpointStore(tmp_path)
+    checkpoint_store = LocalCheckpointStore(str(tmp_path))
     checkpoint_store.commit(
         environment="dev",
         source_name="file_drop",
@@ -188,7 +188,7 @@ def test_local_object_storage_connector_uses_saved_checkpoint_on_next_delta_run(
             job_name="object-storage-ingest",
             trigger_type="scheduled_batch",
         ),
-        root_path=tmp_path,
+        root_path=str(tmp_path),
     )
 
     result = connector.run()
@@ -205,8 +205,8 @@ def test_local_object_storage_connector_uses_saved_checkpoint_on_next_delta_run(
 class FakeObjectStorageConnector(ObjectStorageConnectorBase):
     def __init__(self, *, tmp_path: Path, run_context) -> None:
         self.call_order: list[str] = []
-        self.writer = LocalLevel1Writer(tmp_path)
-        self.checkpoint_store = LocalCheckpointStore(tmp_path)
+        self.writer = LocalLevel1Writer(str(tmp_path))
+        self.checkpoint_store = LocalCheckpointStore(str(tmp_path))
         super().__init__(
             config=ObjectStorageConnectorConfig(
                 schema_version="v1",
@@ -269,7 +269,7 @@ class FakeObjectStorageConnector(ObjectStorageConnectorBase):
             metadata={"object_key": obj.key},
             ingest_completed_at=datetime(2026, 1, 2, tzinfo=UTC),
         )
-        assert (Path(self.writer.layout.root_path) / manifest.data_path).exists()
+        assert (Path(self.writer.layout.root_path) / Path(manifest.data_path)).exists()
         return manifest
 
     def update_checkpoint(

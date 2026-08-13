@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from pyspark.sql import SparkSession
@@ -27,18 +26,21 @@ from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
+from elt_pipeline.shared.path_utils import path_relative_to
 from elt_pipeline.shared.runtime import RunContext, StageName
 
 
 def _load_payload(payload: Any) -> Any:
-    if isinstance(payload, Path):
+    if isinstance(payload, (bytes, bytearray, memoryview, str, dict, list)):
+        return payload
+    if hasattr(payload, "read_bytes"):
         return payload.read_bytes()
     return payload
 
 
 def normalize_level1_to_local_level2(
     *,
-    root_path: Path,
+    root_path: str,
     run_context: RunContext,
     manifest: Level1ArtifactManifest,
     payload: Any,
@@ -64,7 +66,7 @@ def normalize_level1_to_local_level2(
     completed_at: datetime | None = None
     mapping_version: str | None = None
     table_manifests = []
-    mapping_catalog_path: Path | None = None
+    mapping_catalog_path: str | None = None
     quality_summary: QualityHookSummary | None = None
     failure: PipelineError | None = None
 
@@ -118,7 +120,7 @@ def normalize_level1_to_local_level2(
                 message="Mapping catalog persisted",
                 details={
                     "mapping_version": mapping_version,
-                    "path": mapping_catalog_path.relative_to(root_path).as_posix(),
+                    "path": path_relative_to(mapping_catalog_path, root_path),
                 },
             ),
         )
@@ -209,12 +211,18 @@ def normalize_level1_to_local_level2(
         records_read = manifest.record_count_estimate
         if records_read is None:
             root_table = next(
-                (manifest_table for manifest_table in table_manifests if manifest_table.table_name),
+                (
+                    manifest_table
+                    for manifest_table in table_manifests
+                    if manifest_table.table_name
+                ),
                 None,
             )
             records_read = root_table.record_count if root_table else None
 
-        records_written = sum(table_manifest.record_count for table_manifest in table_manifests)
+        records_written = sum(
+            table_manifest.record_count for table_manifest in table_manifests
+        )
         files_written = len(table_manifests)
         metrics = MetricsSummary(
             records_read=records_read,
@@ -254,7 +262,9 @@ def normalize_level1_to_local_level2(
                 "input_artifact_id": manifest.artifact_id,
                 "input_manifest_path": manifest.manifest_path,
                 "mapping_version": mapping_version or "unknown",
-                "quality_backend_type": quality_summary.backend_type if quality_summary else "",
+                "quality_backend_type": (
+                    quality_summary.backend_type if quality_summary else ""
+                ),
             },
         )
         rerun_of_run_id = run_context.attributes.get("rerun_of_run_id")
@@ -322,7 +332,7 @@ def normalize_level1_to_local_level2(
         )
 
     return Level2WriteSummary(
-        mapping_catalog_path=mapping_catalog_path.relative_to(root_path).as_posix(),
+        mapping_catalog_path=path_relative_to(mapping_catalog_path, root_path),
         table_manifests=table_manifests,
     )
 

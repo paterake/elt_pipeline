@@ -50,6 +50,15 @@ from elt_pipeline.shared.errors import (
 )
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
+from elt_pipeline.shared.path_utils import (
+    _StorageScheme,
+    detect_scheme,
+    join_paths,
+    path_exists,
+    path_normalize,
+    path_read_text,
+    path_rglob,
+)
 from elt_pipeline.shared.runtime import (
     ExecutionWindow,
     StageName,
@@ -73,8 +82,8 @@ from elt_pipeline.sql.models import SqlModelStage
 # Default local scratch locations for runtime output. Both live under a single gitignored
 # `.ignore/` directory so bare commands run from the repo do not pollute the working tree.
 # Override with --root-path / --warehouse-root for real runs.
-_DEFAULT_ROOT_PATH = Path(".ignore/runtime")
-_DEFAULT_WAREHOUSE_ROOT = Path(".ignore/warehouse")
+_DEFAULT_ROOT_PATH = ".ignore/runtime"
+_DEFAULT_WAREHOUSE_ROOT = ".ignore/warehouse"
 
 
 @dataclass(frozen=True)
@@ -141,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_run_parser.add_argument("--environment", default="default")
     ingest_run_parser.add_argument("--source")
     ingest_run_parser.add_argument("--entity")
-    ingest_run_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
+    ingest_run_parser.add_argument("--root-path", type=str, default=_DEFAULT_ROOT_PATH)
     ingest_run_parser.add_argument("--job-name", default="ingest-run")
     ingest_run_parser.add_argument("--trigger-type", default="manual")
     ingest_run_parser.add_argument(
@@ -163,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest_run_parser.add_argument(
         "--kafka-log-path",
-        type=Path,
+        type=str,
         help="Optional override for local Kafka replay log input.",
     )
 
@@ -183,7 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_run_parser.add_argument("--environment", default="default")
     normalize_run_parser.add_argument("--source")
     normalize_run_parser.add_argument("--entity")
-    normalize_run_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
+    normalize_run_parser.add_argument("--root-path", type=str, default=_DEFAULT_ROOT_PATH)
     normalize_run_parser.add_argument("--job-name", default="normalize-run")
     normalize_run_parser.add_argument("--trigger-type", default="manual")
     normalize_run_parser.add_argument(
@@ -207,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest-path",
         action="append",
         default=[],
-        type=Path,
+        type=str,
         help="Explicit level1 manifest path to normalize. May be passed multiple times.",
     )
     normalize_run_parser.add_argument(
@@ -243,11 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--include-deps", action="store_true")
     run_parser.add_argument(
         "--root-path",
-        type=Path,
+        type=str,
         default=_DEFAULT_ROOT_PATH,
         help="Pipeline runtime root containing level1/level2 data and run artifacts.",
     )
-    run_parser.add_argument("--warehouse-root", type=Path, default=_DEFAULT_WAREHOUSE_ROOT)
+    run_parser.add_argument("--warehouse-root", type=str, default=_DEFAULT_WAREHOUSE_ROOT)
     run_parser.add_argument("--job-name", default="sql-run")
     run_parser.add_argument("--trigger-type", default="manual")
     run_parser.add_argument(
@@ -285,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Preview the artifacts a publish run would produce.",
     )
     _add_publish_selection_arguments(publish_explain_parser)
-    publish_explain_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
+    publish_explain_parser.add_argument("--root-path", type=str, default=_DEFAULT_ROOT_PATH)
     publish_explain_parser.add_argument("--job-name", default="publish-explain")
     publish_explain_parser.add_argument("--trigger-type", default="manual")
     publish_explain_parser.add_argument("--window-start")
@@ -302,8 +311,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run publish definitions against a Spark-backed parquet warehouse.",
     )
     _add_publish_selection_arguments(publish_run_parser)
-    publish_run_parser.add_argument("--root-path", type=Path, default=_DEFAULT_ROOT_PATH)
-    publish_run_parser.add_argument("--warehouse-root", type=Path, default=_DEFAULT_WAREHOUSE_ROOT)
+    publish_run_parser.add_argument("--root-path", type=str, default=_DEFAULT_ROOT_PATH)
+    publish_run_parser.add_argument("--warehouse-root", type=str, default=_DEFAULT_WAREHOUSE_ROOT)
     publish_run_parser.add_argument("--job-name", default="publish-run")
     publish_run_parser.add_argument("--trigger-type", default="manual")
     publish_run_parser.add_argument("--window-start")
@@ -822,7 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.publish_command == "run" and rerun_run_id:
                 _validate_publish_rerun_request(args)
                 rerun_selection = _resolve_publish_rerun_selection(
-                    root_path=args.root_path.resolve(),
+                    root_path=path_normalize(args.root_path),
                     rerun_run_id=rerun_run_id,
                 )
                 publish_environment = rerun_selection.environment
@@ -913,7 +922,7 @@ def main(argv: list[str] | None = None) -> int:
                     },
                     "publish_count": len(selected_definitions),
                     "plans": explain_publish_definitions(
-                        root_path=args.root_path.resolve(),
+                        root_path=path_normalize(args.root_path),
                         run_context=run_context,
                         definitions=selected_definitions,
                     ),
@@ -927,7 +936,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 try:
                     result = run_publish_definitions_locally(
-                        root_path=args.root_path.resolve(),
+                        root_path=path_normalize(args.root_path),
                         run_context=run_context,
                         environment=publish_environment,
                         package_path=args.package_path,
@@ -1006,7 +1015,7 @@ def main(argv: list[str] | None = None) -> int:
             continue_on_error = args.continue_on_error or plan.continue_on_error
             payload, exit_code = _run_schedule_plan(
                 plan=plan,
-                plan_path=args.plan_path.resolve(),
+                plan_path=path_normalize(args.plan_path),
                 continue_on_error=continue_on_error,
             )
             print(json.dumps(payload, indent=2))
@@ -1067,7 +1076,7 @@ def _add_publish_selection_arguments(parser: argparse.ArgumentParser) -> None:
 def _run_schedule_plan(
     *,
     plan: SchedulePlan,
-    plan_path: Path,
+    plan_path: str,
     continue_on_error: bool,
 ) -> tuple[dict[str, Any], int]:
     job_results: list[dict[str, Any]] = []
@@ -1343,15 +1352,15 @@ def _resolve_entity_selections(
 def _run_ingest_entity(
     *,
     resolved_config: ResolvedEntityConfig,
-    root_path: Path,
+    root_path: str,
     job_name: str,
     trigger_type: str,
-    kafka_log_path: Path | None,
+    kafka_log_path: str | None,
     cli_window: ExecutionWindow,
     backfill: bool,
 ) -> dict[str, Any]:
     connector_type = resolved_config.connector_type
-    root_path = root_path.resolve()
+    root_path = path_normalize(root_path)
     checkpoint_override = _resolve_checkpoint_override(
         root_path=root_path,
         resolved_config=resolved_config,
@@ -1659,10 +1668,10 @@ def _run_ingest_entity(
 def _resolve_kafka_log_path(
     *,
     resolved_config: ResolvedEntityConfig,
-    explicit_log_path: Path | None,
-) -> Path:
+    explicit_log_path: str | None,
+) -> str:
     if explicit_log_path is not None:
-        return explicit_log_path.resolve()
+        return path_normalize(explicit_log_path)
     candidate = (
         resolved_config.extraction.get("log_path")
         or resolved_config.settings.get("log_path")
@@ -1676,16 +1685,16 @@ def _resolve_kafka_log_path(
                 "entity_name": resolved_config.entity_name,
             },
         )
-    return Path(str(candidate)).resolve()
+    return path_normalize(str(candidate))
 
 
 def _select_level1_manifests(
     *,
-    root_path: Path,
+    root_path: str,
     environment: str,
     source_name: str | None,
     entity_name: str | None,
-    explicit_manifest_paths: list[Path],
+    explicit_manifest_paths: list[str],
     window_start: datetime | None,
     window_end: datetime | None,
 ) -> list[Level1ArtifactManifest]:
@@ -1695,13 +1704,13 @@ def _select_level1_manifests(
             context={"entity_name": entity_name},
         )
 
-    root_path = root_path.resolve()
+    root_path = path_normalize(root_path)
     manifests = [
         _read_level1_manifest(path=manifest_path, root_path=root_path)
         for manifest_path in (
             explicit_manifest_paths
             if explicit_manifest_paths
-            else sorted((root_path / "level1").rglob("*.manifest.json"))
+            else sorted(path_rglob(join_paths(root_path, "level1"), "*.manifest.json"))
         )
     ]
     filtered_manifests = [
@@ -1720,11 +1729,11 @@ def _select_level1_manifests(
         raise ConfigValidationError(
             message="No level1 manifests matched the requested selection",
             context={
-                "root_path": str(root_path),
+                "root_path": root_path,
                 "environment": environment,
                 "source": source_name,
                 "entity": entity_name,
-                "manifest_paths": [str(path) for path in explicit_manifest_paths],
+                "manifest_paths": explicit_manifest_paths,
                 "window_start": _serialize_datetime(window_start),
                 "window_end": _serialize_datetime(window_end),
             },
@@ -1732,19 +1741,22 @@ def _select_level1_manifests(
     return filtered_manifests
 
 
-def _read_level1_manifest(*, path: Path, root_path: Path) -> Level1ArtifactManifest:
-    manifest_path = path if path.is_absolute() else root_path / path
-    if not manifest_path.exists():
+def _read_level1_manifest(*, path: str, root_path: str) -> Level1ArtifactManifest:
+    manifest_path = (
+        path if detect_scheme(path) != _StorageScheme.local_unschemed or path.startswith("/")
+        else join_paths(root_path, path)
+    )
+    if not path_exists(manifest_path):
         raise ConfigValidationError(
             message="Level1 manifest path does not exist",
-            context={"manifest_path": str(manifest_path)},
+            context={"manifest_path": manifest_path},
         )
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload = json.loads(path_read_text(manifest_path, encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ConfigValidationError(
             message=f"Failed to parse level1 manifest JSON: {exc}",
-            context={"manifest_path": str(manifest_path)},
+            context={"manifest_path": manifest_path},
         ) from exc
     try:
         return Level1ArtifactManifest.model_validate(payload)
@@ -1752,7 +1764,7 @@ def _read_level1_manifest(*, path: Path, root_path: Path) -> Level1ArtifactManif
         raise ConfigValidationError(
             message="Level1 manifest validation failed",
             context={
-                "manifest_path": str(manifest_path),
+                "manifest_path": manifest_path,
                 "errors": exc.errors(include_url=False),
             },
         ) from exc
@@ -1760,10 +1772,10 @@ def _read_level1_manifest(*, path: Path, root_path: Path) -> Level1ArtifactManif
 
 def _resolve_normalize_rerun_manifest(
     *,
-    root_path: Path,
+    root_path: str,
     rerun_run_id: str,
 ) -> Level1ArtifactManifest:
-    root_path = root_path.resolve()
+    root_path = path_normalize(root_path)
     audit = _load_stage_audit_record(
         root_path=root_path,
         stage=StageName.normalize,
@@ -1771,7 +1783,7 @@ def _resolve_normalize_rerun_manifest(
     )
     manifest_path = audit.context.get("input_manifest_path")
     if manifest_path:
-        return _read_level1_manifest(path=Path(manifest_path), root_path=root_path)
+        return _read_level1_manifest(path=str(manifest_path), root_path=root_path)
 
     artifact_id = audit.context.get("input_artifact_id")
     if not artifact_id:
@@ -1780,7 +1792,9 @@ def _resolve_normalize_rerun_manifest(
             context={"rerun_run_id": rerun_run_id},
         )
 
-    for candidate_path in sorted((root_path / "level1").rglob("*.manifest.json")):
+    for candidate_path in sorted(
+        path_rglob(join_paths(root_path, "level1"), "*.manifest.json"),
+    ):
         manifest = _read_level1_manifest(path=candidate_path, root_path=root_path)
         if manifest.artifact_id == artifact_id:
             return manifest
@@ -1793,7 +1807,7 @@ def _resolve_normalize_rerun_manifest(
 
 def _resolve_sql_rerun_selection(
     *,
-    root_path: Path,
+    root_path: str,
     rerun_run_id: str,
 ) -> _SqlRerunSelection:
     audit = _load_stage_audit_record(
@@ -1832,7 +1846,7 @@ def _resolve_sql_rerun_selection(
 
 def _resolve_publish_rerun_selection(
     *,
-    root_path: Path,
+    root_path: str,
     rerun_run_id: str,
 ) -> _PublishRerunSelection:
     audit = _load_stage_audit_record(
@@ -1866,37 +1880,42 @@ def _resolve_publish_rerun_selection(
 
 def _load_stage_audit_record(
     *,
-    root_path: Path,
+    root_path: str,
     stage: StageName,
     rerun_run_id: str,
 ) -> AuditRecord:
-    stage_root = root_path.resolve() / "runs" / f"stage={stage.value}"
-    if not stage_root.exists():
+    stage_root = join_paths(path_normalize(root_path), "runs", f"stage={stage.value}")
+    if not path_exists(stage_root):
         raise ConfigValidationError(
             message="No run artifacts exist for the requested stage",
             context={
-                "root_path": str(root_path.resolve()),
+                "root_path": path_normalize(root_path),
                 "stage": stage.value,
                 "rerun_run_id": rerun_run_id,
             },
         )
-    audit_paths = sorted(stage_root.rglob(f"run_id={rerun_run_id}/audit.json"))
+    audit_paths = sorted(
+        path_rglob(
+            stage_root,
+            f"run_id={rerun_run_id}/audit.json",
+        ),
+    )
     if not audit_paths:
         raise ConfigValidationError(
             message="No prior run artifacts matched --rerun-run-id",
             context={
-                "root_path": str(root_path.resolve()),
+                "root_path": path_normalize(root_path),
                 "stage": stage.value,
                 "rerun_run_id": rerun_run_id,
             },
         )
     audit_path = audit_paths[0]
     try:
-        payload = json.loads(audit_path.read_text(encoding="utf-8"))
+        payload = json.loads(path_read_text(audit_path, encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ConfigValidationError(
             message=f"Failed to parse audit artifact JSON: {exc}",
-            context={"audit_path": str(audit_path), "rerun_run_id": rerun_run_id},
+            context={"audit_path": audit_path, "rerun_run_id": rerun_run_id},
         ) from exc
     try:
         return AuditRecord.model_validate(payload)
@@ -1904,7 +1923,7 @@ def _load_stage_audit_record(
         raise ConfigValidationError(
             message="Audit artifact validation failed",
             context={
-                "audit_path": str(audit_path),
+                "audit_path": audit_path,
                 "rerun_run_id": rerun_run_id,
                 "errors": exc.errors(include_url=False),
             },
@@ -1974,7 +1993,7 @@ def _run_normalize_manifest(
     *,
     manifest: Level1ArtifactManifest,
     resolved_config: ResolvedEntityConfig,
-    root_path: Path,
+    root_path: str,
     job_name: str,
     trigger_type: str,
     backfill: bool,
@@ -2019,17 +2038,17 @@ def _run_normalize_manifest(
     if level2_mode == "bypass_level2":
         return _bypass_normalize_manifest(
             manifest=manifest,
-            root_path=root_path.resolve(),
+            root_path=path_normalize(root_path),
             run_context=run_context,
             rerun_run_id=rerun_run_id,
             level2_mode=level2_mode,
         )
 
     summary = normalize_level1_to_local_level2(
-        root_path=root_path.resolve(),
+        root_path=path_normalize(root_path),
         run_context=run_context,
         manifest=manifest,
-        payload=(root_path / manifest.data_path).resolve(),
+        payload=join_paths(path_normalize(root_path), manifest.data_path),
         spark=spark,
         partition_strategy=partition_strategy,
     )
@@ -2052,7 +2071,7 @@ def _run_normalize_manifest(
 def _bypass_normalize_manifest(
     *,
     manifest: Level1ArtifactManifest,
-    root_path: Path,
+    root_path: str,
     run_context,
     rerun_run_id: str | None,
     level2_mode: Level2Mode,
@@ -2201,7 +2220,7 @@ def _manifest_matches_window(
 
 def _resolve_checkpoint_override(
     *,
-    root_path: Path,
+    root_path: str,
     resolved_config: ResolvedEntityConfig,
     window: ExecutionWindow,
     backfill: bool,
@@ -2244,7 +2263,7 @@ class _CliLocalRestConnector(_CliCheckpointOverrideMixin, LocalRestConnector):
         *,
         config: RestConnectorConfig,
         run_context,
-        root_path: Path,
+        root_path: str,
         checkpoint_override: _CheckpointOverride,
         window: ExecutionWindow,
     ) -> None:
@@ -2276,7 +2295,7 @@ class _CliLocalSqlConnector(_CliCheckpointOverrideMixin, LocalSqlConnector):
         *,
         config: SqlConnectorConfig,
         run_context,
-        root_path: Path,
+        root_path: str,
         checkpoint_override: _CheckpointOverride,
         window: ExecutionWindow,
     ) -> None:
@@ -2327,7 +2346,7 @@ class _CliLocalObjectStorageConnector(
         *,
         config: ObjectStorageConnectorConfig,
         run_context,
-        root_path: Path,
+        root_path: str,
         checkpoint_override: _CheckpointOverride,
         window: ExecutionWindow,
     ) -> None:
@@ -2375,8 +2394,8 @@ class _CliLocalKafkaConnector(_CliCheckpointOverrideMixin, LocalKafkaConnector):
         *,
         config: KafkaConnectorConfig,
         run_context,
-        root_path: Path,
-        log_path: Path,
+        root_path: str,
+        log_path: str,
         checkpoint_override: _CheckpointOverride,
         window: ExecutionWindow,
     ) -> None:

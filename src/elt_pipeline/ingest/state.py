@@ -1,26 +1,41 @@
 from __future__ import annotations
 
 import json
+import posixpath
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+from pydantic import ValidationError
 
 from elt_pipeline.ingest.models import CheckpointHistoryEntry, CheckpointStateDocument
 from elt_pipeline.ingest.storage import LocalArtifactLayout
+from elt_pipeline.shared.errors import ConfigValidationError
+from elt_pipeline.shared.path_utils import (
+    path_exists,
+    path_mkdir,
+    path_parent,
+    path_read_text,
+    path_replace,
+    path_with_suffix,
+    path_write_text,
+)
 
 
-def _write_state_file(path: Path, document: CheckpointStateDocument) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(
+def _write_state_file(path: str, document: CheckpointStateDocument) -> None:
+    path_mkdir(path_parent(path), parents=True, exist_ok=True)
+    suf = posixpath.splitext(path)[1] or ".json"
+    temp_path = path_with_suffix(path, f"{suf}.tmp")
+    path_write_text(
+        temp_path,
         json.dumps(document.model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
+        atomic=True,
     )
-    temp_path.replace(path)
+    path_replace(temp_path, path)
 
 
 class LocalCheckpointStore:
-    def __init__(self, root_path: Path) -> None:
+    def __init__(self, root_path: str) -> None:
         self.layout = LocalArtifactLayout(root_path)
 
     def load(
@@ -35,13 +50,25 @@ class LocalCheckpointStore:
             source_name=source_name,
             entity_name=entity_name,
         )
-        if not path.exists():
+        if not path_exists(path):
             return CheckpointStateDocument(
                 environment=environment,
                 source_name=source_name,
                 entity_name=entity_name,
             )
-        return CheckpointStateDocument.model_validate_json(path.read_text(encoding="utf-8"))
+        payload = path_read_text(path, encoding="utf-8")
+        try:
+            return CheckpointStateDocument.model_validate_json(payload)
+        except ValidationError as exc:
+            raise ConfigValidationError(
+                message="Checkpoint state document is malformed",
+                context={
+                    "state_path": path,
+                    "source_name": source_name,
+                    "entity_name": entity_name,
+                    "errors": exc.errors(include_url=False),
+                },
+            ) from exc
 
     def commit(
         self,

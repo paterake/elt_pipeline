@@ -110,7 +110,9 @@ def test_rest_connector_base_persists_before_checkpoint_update(tmp_path: Path) -
     assert result.checkpoint_before == {"page": 3}
     assert result.checkpoint_after == {"page": 4}
     assert checkpoint_document.current_checkpoint == {"page": 4}
-    assert checkpoint_document.history[0].manifest_paths == [result.manifests[0].manifest_path]
+    assert [Path(p) for p in checkpoint_document.history[0].manifest_paths] == [
+        Path(result.manifests[0].manifest_path)
+    ]
 
 
 def test_rest_connector_page_pagination_runs_until_short_page() -> None:
@@ -547,8 +549,8 @@ def test_rest_connector_raises_retryable_timeout_after_attempts_are_exhausted() 
 class FakeRestConnector(RestConnectorBase):
     def __init__(self, *, tmp_path: Path, run_context) -> None:
         self.call_order: list[str] = []
-        self.writer = LocalLevel1Writer(tmp_path)
-        self.checkpoint_store = LocalCheckpointStore(tmp_path)
+        self.writer = LocalLevel1Writer(str(tmp_path))
+        self.checkpoint_store = LocalCheckpointStore(str(tmp_path))
         super().__init__(
             config=RestConnectorConfig(
                 schema_version="v1",

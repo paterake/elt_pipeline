@@ -36,6 +36,7 @@ class PipelineError(Exception):
         context: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
+        self.message = message
         self.error_code = error_code
         self.error_category = error_category
         self.retryable = retryable

@@ -32,16 +32,18 @@ class _FailingRemoteEmitter(LineageRemoteEmitter):
 
 def test_lineage_adapter_writes_local_lineage_artifact(tmp_path: Path) -> None:
     run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
-    adapter = build_lineage_adapter(tmp_path)
+    adapter = build_lineage_adapter(str(tmp_path))
 
-    lineage_path = adapter.emit(
-        run_context=run_context,
-        environment="default",
-        lineage_event=LineageEvent(
-            event_type="START",
-            run_id=run_context.run_id,
-            job_name=run_context.job_name,
-        ),
+    lineage_path = Path(
+        adapter.emit(
+            run_context=run_context,
+            environment="default",
+            lineage_event=LineageEvent(
+                event_type="START",
+                run_id=run_context.run_id,
+                job_name=run_context.job_name,
+            ),
+        )
     )
 
     assert lineage_path.exists()
@@ -53,19 +55,21 @@ def test_lineage_adapter_writes_local_lineage_artifact(tmp_path: Path) -> None:
 def test_lineage_adapter_records_non_blocking_remote_failures(tmp_path: Path) -> None:
     run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
     adapter = build_lineage_adapter(
-        tmp_path,
+        str(tmp_path),
         remote_emitter=_FailingRemoteEmitter(),
         emission_policy=LineageEmissionPolicy.best_effort,
     )
 
-    lineage_path = adapter.emit(
-        run_context=run_context,
-        environment="default",
-        lineage_event=LineageEvent(
-            event_type="COMPLETE",
-            run_id=run_context.run_id,
-            job_name=run_context.job_name,
-        ),
+    lineage_path = Path(
+        adapter.emit(
+            run_context=run_context,
+            environment="default",
+            lineage_event=LineageEvent(
+                event_type="COMPLETE",
+                run_id=run_context.run_id,
+                job_name=run_context.job_name,
+            ),
+        )
     )
 
     run_dir = lineage_path.parent
@@ -80,7 +84,7 @@ def test_lineage_adapter_records_non_blocking_remote_failures(tmp_path: Path) ->
 def test_lineage_adapter_raises_for_blocking_remote_failures(tmp_path: Path) -> None:
     run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
     adapter = build_lineage_adapter(
-        tmp_path,
+        str(tmp_path),
         remote_emitter=_FailingRemoteEmitter(),
         emission_policy=LineageEmissionPolicy.blocking,
     )
@@ -141,16 +145,18 @@ def test_build_lineage_adapter_uses_env_configured_openlineage_http_backend(
     monkeypatch.setattr("elt_pipeline.integrations.lineage.urlopen", _fake_urlopen)
 
     run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
-    adapter = build_lineage_adapter(tmp_path)
+    adapter = build_lineage_adapter(str(tmp_path))
 
-    lineage_path = adapter.emit(
-        run_context=run_context,
-        environment="default",
-        lineage_event=LineageEvent(
-            event_type="COMPLETE",
-            run_id=run_context.run_id,
-            job_name=run_context.job_name,
-        ),
+    lineage_path = Path(
+        adapter.emit(
+            run_context=run_context,
+            environment="default",
+            lineage_event=LineageEvent(
+                event_type="COMPLETE",
+                run_id=run_context.run_id,
+                job_name=run_context.job_name,
+            ),
+        )
     )
 
     assert lineage_path.exists()
@@ -204,16 +210,18 @@ def test_build_lineage_adapter_normalizes_env_configured_values(
     monkeypatch.setattr("elt_pipeline.integrations.lineage.urlopen", _fake_urlopen)
 
     run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
-    adapter = build_lineage_adapter(tmp_path)
+    adapter = build_lineage_adapter(str(tmp_path))
 
-    lineage_path = adapter.emit(
-        run_context=run_context,
-        environment="default",
-        lineage_event=LineageEvent(
-            event_type="COMPLETE",
-            run_id=run_context.run_id,
-            job_name=run_context.job_name,
-        ),
+    lineage_path = Path(
+        adapter.emit(
+            run_context=run_context,
+            environment="default",
+            lineage_event=LineageEvent(
+                event_type="COMPLETE",
+                run_id=run_context.run_id,
+                job_name=run_context.job_name,
+            ),
+        )
     )
 
     assert lineage_path.exists()
@@ -232,7 +240,7 @@ def test_build_lineage_adapter_rejects_invalid_env_configuration(
     monkeypatch.setenv("ELT_PIPELINE_LINEAGE_URL", "not-a-url")
 
     with pytest.raises(ConfigValidationError) as exc_info:
-        build_lineage_adapter(tmp_path)
+        build_lineage_adapter(str(tmp_path))
 
     assert exc_info.value.context["endpoint_url"] == "not-a-url"
 
@@ -265,7 +273,7 @@ def test_openlineage_http_emitter_surfaces_retryable_backend_errors(
 
     run_context = new_run_context(stage=StageName.shared, job_name="lineage-test")
     adapter = build_lineage_adapter(
-        tmp_path,
+        str(tmp_path),
         remote_emitter=OpenLineageHttpEmitter(
             endpoint_url="https://lineage.example.test/api/v1/lineage",
             timeout_seconds=2.0,
@@ -273,14 +281,16 @@ def test_openlineage_http_emitter_surfaces_retryable_backend_errors(
         emission_policy=LineageEmissionPolicy.best_effort,
     )
 
-    lineage_path = adapter.emit(
-        run_context=run_context,
-        environment="default",
-        lineage_event=LineageEvent(
-            event_type="START",
-            run_id=run_context.run_id,
-            job_name=run_context.job_name,
-        ),
+    lineage_path = Path(
+        adapter.emit(
+            run_context=run_context,
+            environment="default",
+            lineage_event=LineageEvent(
+                event_type="START",
+                run_id=run_context.run_id,
+                job_name=run_context.job_name,
+            ),
+        )
     )
 
     run_dir = lineage_path.parent

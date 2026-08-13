@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import posixpath
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from elt_pipeline.ingest.connectors.object_storage import (
@@ -15,6 +16,18 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalLevel1Writer
 from elt_pipeline.shared.errors import ConfigValidationError, ErrorCategory, PipelineError
+from elt_pipeline.shared.path_utils import (
+    _StorageScheme,
+    detect_scheme,
+    join_paths,
+    path_exists,
+    path_glob,
+    path_is_dir,
+    path_read_bytes,
+    path_relative_to,
+    path_rglob,
+    strip_file_scheme,
+)
 from elt_pipeline.shared.runtime import RunContext
 
 _SAFE_ARTIFACT_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
@@ -31,7 +44,7 @@ class LocalObjectStorageConnector(ObjectStorageConnectorBase):
         *,
         config: ObjectStorageConnectorConfig,
         run_context: RunContext,
-        root_path: Path,
+        root_path: str,
     ) -> None:
         super().__init__(config=config, run_context=run_context)
         self.writer = LocalLevel1Writer(root_path)
@@ -39,8 +52,8 @@ class LocalObjectStorageConnector(ObjectStorageConnectorBase):
 
     def validate_config(self) -> ObjectStorageConnectorConfig:
         config = super().validate_config()
-        bucket_path = Path(config.bucket_path)
-        if not bucket_path.exists():
+        bucket_path = config.bucket_path
+        if not path_exists(bucket_path):
             raise ConfigValidationError(
                 message="object_storage bucket_path does not exist",
                 context={
@@ -49,7 +62,7 @@ class LocalObjectStorageConnector(ObjectStorageConnectorBase):
                     "bucket_path": config.bucket_path,
                 },
             )
-        if not bucket_path.is_dir():
+        if not path_is_dir(bucket_path):
             raise ConfigValidationError(
                 message="object_storage bucket_path must be a directory for local mode",
                 context={
@@ -75,40 +88,55 @@ class LocalObjectStorageConnector(ObjectStorageConnectorBase):
     ) -> list[ObjectStorageObject]:
         del checkpoint_before
 
-        bucket_path = Path(self.config.bucket_path)
-        base_dir = bucket_path
-        search_dir = base_dir
-        if self.config.prefix:
-            search_dir = base_dir / self.config.prefix
-            if not search_dir.exists():
-                return []
+        base_dir = self.config.bucket_path
+        search_dir = (
+            join_paths(base_dir, self.config.prefix) if self.config.prefix else base_dir
+        )
+        if self.config.prefix and not path_exists(search_dir):
+            return []
 
-        candidates = (
-            search_dir.rglob("*") if self.config.recursive else search_dir.glob("*")
+        candidate_paths = (
+            path_rglob(search_dir, "*")
+            if self.config.recursive
+            else path_glob(search_dir, "*")
         )
         objects: list[ObjectStorageObject] = []
-        for candidate in candidates:
-            if not candidate.is_file():
+        for candidate in candidate_paths:
+            if path_is_dir(candidate):
                 continue
-            stat = candidate.stat()
-            key = candidate.relative_to(base_dir).as_posix()
+            last_modified: datetime | None = None
+            size_bytes: int = 0
+            scheme = detect_scheme(candidate)
+            if scheme in (_StorageScheme.file, _StorageScheme.local_unschemed):
+                local_path = strip_file_scheme(candidate)
+                try:
+                    import os
+
+                    stat = os.stat(local_path)
+                    size_bytes = stat.st_size
+                    last_modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
+                except OSError:
+                    size_bytes = 0
+            else:
+                size_bytes = 0
+            key = path_relative_to(candidate, base_dir)
             objects.append(
                 ObjectStorageObject(
                     key=key,
-                    size_bytes=stat.st_size,
-                    last_modified=datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-                    metadata={"source_path": str(candidate)},
-                )
+                    size_bytes=size_bytes,
+                    last_modified=last_modified,
+                    metadata={"source_path": candidate},
+                ),
             )
 
         objects.sort(key=lambda obj: obj.key)
         return objects
 
     def read_object(self, obj: ObjectStorageObject) -> bytes:
-        path = Path(self.config.bucket_path) / obj.key
+        path = join_paths(self.config.bucket_path, obj.key)
         try:
-            return path.read_bytes()
-        except OSError as exc:
+            return path_read_bytes(path)
+        except (PipelineError, OSError) as exc:
             raise PipelineError(
                 message=f"Failed to read object {obj.key}: {exc}",
                 error_code="OBJECT_STORAGE_READ_FAILED",
@@ -130,7 +158,7 @@ class LocalObjectStorageConnector(ObjectStorageConnectorBase):
         payload: bytes,
         checkpoint_before: dict[str, Any] | None,
     ) -> Level1ArtifactManifest:
-        suffix = Path(obj.key).suffix.lstrip(".")
+        suffix = posixpath.splitext(obj.key)[1].lstrip(".")
         file_extension = suffix or None
         artifact_name = self._artifact_name_for_key(obj.key)
         return self.writer.write_payload(
@@ -181,7 +209,7 @@ class LocalObjectStorageConnector(ObjectStorageConnectorBase):
         normalized = _safe_artifact_fragment(key.replace(os.sep, "/").replace("/", "_"))
         if len(normalized) <= 120:
             return normalized
-        digest = abs(hash(key))
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         prefix = normalized[:80]
         return f"{prefix}-{digest}"
 

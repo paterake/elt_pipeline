@@ -234,8 +234,8 @@ class PublishValidationResult(BaseModel):
 
 class PublishArtifactRecord(BaseModel):
     output_format: PublishOutputFormat
-    run_scoped_path: Path
-    stable_delivery_path: Path | None = None
+    run_scoped_path: str
+    stable_delivery_path: str | None = None
     file_size_bytes: int
     row_count: int
     checksum_sha256: str
@@ -261,13 +261,13 @@ class PublishOutputManifest(BaseModel):
 
 
 class PublishRunArtifacts(BaseModel):
-    artifact_root: Path
-    run_dir: Path
-    export_manifest_path: Path | None = None
-    audit_path: Path | None = None
-    log_path: Path | None = None
-    lineage_path: Path | None = None
-    error_path: Path | None = None
+    artifact_root: str
+    run_dir: str
+    export_manifest_path: str | None = None
+    audit_path: str | None = None
+    log_path: str | None = None
+    lineage_path: str | None = None
+    error_path: str | None = None
 
 
 class PublishRunResult(BaseModel):

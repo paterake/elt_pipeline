@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -14,6 +13,20 @@ from elt_pipeline.shared.audit import AuditRecord
 from elt_pipeline.shared.errors import ErrorCategory, ErrorRecord, PipelineError
 from elt_pipeline.shared.lineage import LineageEvent
 from elt_pipeline.shared.logging import ExecutionLogEvent
+from elt_pipeline.shared.path_utils import (
+    join_paths,
+    path_basename,
+    path_exists,
+    path_mkdir,
+    path_normalize,
+    path_parent,
+    path_relative_to,
+    path_replace,
+    path_write_bytes,
+    path_write_text,
+    path_open_for_append,
+    path_with_suffix,
+)
 from elt_pipeline.shared.runtime import RunContext
 
 _SAFE_PATH_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
@@ -33,18 +46,23 @@ def _sanitize_path_fragment(value: str) -> str:
     return cleaned or "unknown"
 
 
-def _write_json_file(path: Path, payload: BaseModel | dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _write_json_file(path: str, payload: BaseModel | dict[str, Any]) -> None:
+    path_mkdir(path_parent(path), parents=True, exist_ok=True)
     data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    temp_path.replace(path)
+    temp_path = path_with_suffix(path, f".json.tmp")
+    path_write_text(
+        temp_path,
+        json.dumps(data, indent=2, sort_keys=True),
+        encoding="utf-8",
+        atomic=True,
+    )
+    path_replace(temp_path, path)
 
 
-def _append_jsonl_file(path: Path, payload: BaseModel | dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _append_jsonl_file(path: str, payload: BaseModel | dict[str, Any]) -> None:
+    path_mkdir(path_parent(path), parents=True, exist_ok=True)
     data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
-    with path.open("a", encoding="utf-8") as handle:
+    with path_open_for_append(path, encoding="utf-8") as handle:
         handle.write(json.dumps(data, sort_keys=True))
         handle.write("\n")
 
@@ -56,8 +74,8 @@ _NO_ENV_IN_PATH_MESSAGE = (
 
 
 class LocalArtifactLayout:
-    def __init__(self, root_path: Path) -> None:
-        self.root_path = root_path
+    def __init__(self, root_path: str) -> None:
+        self.root_path: str = path_normalize(root_path)
 
     def level1_run_dir(
         self,
@@ -68,47 +86,47 @@ class LocalArtifactLayout:
         ingested_at: datetime,
         run_id: str,
         window_label: str | None = None,
-    ) -> Path:
+    ) -> str:
         _ = environment
-        path = (
-            self.root_path
-            / "level1"
-            / f"source={_sanitize_path_fragment(source_name)}"
-            / f"entity={_sanitize_path_fragment(entity_name)}"
-            / f"ingest_date={ingested_at.date().isoformat()}"
-        )
+        segments = [
+            "level1",
+            f"source={_sanitize_path_fragment(source_name)}",
+            f"entity={_sanitize_path_fragment(entity_name)}",
+            f"ingest_date={ingested_at.date().isoformat()}",
+        ]
         if window_label:
-            path /= f"window={_sanitize_path_fragment(window_label)}"
-        result = path / f"run_id={run_id}"
-        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+            segments.append(f"window={_sanitize_path_fragment(window_label)}")
+        segments.append(f"run_id={run_id}")
+        result = join_paths(self.root_path, *segments)
+        assert "environment=" not in result, _NO_ENV_IN_PATH_MESSAGE
         return result
 
-    def run_dir(self, *, run_context: RunContext, environment: str) -> Path:
+    def run_dir(self, *, run_context: RunContext, environment: str) -> str:
         _ = environment
-        result = (
-            self.root_path
-            / "runs"
-            / f"stage={run_context.stage.value}"
-            / f"job={_sanitize_path_fragment(run_context.job_name)}"
-            / f"run_id={run_context.run_id}"
+        result = join_paths(
+            self.root_path,
+            "runs",
+            f"stage={run_context.stage.value}",
+            f"job={_sanitize_path_fragment(run_context.job_name)}",
+            f"run_id={run_context.run_id}",
         )
-        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+        assert "environment=" not in result, _NO_ENV_IN_PATH_MESSAGE
         return result
 
-    def state_file(self, *, environment: str, source_name: str, entity_name: str) -> Path:
+    def state_file(self, *, environment: str, source_name: str, entity_name: str) -> str:
         _ = environment
-        result = (
-            self.root_path
-            / "state"
-            / f"source={_sanitize_path_fragment(source_name)}"
-            / f"entity={_sanitize_path_fragment(entity_name)}.json"
+        result = join_paths(
+            self.root_path,
+            "state",
+            f"source={_sanitize_path_fragment(source_name)}",
+            f"entity={_sanitize_path_fragment(entity_name)}.json",
         )
-        assert "environment=" not in result.as_posix(), _NO_ENV_IN_PATH_MESSAGE
+        assert "environment=" not in result, _NO_ENV_IN_PATH_MESSAGE
         return result
 
 
 class LocalLevel1Writer:
-    def __init__(self, root_path: Path) -> None:
+    def __init__(self, root_path: str) -> None:
         self.layout = LocalArtifactLayout(root_path)
 
     def write_payload(
@@ -141,7 +159,9 @@ class LocalLevel1Writer:
         base_name = artifact_name or (
             f"{_sanitize_path_fragment(entity_name)}-{run_context.run_id[:8]}"
         )
-        file_name = f"{_sanitize_path_fragment(base_name)}.{extension}" if extension else base_name
+        file_name = (
+            f"{_sanitize_path_fragment(base_name)}.{extension}" if extension else base_name
+        )
 
         data_dir = self.layout.level1_run_dir(
             environment=environment,
@@ -151,24 +171,28 @@ class LocalLevel1Writer:
             run_id=run_context.run_id,
             window_label=window_label,
         )
-        data_path = data_dir / file_name
-        if data_path.exists():
+        data_path = join_paths(data_dir, file_name)
+
+        if path_exists(data_path):
             raise PipelineError(
                 message=f"Refusing to overwrite existing level1 artifact: {data_path}",
                 error_code="LEVEL1_ARTIFACT_EXISTS",
                 error_category=ErrorCategory.storage_write_error,
                 retryable=False,
-                context={"path": str(data_path)},
+                context={"path": data_path},
             )
 
-        data_path.parent.mkdir(parents=True, exist_ok=True)
-        data_path.write_bytes(payload_bytes)
+        path_mkdir(path_parent(data_path), parents=True, exist_ok=True)
+        path_write_bytes(data_path, payload_bytes, atomic=True)
 
-        manifest_path = data_path.with_name(f"{data_path.name}.manifest.json")
-        relative_data_path = data_path.relative_to(self.layout.root_path).as_posix()
-        relative_manifest_path = manifest_path.relative_to(self.layout.root_path).as_posix()
+        manifest_path = join_paths(
+            data_dir,
+            f"{path_basename(data_path)}.manifest.json",
+        )
+        relative_data_path = path_relative_to(data_path, self.layout.root_path)
+        relative_manifest_path = path_relative_to(manifest_path, self.layout.root_path)
         artifact_id = hashlib.sha256(
-            f"{run_context.run_id}:{relative_data_path}".encode("utf-8")
+            f"{run_context.run_id}:{relative_data_path}".encode("utf-8"),
         ).hexdigest()[:24]
         manifest = Level1ArtifactManifest(
             artifact_id=artifact_id,
@@ -200,7 +224,7 @@ class LocalLevel1Writer:
 
 
 class LocalArtifactStore:
-    def __init__(self, root_path: Path) -> None:
+    def __init__(self, root_path: str) -> None:
         self.layout = LocalArtifactLayout(root_path)
 
     def write_audit_record(
@@ -209,8 +233,11 @@ class LocalArtifactStore:
         run_context: RunContext,
         environment: str,
         audit_record: AuditRecord,
-    ) -> Path:
-        path = self.layout.run_dir(run_context=run_context, environment=environment) / "audit.json"
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "audit.json",
+        )
         _write_json_file(path, audit_record)
         return path
 
@@ -220,8 +247,11 @@ class LocalArtifactStore:
         run_context: RunContext,
         environment: str,
         log_event: ExecutionLogEvent,
-    ) -> Path:
-        path = self.layout.run_dir(run_context=run_context, environment=environment) / "logs.jsonl"
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "logs.jsonl",
+        )
         _append_jsonl_file(path, log_event)
         return path
 
@@ -231,10 +261,10 @@ class LocalArtifactStore:
         run_context: RunContext,
         environment: str,
         error_record: ErrorRecord,
-    ) -> Path:
-        path = (
-            self.layout.run_dir(run_context=run_context, environment=environment)
-            / "errors.jsonl"
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "errors.jsonl",
         )
         _append_jsonl_file(path, error_record)
         return path
@@ -245,10 +275,10 @@ class LocalArtifactStore:
         run_context: RunContext,
         environment: str,
         lineage_event: LineageEvent,
-    ) -> Path:
-        path = (
-            self.layout.run_dir(run_context=run_context, environment=environment)
-            / "lineage.jsonl"
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "lineage.jsonl",
         )
         _append_jsonl_file(path, lineage_event)
         return path

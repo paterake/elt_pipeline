@@ -60,7 +60,7 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(
     }
 
     summary = normalize_level1_to_local_level2(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=run_context,
         manifest=manifest,
         payload=payload,
@@ -69,8 +69,8 @@ def test_normalize_pipeline_writes_level2_tables_emits_lineage_and_audit(
 
     assert summary.table_manifests
     for table_manifest in summary.table_manifests:
-        data_path = tmp_path / table_manifest.data_path
-        manifest_path = tmp_path / table_manifest.manifest_path
+        data_path = Path(str(tmp_path / table_manifest.data_path))
+        manifest_path = Path(str(tmp_path / table_manifest.manifest_path))
         assert data_path.is_dir()
         assert manifest_path.exists()
         assert "/ingest_date=2026-01-01/" in table_manifest.data_path
@@ -120,7 +120,7 @@ def test_partition_strategy_supports_none_mode(tmp_path: Path, spark_session) ->
     payload = {"order_id": "A-100"}
 
     summary = normalize_level1_to_local_level2(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=run_context,
         manifest=manifest,
         payload=payload,
@@ -138,7 +138,7 @@ def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path, spark_session)
     payload = "order_id,amount,status\nA-100,10,open\nA-200,25,closed\n"
 
     summary = normalize_level1_to_local_level2(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=run_context,
         manifest=manifest,
         payload=payload,
@@ -148,7 +148,7 @@ def test_normalize_pipeline_supports_csv_payloads(tmp_path: Path, spark_session)
     assert len(summary.table_manifests) == 1
     table_manifest = summary.table_manifests[0]
     assert table_manifest.table_name == "orders"
-    data_path = tmp_path / table_manifest.data_path
+    data_path = Path(str(tmp_path / table_manifest.data_path))
     written_df = spark_session.read.parquet(str(data_path))
     written_rows = sorted(
         (row.asDict() for row in written_df.collect()),
@@ -171,10 +171,10 @@ def test_normalize_pipeline_captures_quality_results_in_audit(
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
-    quality_hook = build_quality_hook(tmp_path, backend=_PassingNormalizeQualityBackend())
+    quality_hook = build_quality_hook(str(tmp_path), backend=_PassingNormalizeQualityBackend())
 
     summary = normalize_level1_to_local_level2(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=run_context,
         manifest=manifest,
         payload=payload,
@@ -207,14 +207,14 @@ def test_normalize_pipeline_fails_for_blocking_quality_results(
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
     quality_hook = build_quality_hook(
-        tmp_path,
+        str(tmp_path),
         backend=_FailingNormalizeQualityBackend(),
         policy=QualityHookPolicy.blocking,
     )
 
     with pytest.raises(PipelineError, match="Quality checks failed"):
         normalize_level1_to_local_level2(
-            root_path=tmp_path,
+            root_path=str(tmp_path),
             run_context=run_context,
             manifest=manifest,
             payload=payload,
@@ -246,14 +246,14 @@ def test_normalize_pipeline_records_single_error_for_blocking_quality_backend_fa
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
     quality_hook = build_quality_hook(
-        tmp_path,
+        str(tmp_path),
         backend=_ExplodingNormalizeQualityBackend(),
         policy=QualityHookPolicy.blocking,
     )
 
     with pytest.raises(PipelineError, match="Optional data-quality backend execution failed"):
         normalize_level1_to_local_level2(
-            root_path=tmp_path,
+            root_path=str(tmp_path),
             run_context=run_context,
             manifest=manifest,
             payload=payload,
@@ -285,13 +285,13 @@ def test_normalize_pipeline_logs_warning_for_non_blocking_quality_results(
     manifest = build_manifest()
     payload = {"order_id": "A-100"}
     quality_hook = build_quality_hook(
-        tmp_path,
+        str(tmp_path),
         backend=_WarningNormalizeQualityBackend(),
         policy=QualityHookPolicy.best_effort,
     )
 
     normalize_level1_to_local_level2(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=run_context,
         manifest=manifest,
         payload=payload,
@@ -331,7 +331,7 @@ def test_level2_writer_safety_net_injects_missing_lineage_columns(
         ],
     )
 
-    writer = SparkLevel2Writer(root_path=tmp_path, spark=spark_session)
+    writer = SparkLevel2Writer(root_path=str(tmp_path), spark=spark_session)
     table_manifest = writer.write_table(
         run_context=run_context,
         manifest=manifest,
@@ -340,7 +340,7 @@ def test_level2_writer_safety_net_injects_missing_lineage_columns(
         partition={},
     )
 
-    data_path = tmp_path / table_manifest.data_path
+    data_path = Path(str(tmp_path / table_manifest.data_path))
     written_df = spark_session.read.parquet(str(data_path))
     assert written_df.count() == 2
     assert "source_name" in written_df.columns
@@ -374,7 +374,7 @@ def test_level2_writer_safety_net_does_not_overwrite_existing_lineage_columns(
         ],
     )
 
-    writer = SparkLevel2Writer(root_path=tmp_path, spark=spark_session)
+    writer = SparkLevel2Writer(root_path=str(tmp_path), spark=spark_session)
     table_manifest = writer.write_table(
         run_context=run_context,
         manifest=manifest,
@@ -383,7 +383,7 @@ def test_level2_writer_safety_net_does_not_overwrite_existing_lineage_columns(
         partition={},
     )
 
-    data_path = tmp_path / table_manifest.data_path
+    data_path = Path(str(tmp_path / table_manifest.data_path))
     written_df = spark_session.read.parquet(str(data_path))
     written_row = written_df.collect()[0]
     assert written_row["source_name"] == "custom_source"

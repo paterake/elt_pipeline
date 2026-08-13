@@ -62,11 +62,11 @@ def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(
     definitions = discover_publish_definitions(package_root)
 
     result = run_publish_definitions_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        warehouse_root=warehouse_root,
+        warehouse_root=str(warehouse_root),
         spark=spark_session,
         definitions=definitions,
     )
@@ -75,16 +75,17 @@ def test_run_publish_definitions_locally_writes_csv_manifest_and_artifacts(
     assert result.artifacts.audit_path is not None
     assert result.artifacts.log_path is not None
     assert result.artifacts.lineage_path is not None
-    assert result.artifacts.audit_path.exists()
-    assert result.artifacts.log_path.exists()
-    assert result.artifacts.lineage_path.exists()
+    assert Path(result.artifacts.audit_path).exists()
+    assert Path(result.artifacts.log_path).exists()
+    assert Path(result.artifacts.lineage_path).exists()
 
     artifact = result.results[0].artifacts[0]
-    manifest_path = artifact.run_scoped_path.parent / "manifest.json"
+    run_scoped_path = Path(artifact.run_scoped_path)
+    manifest_path = run_scoped_path.parent / "manifest.json"
     assert artifact.row_count == 2
-    assert artifact.run_scoped_path.exists()
+    assert run_scoped_path.exists()
     assert artifact.stable_delivery_path is not None
-    assert artifact.stable_delivery_path.exists()
+    assert Path(artifact.stable_delivery_path).exists()
     assert manifest_path.exists()
 
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -106,21 +107,22 @@ def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(
     definitions = discover_publish_definitions(package_root)
 
     result = run_publish_definitions_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        warehouse_root=warehouse_root,
+        warehouse_root=str(warehouse_root),
         spark=spark_session,
         definitions=definitions,
     )
 
     artifact = result.results[0].artifacts[0]
-    manifest_path = artifact.run_scoped_path.parent / "manifest.json"
-    lines = artifact.run_scoped_path.read_text(encoding="utf-8").strip().splitlines()
+    run_scoped_path = Path(artifact.run_scoped_path)
+    manifest_path = run_scoped_path.parent / "manifest.json"
+    lines = run_scoped_path.read_text(encoding="utf-8").strip().splitlines()
 
     assert artifact.row_count == 2
-    assert artifact.run_scoped_path.suffix == ".jsonl"
+    assert run_scoped_path.suffix == ".jsonl"
     assert artifact.stable_delivery_path is None
     assert len(lines) == 2
     assert json.loads(lines[0]) == {"order_date": "2026-01-01", "total_amount": 10}
@@ -143,21 +145,22 @@ def test_run_publish_definitions_locally_writes_tsv_manifest_and_artifacts(
     definitions = discover_publish_definitions(package_root)
 
     result = run_publish_definitions_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        warehouse_root=warehouse_root,
+        warehouse_root=str(warehouse_root),
         spark=spark_session,
         definitions=definitions,
     )
 
     artifact = result.results[0].artifacts[0]
-    manifest_path = artifact.run_scoped_path.parent / "manifest.json"
-    header = artifact.run_scoped_path.read_text(encoding="utf-8").splitlines()[0]
+    run_scoped_path = Path(artifact.run_scoped_path)
+    manifest_path = run_scoped_path.parent / "manifest.json"
+    header = run_scoped_path.read_text(encoding="utf-8").splitlines()[0]
 
     assert artifact.output_format.value == "tsv"
-    assert artifact.run_scoped_path.suffix == ".tsv"
+    assert run_scoped_path.suffix == ".tsv"
     assert "\t" in header
     assert manifest_path.exists()
 
@@ -175,11 +178,11 @@ def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(
     definitions = discover_publish_definitions(package_root)
 
     result = run_publish_definitions_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.publish, job_name="publish-run"),
         environment="default",
         package_path=package_root,
-        warehouse_root=warehouse_root,
+        warehouse_root=str(warehouse_root),
         spark=spark_session,
         definitions=definitions,
     )
@@ -190,15 +193,16 @@ def test_run_publish_definitions_locally_writes_zip_bundle_when_configured(
     assert set(artifacts_by_format) == {"csv", "zip"}
 
     zip_artifact = artifacts_by_format["zip"]
-    assert zip_artifact.run_scoped_path.suffix == ".zip"
-    assert zip_artifact.run_scoped_path.exists()
+    zip_run_scoped_path = Path(zip_artifact.run_scoped_path)
+    assert zip_run_scoped_path.suffix == ".zip"
+    assert zip_run_scoped_path.exists()
     assert zip_artifact.stable_delivery_path is not None
-    assert zip_artifact.stable_delivery_path.exists()
+    assert Path(zip_artifact.stable_delivery_path).exists()
 
-    with zipfile.ZipFile(zip_artifact.run_scoped_path, "r") as handle:
+    with zipfile.ZipFile(zip_run_scoped_path, "r") as handle:
         assert any(member.endswith(".csv") for member in handle.namelist())
 
-    manifest_path = zip_artifact.run_scoped_path.parent / "manifest.json"
+    manifest_path = zip_run_scoped_path.parent / "manifest.json"
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert sorted(
         artifact["output_format"] for artifact in manifest_payload["artifacts"]
@@ -219,20 +223,20 @@ def test_run_publish_definitions_locally_appends_new_delivery_artifacts(
     second_context = new_run_context(stage=StageName.publish, job_name="publish-run")
 
     first_result = run_publish_definitions_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=first_context,
         environment="default",
         package_path=package_root,
-        warehouse_root=warehouse_root,
+        warehouse_root=str(warehouse_root),
         spark=spark_session,
         definitions=definitions,
     )
     second_result = run_publish_definitions_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=second_context,
         environment="default",
         package_path=package_root,
-        warehouse_root=warehouse_root,
+        warehouse_root=str(warehouse_root),
         spark=spark_session,
         definitions=definitions,
     )
@@ -242,11 +246,13 @@ def test_run_publish_definitions_locally_appends_new_delivery_artifacts(
 
     assert first_artifact.stable_delivery_path is not None
     assert second_artifact.stable_delivery_path is not None
-    assert first_artifact.stable_delivery_path.exists()
-    assert second_artifact.stable_delivery_path.exists()
-    assert first_artifact.stable_delivery_path != second_artifact.stable_delivery_path
-    assert f"run_id={first_context.run_id}" in first_artifact.stable_delivery_path.name
-    assert f"run_id={second_context.run_id}" in second_artifact.stable_delivery_path.name
+    first_stable_path = Path(first_artifact.stable_delivery_path)
+    second_stable_path = Path(second_artifact.stable_delivery_path)
+    assert first_stable_path.exists()
+    assert second_stable_path.exists()
+    assert first_stable_path != second_stable_path
+    assert f"run_id={first_context.run_id}" in first_stable_path.name
+    assert f"run_id={second_context.run_id}" in second_stable_path.name
 
 
 def _write_publish_package(

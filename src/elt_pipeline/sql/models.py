@@ -185,7 +185,7 @@ class SqlModelPlan(BaseModel):
 
 
 class SqlExecutionResult(BaseModel):
-    warehouse_root: Path
+    warehouse_root: str
     executed_models: list[SqlExecutionRecord] = Field(default_factory=list)
     model_validations: list[SqlModelValidationSummary] = Field(default_factory=list)
 
@@ -195,7 +195,7 @@ class SqlExecutionResult(BaseModel):
 
 
 class SqlPlanningResult(BaseModel):
-    warehouse_root: Path
+    warehouse_root: str
     planned_models: list[SqlModelPlan] = Field(default_factory=list)
 
     @property
@@ -204,12 +204,12 @@ class SqlPlanningResult(BaseModel):
 
 
 class SqlRunArtifacts(BaseModel):
-    artifact_root: Path
-    run_dir: Path
-    audit_path: Path | None = None
-    log_path: Path | None = None
-    lineage_path: Path | None = None
-    error_path: Path | None = None
+    artifact_root: str
+    run_dir: str
+    audit_path: str | None = None
+    log_path: str | None = None
+    lineage_path: str | None = None
+    error_path: str | None = None
 
 
 class SqlStageRunResult(BaseModel):

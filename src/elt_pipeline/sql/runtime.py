@@ -23,6 +23,7 @@ from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
+from elt_pipeline.shared.path_utils import join_paths
 from elt_pipeline.shared.runtime import RunContext, StageName
 from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.models import (
@@ -37,11 +38,11 @@ from elt_pipeline.sql.spark_executor import SparkSqlModelExecutor
 
 def run_sql_models_locally(
     *,
-    root_path: Path,
+    root_path: str,
     run_context: RunContext,
     environment: str,
     package_path: Path,
-    warehouse_root: Path,
+    warehouse_root: str,
     spark: SparkSession,
     compiled_models: list[CompiledSqlModel],
     partition_values: dict[str, str] | None = None,
@@ -86,7 +87,7 @@ def run_sql_models_locally(
             details={
                 "environment": environment,
                 "package_path": str(package_path),
-                "warehouse_root": str(warehouse_root),
+                "warehouse_root": warehouse_root,
                 "model_count": len(compiled_models),
             },
         ),
@@ -203,7 +204,7 @@ def run_sql_models_locally(
                     for result in summary.validations
                     if not result.passed
                 ),
-                "warehouse_root": str(warehouse_root),
+                "warehouse_root": warehouse_root,
             },
         )
         if quality_summary is not None:
@@ -273,7 +274,7 @@ def run_sql_models_locally(
                         name=record.target_table_name,
                         facets={
                             "model_id": record.model_id,
-                            "warehouse_root": str(warehouse_root),
+                            "warehouse_root": warehouse_root,
                             "load_mode": record.load_mode.value,
                             "row_count": record.row_count,
                         },
@@ -307,7 +308,7 @@ def _build_observer(
     lineage_adapter: LineageAdapter,
     artifacts: SqlRunArtifacts,
     compiled_by_id: dict[str, CompiledSqlModel],
-    warehouse_root: Path,
+    warehouse_root: str,
     environment: str,
     run_context: RunContext,
 ) -> Callable[[CompiledSqlModel, SqlExecutionRecord], None]:
@@ -356,7 +357,7 @@ def _build_observer(
                         name=record.target_table_name,
                         facets={
                             "model_id": model.model_id,
-                            "warehouse_root": str(warehouse_root),
+                            "warehouse_root": warehouse_root,
                             "stage": model.stage.value,
                             "domain": model.domain,
                             "load_mode": model.load_mode.value,
@@ -374,8 +375,8 @@ def _build_audit_context(
     *,
     environment: str,
     package_path: Path,
-    warehouse_root: Path,
-    root_path: Path,
+    warehouse_root: str,
+    root_path: str,
     compiled_models: list[CompiledSqlModel],
     partition_values: dict[str, str] | None,
     extra_values: dict[str, object] | None,
@@ -389,8 +390,8 @@ def _build_audit_context(
     context = {
         "environment": environment,
         "package_path": str(package_path),
-        "warehouse_root": str(warehouse_root),
-        "artifact_root": str(root_path),
+        "warehouse_root": warehouse_root,
+        "artifact_root": root_path,
         "model_count": str(len(compiled_models)),
         "selected_models": ",".join(model.model_id for model in compiled_models),
         "selection_stage": selection_stage or "",
@@ -434,7 +435,7 @@ def _build_quality_request(
     *,
     run_context: RunContext,
     environment: str,
-    warehouse_root: Path,
+    warehouse_root: str,
     execution_result: SqlExecutionResult,
 ) -> QualityHookRequest:
     return QualityHookRequest(
@@ -448,7 +449,9 @@ def _build_quality_request(
                 dataset_name=record.target_table_name,
                 materialization_type="spark_parquet",
                 target_name=record.target_table_name,
-                output_path=str(warehouse_root / record.stage.value / record.target_table_name),
+                output_path=join_paths(
+                    warehouse_root, record.stage.value, record.target_table_name
+                ),
                 row_count=record.row_count,
                 metrics={"load_mode": record.load_mode.value},
             )

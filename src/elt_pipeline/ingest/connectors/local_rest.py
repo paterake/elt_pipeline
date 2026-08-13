@@ -6,7 +6,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 from elt_pipeline.ingest.connectors.rest import (
@@ -48,7 +47,7 @@ class LocalRestConnector(RestConnectorBase):
         *,
         config: RestConnectorConfig,
         run_context: RunContext,
-        root_path: Path,
+        root_path: str,
     ) -> None:
         super().__init__(config=config, run_context=run_context)
         self.writer = LocalLevel1Writer(root_path)

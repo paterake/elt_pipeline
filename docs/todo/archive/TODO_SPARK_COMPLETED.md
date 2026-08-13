@@ -15,10 +15,10 @@ All completion criteria below were met:
 
 Deliberately descoped (not part of this backlog's approved scope, per user decisions captured during implementation):
 
-- Object storage URIs (`s3a://` etc.) for `level2+` — local filesystem only, consistent with "local filesystem on a developer laptop" as the default initial environment.
-- A persistent Hive/Glue-style metastore or catalog — path-only, Spark temp views per run.
-- Delta/Iceberg table formats — plain Parquet, path-based, using Spark's dynamic `partitionOverwriteMode` for `partition_overwrite` semantics instead.
-- Wiring up `elt_pipeline_cfg` (the sibling config repo) — config remains single-file YAML.
+- Object storage URIs (`s3a://` etc.) for `level2+` — **NOTE (2026-08-13): DESCISION SUPERSEDED.** This item was historically descoped for the Spark-only backlog; after completion of the path/partition management backlog, it has been **reinstated to approved scope** as the correct original design per Mercell/Camelot conventions. It is now the active workstream tracked under [TODO_STORAGE_URI.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_STORAGE_URI.md) and specified in [PRD 08](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/08-prd-storage-root-uri-io-dispatch.md). The local-filesystem-only assumption is no longer authoritative; use string URI roots + scheme dispatch per PRD 08 instead.
+- A persistent Hive/Glue-style metastore or catalog — path-only, Spark temp views per run. (Still descoped; separate PRD required.)
+- Delta/Iceberg table formats — plain Parquet, path-based, using Spark's dynamic `partitionOverwriteMode` for `partition_overwrite` semantics instead. (Still descoped; separate PRD required.)
+- Wiring up `elt_pipeline_cfg` (the sibling config repo) — config remains single-file YAML. (Still descoped; separate PRD required.)
 - Rewriting the level1->level2 relationalization walk as native Spark DataFrame transforms — it stays a single-process Python walk (`normalize/runner.py`), with Spark introduced only at the write boundary.
 
 ## Status (at completion)
@@ -50,7 +50,7 @@ The corrected target state is:
 - use Spark-backed inputs for `level4 -> level5` publish/export flows
 - persist `level2+` outputs as file-backed datasets (paths) suitable for Spark reads and writes
 - remove sqlite as the execution engine for SQL-stage and publish-stage runtime paths
-- treat storage access as URI/path based so the same contracts can work across local filesystems and object stores (for example `file://` and `s3a://`)
+- treat storage access as URI/path based so the same contracts can work across local filesystems and object stores (for example `file://` and `s3://`) — **NOTE (2026-08-13): PRINCIPLE FULLY HONORED with approval of PRD 08.** Prior implementation was local-POSIX pathlib only, breaking this principle. The active TODO_STORAGE_URI backlog restores correct URI/path-only semantics via string roots, scheme-preserving join, and sharp I/O dispatch, matching Mercell/Camelot conventions. See [TODO_STORAGE_URI.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_STORAGE_URI.md) + [PRD 08](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/08-prd-storage-root-uri-io-dispatch.md).
 
 ## Scope
 

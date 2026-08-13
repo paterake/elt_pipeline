@@ -17,7 +17,7 @@ def test_local_level1_writer_persists_payload_and_manifest(tmp_path: Path) -> No
         job_name="orders-ingest",
         trigger_type="scheduled_batch",
     )
-    writer = LocalLevel1Writer(tmp_path)
+    writer = LocalLevel1Writer(str(tmp_path))
 
     manifest = writer.write_payload(
         run_context=run_context,
@@ -37,8 +37,8 @@ def test_local_level1_writer_persists_payload_and_manifest(tmp_path: Path) -> No
         metadata={"endpoint": "/orders"},
     )
 
-    data_path = tmp_path / manifest.data_path
-    manifest_path = tmp_path / manifest.manifest_path
+    data_path = Path(tmp_path) / manifest.data_path
+    manifest_path = Path(tmp_path) / manifest.manifest_path
 
     assert data_path.exists()
     assert manifest_path.exists()
@@ -55,7 +55,7 @@ def test_local_level1_writer_persists_payload_and_manifest(tmp_path: Path) -> No
 
 def test_local_artifact_store_persists_run_artifacts(tmp_path: Path) -> None:
     run_context = new_run_context(stage=StageName.ingest, job_name="orders-ingest")
-    store = LocalArtifactStore(tmp_path)
+    store = LocalArtifactStore(str(tmp_path))
 
     audit_record = AuditRecord(
         run_id=run_context.run_id,
@@ -110,20 +110,20 @@ def test_local_artifact_store_persists_run_artifacts(tmp_path: Path) -> None:
         lineage_event=lineage_event,
     )
 
-    assert audit_path.exists()
-    assert log_path.exists()
-    assert error_path.exists()
-    assert lineage_path.exists()
-    assert "runs/stage=ingest/job=orders-ingest" in str(audit_path)
-    assert "environment=" not in str(audit_path)
+    assert Path(audit_path).exists()
+    assert Path(log_path).exists()
+    assert Path(error_path).exists()
+    assert Path(lineage_path).exists()
+    assert "runs/stage=ingest/job=orders-ingest" in audit_path
+    assert "environment=" not in audit_path
 
-    stored_audit = json.loads(audit_path.read_text(encoding="utf-8"))
-    stored_log = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    stored_audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
+    stored_log = [json.loads(line) for line in Path(log_path).read_text(encoding="utf-8").splitlines()]
     stored_error = [
-        json.loads(line) for line in error_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in Path(error_path).read_text(encoding="utf-8").splitlines()
     ]
     stored_lineage = [
-        json.loads(line) for line in lineage_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line) for line in Path(lineage_path).read_text(encoding="utf-8").splitlines()
     ]
 
     assert stored_audit["status"] == "success"
@@ -135,8 +135,8 @@ def test_local_artifact_store_persists_run_artifacts(tmp_path: Path) -> None:
 def test_local_checkpoint_store_tracks_history_and_supports_replay_queries(
     tmp_path: Path,
 ) -> None:
-    writer = LocalLevel1Writer(tmp_path)
-    store = LocalCheckpointStore(tmp_path)
+    writer = LocalLevel1Writer(str(tmp_path))
+    store = LocalCheckpointStore(str(tmp_path))
 
     first_run = new_run_context(stage=StageName.ingest, job_name="orders-ingest")
     first_manifest = writer.write_payload(

@@ -88,7 +88,7 @@ def test_kafka_connector_base_persists_before_checkpoint_update(tmp_path: Path) 
         "recorded_at": result.checkpoint_after["recorded_at"],
     }
     assert checkpoint_document.current_checkpoint["offset"] == 12
-    assert checkpoint_document.history[0].manifest_paths == [result.manifests[0].manifest_path]
+    assert [Path(p) for p in checkpoint_document.history[0].manifest_paths] == [Path(result.manifests[0].manifest_path)]
 
 
 def test_local_kafka_connector_consumes_from_log_and_updates_checkpoint(tmp_path: Path) -> None:
@@ -140,8 +140,8 @@ def test_local_kafka_connector_consumes_from_log_and_updates_checkpoint(tmp_path
             job_name="kafka-ingest",
             trigger_type="micro_batch",
         ),
-        root_path=tmp_path,
-        log_path=log_path,
+        root_path=str(tmp_path),
+        log_path=str(log_path),
     )
 
     result = connector.run()
@@ -189,7 +189,7 @@ def test_local_kafka_connector_uses_saved_checkpoint_next_run(tmp_path: Path) ->
         encoding="utf-8",
     )
 
-    checkpoint_store = LocalCheckpointStore(tmp_path)
+    checkpoint_store = LocalCheckpointStore(str(tmp_path))
     checkpoint_store.commit(
         environment="dev",
         source_name="events",
@@ -221,8 +221,8 @@ def test_local_kafka_connector_uses_saved_checkpoint_next_run(tmp_path: Path) ->
             job_name="kafka-ingest",
             trigger_type="micro_batch",
         ),
-        root_path=tmp_path,
-        log_path=log_path,
+        root_path=str(tmp_path),
+        log_path=str(log_path),
     )
 
     result = connector.run()
@@ -236,8 +236,8 @@ def test_local_kafka_connector_uses_saved_checkpoint_next_run(tmp_path: Path) ->
 class FakeKafkaConnector(KafkaConnectorBase):
     def __init__(self, *, tmp_path: Path, run_context) -> None:
         self.call_order: list[str] = []
-        self.writer = LocalLevel1Writer(tmp_path)
-        self.checkpoint_store = LocalCheckpointStore(tmp_path)
+        self.writer = LocalLevel1Writer(str(tmp_path))
+        self.checkpoint_store = LocalCheckpointStore(str(tmp_path))
         super().__init__(
             config=KafkaConnectorConfig(
                 schema_version="v1",

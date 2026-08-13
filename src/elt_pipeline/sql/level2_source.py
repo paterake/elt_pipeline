@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
 
+from elt_pipeline.shared.path_utils import (
+    join_paths,
+    path_is_dir,
+    path_rglob,
+)
 from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.models import SqlModelSourceRef
 
@@ -17,28 +21,28 @@ def _sanitize_path_fragment(value: str) -> str:
 
 
 class Level2DatasetLocator:
-    def __init__(self, *, root_path: Path, spark: SparkSession) -> None:
-        self.root_path = Path(root_path)
+    def __init__(self, *, root_path: str, spark: SparkSession) -> None:
+        self.root_path = root_path
         self.spark = spark
 
     def read(self, *, source_ref: SqlModelSourceRef, environment: str) -> DataFrame:
         _ = environment
         table_name = source_ref.table_name or source_ref.logical_name
         sanitized_table = _sanitize_path_fragment(table_name)
-        entity_root = (
-            self.root_path
-            / "level2"
-            / f"source={_sanitize_path_fragment(source_ref.source_name)}"
-            / f"entity={_sanitize_path_fragment(source_ref.entity_name)}"
+        entity_root = join_paths(
+            self.root_path,
+            "level2",
+            f"source={_sanitize_path_fragment(source_ref.source_name)}",
+            f"entity={_sanitize_path_fragment(source_ref.entity_name)}",
         )
-        assert "environment=" not in entity_root.as_posix(), (
+        assert "environment=" not in entity_root, (
             "Generated L2 read path contains 'environment=' segment; per P5 decision, "
             "environment is handled exclusively by which root path is pointed at."
         )
         matches = sorted(
             path
-            for path in entity_root.glob(f"**/table={sanitized_table}/run_id=*")
-            if path.is_dir()
+            for path in path_rglob(entity_root, f"**/table={sanitized_table}/run_id=*")
+            if path_is_dir(path)
         )
         if not matches:
             raise build_sql_runtime_error(
@@ -54,9 +58,9 @@ class Level2DatasetLocator:
                     "table_name": table_name,
                     "sanitized_table_name": sanitized_table,
                     "environment": environment,
-                    "search_root": str(entity_root),
+                    "search_root": entity_root,
                 },
             )
-        dataframe = self.spark.read.option("mergeSchema", "true").parquet(str(entity_root))
+        dataframe = self.spark.read.option("mergeSchema", "true").parquet(entity_root)
         dataframe = dataframe.filter(dataframe["table"] == sanitized_table)
         return dataframe

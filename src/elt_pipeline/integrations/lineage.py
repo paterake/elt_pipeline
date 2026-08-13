@@ -4,7 +4,6 @@ import json
 import os
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -152,7 +151,7 @@ class LineageAdapter:
         run_context: RunContext,
         environment: str,
         lineage_event: LineageEvent,
-    ) -> Path:
+    ) -> str:
         local_path = self._artifact_store.append_lineage_event(
             run_context=run_context,
             environment=environment,
@@ -243,7 +242,7 @@ class LineageAdapter:
 
 
 def build_lineage_adapter(
-    root_path: Path,
+    root_path: str,
     *,
     remote_emitter: LineageRemoteEmitter | None = None,
     emission_policy: LineageEmissionPolicy | None = None,

@@ -360,8 +360,8 @@ def test_local_sql_model_executor_runs_models_in_spark(tmp_path: Path, spark_ses
     warehouse_root = tmp_path / "warehouse"
     result = SparkSqlModelExecutor(
         spark=spark_session,
-        warehouse_root=warehouse_root,
-        root_path=tmp_path,
+        warehouse_root=str(warehouse_root),
+        root_path=str(tmp_path),
         environment="dev",
     ).execute(compiled)
 
@@ -419,8 +419,8 @@ def test_local_sql_model_executor_plans_models_with_query_plan(
 
     planning_result = SparkSqlModelExecutor(
         spark=spark_session,
-        warehouse_root=tmp_path / "warehouse",
-        root_path=tmp_path,
+        warehouse_root=str(tmp_path / "warehouse"),
+        root_path=str(tmp_path),
         environment="dev",
     ).plan(
         compiled,
@@ -453,8 +453,8 @@ def test_local_sql_model_executor_appends_rows_across_runs(
     warehouse_root = tmp_path / "warehouse"
     executor = SparkSqlModelExecutor(
         spark=spark_session,
-        warehouse_root=warehouse_root,
-        root_path=tmp_path,
+        warehouse_root=str(warehouse_root),
+        root_path=str(tmp_path),
         environment="dev",
     )
 
@@ -540,8 +540,8 @@ def test_local_sql_model_executor_partition_overwrite_replaces_selected_partitio
 
     result = SparkSqlModelExecutor(
         spark=spark_session,
-        warehouse_root=warehouse_root,
-        root_path=tmp_path,
+        warehouse_root=str(warehouse_root),
+        root_path=str(tmp_path),
         environment="dev",
         partition_values={"order_date": "2026-01-01"},
     ).execute([compiled])
@@ -593,11 +593,11 @@ def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(
     ]
 
     result = run_sql_models_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        warehouse_root=tmp_path / "warehouse",
+        warehouse_root=str(tmp_path / "warehouse"),
         spark=spark_session,
         compiled_models=compiled,
     )
@@ -606,13 +606,15 @@ def test_run_sql_models_locally_writes_audit_log_and_lineage_artifacts(
     assert result.artifacts.audit_path is not None
     assert result.artifacts.log_path is not None
     assert result.artifacts.lineage_path is not None
-    assert result.artifacts.audit_path.exists()
-    assert result.artifacts.log_path.exists()
-    assert result.artifacts.lineage_path.exists()
+    assert Path(result.artifacts.audit_path).exists()
+    assert Path(result.artifacts.log_path).exists()
+    assert Path(result.artifacts.lineage_path).exists()
 
-    audit_payload = json.loads(result.artifacts.audit_path.read_text(encoding="utf-8"))
-    log_lines = result.artifacts.log_path.read_text(encoding="utf-8").strip().splitlines()
-    lineage_lines = result.artifacts.lineage_path.read_text(encoding="utf-8").strip().splitlines()
+    audit_payload = json.loads(Path(result.artifacts.audit_path).read_text(encoding="utf-8"))
+    log_lines = Path(result.artifacts.log_path).read_text(encoding="utf-8").strip().splitlines()
+    lineage_lines = (
+        Path(result.artifacts.lineage_path).read_text(encoding="utf-8").strip().splitlines()
+    )
 
     assert audit_payload["status"] == "success"
     assert audit_payload["metrics_summary"]["extra"]["models_executed"] == 2
@@ -670,18 +672,18 @@ quality:
     ]
 
     result = run_sql_models_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        warehouse_root=tmp_path / "warehouse",
+        warehouse_root=str(tmp_path / "warehouse"),
         spark=spark_session,
         compiled_models=compiled,
     )
 
     assert len(result.execution_result.model_validations) == 2
 
-    audit_payload = json.loads(result.artifacts.audit_path.read_text(encoding="utf-8"))
+    audit_payload = json.loads(Path(result.artifacts.audit_path).read_text(encoding="utf-8"))
     base_orders_validation = next(
         summary
         for summary in audit_payload["validation_results"]
@@ -743,11 +745,11 @@ quality:
 
     with pytest.raises(PipelineError, match="SQL model validations failed"):
         run_sql_models_locally(
-            root_path=tmp_path,
+            root_path=str(tmp_path),
             run_context=run_context,
             environment="dev",
             package_path=package_root,
-            warehouse_root=tmp_path / "warehouse",
+            warehouse_root=str(tmp_path / "warehouse"),
             spark=spark_session,
             compiled_models=compiled,
         )
@@ -815,17 +817,17 @@ def test_run_sql_models_locally_captures_quality_results_in_audit(
     ]
 
     result = run_sql_models_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        warehouse_root=tmp_path / "warehouse",
+        warehouse_root=str(tmp_path / "warehouse"),
         spark=spark_session,
         compiled_models=compiled,
-        quality_hook=build_quality_hook(tmp_path, backend=_PassingSqlQualityBackend()),
+        quality_hook=build_quality_hook(str(tmp_path), backend=_PassingSqlQualityBackend()),
     )
 
-    audit_payload = json.loads(result.artifacts.audit_path.read_text(encoding="utf-8"))
+    audit_payload = json.loads(Path(result.artifacts.audit_path).read_text(encoding="utf-8"))
     quality_summary = audit_payload["validation_results"][-1]
 
     assert audit_payload["status"] == "success"
@@ -869,15 +871,15 @@ def test_run_sql_models_locally_fails_for_blocking_quality_results(
 
     with pytest.raises(PipelineError, match="Quality checks failed"):
         run_sql_models_locally(
-            root_path=tmp_path,
+            root_path=str(tmp_path),
             run_context=run_context,
             environment="dev",
             package_path=package_root,
-            warehouse_root=tmp_path / "warehouse",
+            warehouse_root=str(tmp_path / "warehouse"),
             spark=spark_session,
             compiled_models=compiled,
             quality_hook=build_quality_hook(
-                tmp_path,
+                str(tmp_path),
                 backend=_FailingSqlQualityBackend(),
                 policy=QualityHookPolicy.blocking,
             ),
@@ -934,21 +936,21 @@ def test_run_sql_models_locally_logs_warning_for_non_blocking_quality_results(
     ]
 
     result = run_sql_models_locally(
-        root_path=tmp_path,
+        root_path=str(tmp_path),
         run_context=new_run_context(stage=StageName.sql, job_name="sql-run"),
         environment="dev",
         package_path=package_root,
-        warehouse_root=tmp_path / "warehouse",
+        warehouse_root=str(tmp_path / "warehouse"),
         spark=spark_session,
         compiled_models=compiled,
         quality_hook=build_quality_hook(
-            tmp_path,
+            str(tmp_path),
             backend=_WarningSqlQualityBackend(),
             policy=QualityHookPolicy.best_effort,
         ),
     )
 
-    log_lines = result.artifacts.log_path.read_text(encoding="utf-8").strip().splitlines()
+    log_lines = Path(result.artifacts.log_path).read_text(encoding="utf-8").strip().splitlines()
     parsed_log_lines = [json.loads(line) for line in log_lines]
     quality_event = next(
         event for event in parsed_log_lines if event["event_type"] == "quality_hook_complete"
@@ -992,15 +994,15 @@ def test_run_sql_models_locally_records_single_error_for_blocking_quality_backen
 
     with pytest.raises(PipelineError, match="Optional data-quality backend execution failed"):
         run_sql_models_locally(
-            root_path=tmp_path,
+            root_path=str(tmp_path),
             run_context=run_context,
             environment="dev",
             package_path=package_root,
-            warehouse_root=tmp_path / "warehouse",
+            warehouse_root=str(tmp_path / "warehouse"),
             spark=spark_session,
             compiled_models=compiled,
             quality_hook=build_quality_hook(
-                tmp_path,
+                str(tmp_path),
                 backend=_ExplodingSqlQualityBackend(),
                 policy=QualityHookPolicy.blocking,
             ),
@@ -1045,8 +1047,8 @@ def test_local_sql_model_executor_returns_structured_planning_error_code(
     with pytest.raises(PipelineError) as exc_info:
         SparkSqlModelExecutor(
             spark=spark_session,
-            warehouse_root=tmp_path / "warehouse",
-            root_path=tmp_path,
+            warehouse_root=str(tmp_path / "warehouse"),
+            root_path=str(tmp_path),
             environment="dev",
         ).plan([compiled])
 
@@ -1074,8 +1076,8 @@ def test_local_sql_model_executor_returns_structured_partition_error_code(
     with pytest.raises(PipelineError) as exc_info:
         SparkSqlModelExecutor(
             spark=spark_session,
-            warehouse_root=tmp_path / "warehouse",
-            root_path=tmp_path,
+            warehouse_root=str(tmp_path / "warehouse"),
+            root_path=str(tmp_path),
             environment="dev",
         ).execute([compiled])
 
@@ -1149,8 +1151,8 @@ def test_level3_model_applies_default_partitions_and_repartitions_late_arriving_
         )
         return SparkSqlModelExecutor(
             spark=spark_session,
-            warehouse_root=warehouse_root,
-            root_path=tmp_path,
+            warehouse_root=str(warehouse_root),
+            root_path=str(tmp_path),
             environment="dev",
             partition_values={"source_name": "orders_source", "business_date": "2026-08-10"},
         ).execute([compiled])

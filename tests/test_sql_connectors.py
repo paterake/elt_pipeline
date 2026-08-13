@@ -155,7 +155,7 @@ def test_local_sql_connector_delta_run_persists_rows_and_updates_checkpoint(
             job_name="orders-sql-ingest",
             trigger_type="scheduled_batch",
         ),
-        root_path=tmp_path,
+        root_path=str(tmp_path),
     )
 
     result = connector.run()
@@ -173,8 +173,8 @@ def test_local_sql_connector_delta_run_persists_rows_and_updates_checkpoint(
     assert checkpoint_document.current_checkpoint == {"max_updated_at": "2026-01-05T00:00:00+00:00"}
     assert checkpoint_document.history[0].manifest_paths == [result.manifests[0].manifest_path]
 
-    manifest_path = tmp_path / result.manifests[0].manifest_path
-    data_path = tmp_path / result.manifests[0].data_path
+    manifest_path = tmp_path / Path(result.manifests[0].manifest_path)
+    data_path = tmp_path / Path(result.manifests[0].data_path)
     payload = json.loads(data_path.read_text(encoding="utf-8"))
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -196,7 +196,7 @@ def test_local_sql_connector_uses_saved_checkpoint_on_next_delta_run(tmp_path: P
             (3, "2026-01-06T00:00:00+00:00", "shipped"),
         ],
     )
-    checkpoint_store = LocalCheckpointStore(tmp_path)
+    checkpoint_store = LocalCheckpointStore(str(tmp_path))
     checkpoint_store.commit(
         environment="dev",
         source_name="orders_db",
@@ -237,7 +237,7 @@ def test_local_sql_connector_uses_saved_checkpoint_on_next_delta_run(tmp_path: P
             job_name="orders-sql-ingest",
             trigger_type="scheduled_batch",
         ),
-        root_path=tmp_path,
+        root_path=str(tmp_path),
     )
 
     result = connector.run()

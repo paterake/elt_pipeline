@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
 from pyspark.errors import PySparkException
 from pyspark.sql import SparkSession
 
 from elt_pipeline.shared.errors import PipelineError
+from elt_pipeline.shared.path_utils import join_paths
 from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.level2_source import Level2DatasetLocator
 from elt_pipeline.sql.models import (
@@ -28,14 +28,14 @@ class SparkSqlModelExecutor:
         self,
         *,
         spark: SparkSession,
-        warehouse_root: str | Path,
-        root_path: str | Path,
+        warehouse_root: str,
+        root_path: str,
         environment: str,
         partition_values: dict[str, str] | None = None,
     ) -> None:
         self.spark = spark
-        self.warehouse_root = Path(warehouse_root)
-        self.root_path = Path(root_path)
+        self.warehouse_root = warehouse_root
+        self.root_path = root_path
         self.environment = environment
         self.partition_values = partition_values or {}
         self._level2_locator = Level2DatasetLocator(root_path=self.root_path, spark=spark)
@@ -60,7 +60,7 @@ class SparkSqlModelExecutor:
                         context={
                             "model_id": model.model_id,
                             "target_table_name": model.target_table_name,
-                            "warehouse_root": str(self.warehouse_root),
+                            "warehouse_root": self.warehouse_root,
                         },
                     ) from exc
 
@@ -117,8 +117,8 @@ class SparkSqlModelExecutor:
             self._register_planned_output(model=model)
         return planning_result
 
-    def _table_path(self, *, stage: SqlModelStage, table_name: str) -> Path:
-        return self.warehouse_root / stage.value / table_name
+    def _table_path(self, *, stage: SqlModelStage, table_name: str) -> str:
+        return join_paths(self.warehouse_root, stage.value, table_name)
 
     def _register_execute_inputs(
         self,
@@ -147,7 +147,7 @@ class SparkSqlModelExecutor:
             dependency_path = self._table_path(
                 stage=dependency.stage, table_name=dependency.target_table_name
             )
-            dataframe = self.spark.read.parquet(str(dependency_path))
+            dataframe = self.spark.read.parquet(dependency_path)
             dataframe.createOrReplaceTempView(dependency.target_table_name)
 
     def _register_plan_sources(self, *, model: CompiledSqlModel) -> None:
@@ -173,18 +173,18 @@ class SparkSqlModelExecutor:
             writer = dataframe.write.mode("overwrite")
             if effective_partition_columns:
                 writer = writer.partitionBy(*effective_partition_columns)
-            writer.parquet(str(target_path))
+            writer.parquet(target_path)
         elif model.load_mode == SqlLoadMode.append:
             writer = dataframe.write.mode("append")
             if effective_partition_columns:
                 writer = writer.partitionBy(*effective_partition_columns)
-            writer.parquet(str(target_path))
+            writer.parquet(target_path)
         elif model.load_mode == SqlLoadMode.partition_overwrite:
             self._validate_partition_requirements(model=model)
             writer = dataframe.write.mode("overwrite")
             if effective_partition_columns:
                 writer = writer.partitionBy(*effective_partition_columns)
-            writer.parquet(str(target_path))
+            writer.parquet(target_path)
         else:
             raise build_sql_runtime_error(
                 message=f"Unsupported SQL load mode '{model.load_mode.value}'",
@@ -193,7 +193,7 @@ class SparkSqlModelExecutor:
                 context={"model_id": model.model_id, "load_mode": model.load_mode.value},
             )
 
-        return self.spark.read.parquet(str(target_path)).count()
+        return self.spark.read.parquet(target_path).count()
 
     def _validate_model(
         self,
@@ -225,7 +225,7 @@ class SparkSqlModelExecutor:
 
         if quality.unique_columns or quality.not_null_columns:
             target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
-            target_df = self.spark.read.parquet(str(target_path))
+            target_df = self.spark.read.parquet(target_path)
 
             for column in quality.unique_columns:
                 duplicate_count = (
@@ -331,7 +331,7 @@ class SparkSqlModelExecutor:
                 context={
                     "model_id": model.model_id,
                     "target_table_name": model.target_table_name,
-                    "warehouse_root": str(self.warehouse_root),
+                    "warehouse_root": self.warehouse_root,
                 },
             ) from exc
         if not include_query_plan:

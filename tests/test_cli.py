@@ -579,7 +579,7 @@ def test_sql_run_command_supports_rerun_run_id(tmp_path: Path, spark_session) ->
 
 def test_ingest_run_command_supports_backfill_checkpoint_seed(tmp_path: Path) -> None:
     config_path, output_root = write_sql_ingest_cli_fixture(tmp_path)
-    checkpoint_store = LocalCheckpointStore(output_root)
+    checkpoint_store = LocalCheckpointStore(str(output_root))
     checkpoint_store.commit(
         environment="default",
         source_name="orders_db",
@@ -1101,7 +1101,7 @@ def write_normalize_window_fixture(
     tmp_path: Path,
 ) -> tuple[Path, Path, object]:
     output_root = tmp_path / "runtime"
-    writer = LocalLevel1Writer(output_root)
+    writer = LocalLevel1Writer(str(output_root))
     config_path = tmp_path / "normalize-window-pipeline.yaml"
     config_path.write_text(
         dedent(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Protocol
 
 from pydantic import BaseModel, Field
@@ -381,7 +380,7 @@ class QualityHookAdapter:
 
 
 def build_quality_hook(
-    root_path: Path,
+    root_path: str,
     *,
     backend: QualityHookBackend | None = None,
     policy: QualityHookPolicy | None = None,

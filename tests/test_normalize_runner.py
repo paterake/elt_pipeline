@@ -129,8 +129,8 @@ def test_mapping_version_is_structure_based_and_catalog_can_be_persisted(tmp_pat
 
     assert first_result.mapping_version == second_result.mapping_version
 
-    store = LocalMappingCatalogStore(tmp_path)
-    catalog_path = store.write_catalog(first_result.mapping_catalog)
+    store = LocalMappingCatalogStore(str(tmp_path))
+    catalog_path = Path(store.write_catalog(first_result.mapping_catalog))
     stored_catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
 
     assert catalog_path.exists()
