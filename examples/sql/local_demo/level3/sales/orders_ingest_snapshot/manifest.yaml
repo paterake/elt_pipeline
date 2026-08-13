@@ -1,0 +1,18 @@
+name: orders_ingest_snapshot
+stage: level3
+domain: sales
+description: "Snapshot or audit view of orders — opt-in override of the default partition convention. Uses explicit partition_columns with source_name and ingest_date so the L3 output is partitioned by arrival day instead of event day. Use this when the question is what did the data look like on the day we received it. For example audit trails, compliance replay, or comparing what arrived vs what was corrected in later re-runs."
+materialization: table
+load_mode: partition_overwrite
+target:
+  table_name: orders_ingest_snapshot
+  partition_columns:
+    - source_name
+    - ingest_date
+sources:
+  - logical_name: raw_orders
+    source_name: local_files
+    entity_name: orders
+    table_name: orders
+owner:
+  name: platform

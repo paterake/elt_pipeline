@@ -604,6 +604,21 @@ def main(argv: list[str] | None = None) -> int:
                         start_date=selection_start_date,
                         end_date=selection_end_date,
                         partition_values=partition_values,
+                        source_name=(
+                            model.manifest.sources[0].source_name
+                            if model.manifest.sources
+                            else None
+                        ),
+                        source_entity=(
+                            model.manifest.sources[0].entity_name
+                            if model.manifest.sources
+                            else None
+                        ),
+                        source_table=(
+                            model.manifest.sources[0].table_name
+                            if model.manifest.sources and model.manifest.sources[0].table_name
+                            else None
+                        ),
                         extra_values=extra_values,
                     ),
                 )
