@@ -464,6 +464,48 @@ def path_rglob(base: str, pattern: str) -> list[str]:
     return [str(p) for p in results_p]
 
 
+def path_content_length(path: str) -> int:
+    scheme = detect_scheme(path)
+    if scheme is _StorageScheme.s3:
+        bucket, key = _split_s3_path(path)
+        s3 = _s3_client()
+        try:
+            resp = s3.head_object(Bucket=bucket, Key=key)
+            return int(resp.get("ContentLength", 0))
+        except s3.exceptions.ClientError as exc:  # type: ignore[attr-defined]
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("404", "NoSuchKey", "NoSuchBucket"):
+                raise PipelineError(
+                    message=f"Failed content_length on S3 path {path!r}: not found",
+                    error_code="STORAGE_S3_OP_FAILED",
+                    error_category=ErrorCategory.processing_error,
+                    retryable=False,
+                    context={
+                        "operation": "content_length",
+                        "path": path,
+                        "error": str(exc),
+                    },
+                ) from exc
+            raise PipelineError(
+                message=f"Failed content_length on S3 path {path!r}: {exc}",
+                error_code="STORAGE_S3_OP_FAILED",
+                error_category=ErrorCategory.processing_error,
+                retryable=True,
+                context={"operation": "content_length", "path": path, "error": str(exc)},
+            ) from exc
+    stripped = strip_file_scheme(path)
+    try:
+        return os.stat(stripped).st_size
+    except OSError as exc:
+        raise PipelineError(
+            message=f"Failed content_length on path {path!r}: {exc}",
+            error_code="STORAGE_READ_FAILED",
+            error_category=ErrorCategory.processing_error,
+            retryable=False,
+            context={"operation": "content_length", "path": path, "error": str(exc)},
+        ) from exc
+
+
 def path_read_bytes(path: str) -> bytes:
     scheme = detect_scheme(path)
     if scheme is _StorageScheme.s3:

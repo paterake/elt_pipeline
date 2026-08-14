@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -15,14 +14,11 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.normalize.models import Level2TableManifest, NormalizedTable
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.path_utils import (
-    _StorageScheme,
-    detect_scheme,
     join_paths,
+    path_content_length,
     path_glob,
     path_parent,
-    path_read_bytes,
     path_relative_to,
-    strip_file_scheme,
 )
 from elt_pipeline.shared.runtime import RunContext
 from elt_pipeline.spark.errors import SparkRuntimeErrorCode, build_spark_runtime_error
@@ -60,7 +56,9 @@ def _write_json_file(path: str, payload: Any) -> None:
     )
 
     path_mkdir(path_parent(path), parents=True, exist_ok=True)
-    temp_path = path_with_suffix(path, f"{posixpath.splitext(path)[1]}.tmp")
+    temp_path = path_with_suffix(
+        path, f"{posixpath.splitext(path)[1]}.tmp"
+    )
     path_write_text(
         temp_path,
         json.dumps(payload, indent=2, sort_keys=True),
@@ -86,18 +84,10 @@ def _summarize_parquet_dir(data_dir: str) -> tuple[int, int]:
     file_count = len(part_files)
     total_bytes = 0
     for part_file in part_files:
-        scheme = detect_scheme(part_file)
-        if scheme in (_StorageScheme.file, _StorageScheme.local_unschemed):
-            local_path = strip_file_scheme(part_file)
-            try:
-                total_bytes += os.stat(local_path).st_size
-            except OSError:
-                continue
-        else:
-            try:
-                total_bytes += len(path_read_bytes(part_file))
-            except PipelineError:
-                continue
+        try:
+            total_bytes += path_content_length(part_file)
+        except PipelineError:
+            continue
     return (file_count, total_bytes)
 
 
@@ -157,6 +147,53 @@ class SparkLevel2Writer:
         partition: dict[str, str],
         normalize_completed_at: datetime | None = None,
     ) -> Level2TableManifest:
+        dataframe = _rows_to_dataframe(self.spark, table.rows)
+        record_count = len(table.rows)
+        return self._write_dataframe_common(
+            run_context=run_context,
+            manifest=manifest,
+            mapping_version=mapping_version,
+            table_name=table.physical_name,
+            dataframe=dataframe,
+            partition=partition,
+            record_count_override=record_count,
+            normalize_completed_at=normalize_completed_at,
+        )
+
+    def write_dataframe(
+        self,
+        *,
+        run_context: RunContext,
+        manifest: Level1ArtifactManifest,
+        mapping_version: str,
+        table_name: str,
+        dataframe: DataFrame,
+        partition: dict[str, str],
+        normalize_completed_at: datetime | None = None,
+    ) -> Level2TableManifest:
+        return self._write_dataframe_common(
+            run_context=run_context,
+            manifest=manifest,
+            mapping_version=mapping_version,
+            table_name=table_name,
+            dataframe=dataframe,
+            partition=partition,
+            record_count_override=None,
+            normalize_completed_at=normalize_completed_at,
+        )
+
+    def _write_dataframe_common(
+        self,
+        *,
+        run_context: RunContext,
+        manifest: Level1ArtifactManifest,
+        mapping_version: str,
+        table_name: str,
+        dataframe: DataFrame,
+        partition: dict[str, str],
+        record_count_override: int | None,
+        normalize_completed_at: datetime | None,
+    ) -> Level2TableManifest:
         completed_at = normalize_completed_at or datetime.now(tz=UTC)
         data_dir = self.layout.table_run_dir(
             environment=manifest.environment,
@@ -164,10 +201,9 @@ class SparkLevel2Writer:
             entity_name=manifest.entity_name,
             mapping_version=mapping_version,
             partition=partition,
-            table_name=table.physical_name,
+            table_name=table_name,
             run_id=run_context.run_id,
         )
-        dataframe = _rows_to_dataframe(self.spark, table.rows)
         if "source_name" not in dataframe.columns:
             dataframe = dataframe.withColumn("source_name", lit(manifest.source_name))
         if "ingest_date" not in dataframe.columns:
@@ -184,6 +220,14 @@ class SparkLevel2Writer:
                 message=f"Failed to write level2 parquet dataset: {data_dir}",
                 context={"path": data_dir},
             ) from exc
+
+        if record_count_override is not None:
+            record_count = record_count_override
+        else:
+            try:
+                record_count = self.spark.read.parquet(data_dir).count()
+            except Exception:
+                record_count = 0
 
         file_count, total_file_size_bytes = _summarize_parquet_dir(data_dir)
 
@@ -205,15 +249,17 @@ class SparkLevel2Writer:
             input_artifact_id=manifest.artifact_id,
             input_data_path=manifest.data_path,
             input_manifest_path=manifest.manifest_path,
-            table_name=table.physical_name,
+            table_name=table_name,
             partition=partition,
             normalize_started_at=run_context.started_at,
             normalize_completed_at=completed_at,
-            record_count=len(table.rows),
+            record_count=record_count,
             file_count=file_count,
             total_file_size_bytes=total_file_size_bytes,
             data_path=relative_data_path,
             manifest_path=relative_manifest_path,
         )
-        _write_json_file(manifest_path, manifest_payload.model_dump(mode="json"))
+        _write_json_file(
+            manifest_path, manifest_payload.model_dump(mode="json")
+        )
         return manifest_payload

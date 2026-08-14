@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from io import StringIO
 from typing import Any
 from uuid import uuid4
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
+from elt_pipeline.normalize._policy import (
+    IdentifierPolicy,
+    build_mapping_catalog,
+    join_path,
+)
 from elt_pipeline.normalize.models import (
     MappingCatalog,
     NormalizationResult,
@@ -18,23 +21,6 @@ from elt_pipeline.normalize.models import (
     TableMappingEntry,
 )
 from elt_pipeline.shared.errors import ErrorCategory, PipelineError
-
-_SAFE_IDENTIFIER = re.compile(r"[^A-Za-z0-9]+")
-
-
-def _sanitize_identifier(value: str) -> str:
-    cleaned = _SAFE_IDENTIFIER.sub("_", value.strip().lower()).strip("_")
-    return cleaned or "value"
-
-
-def _join_path(parent_path: str, segment: str) -> str:
-    if parent_path == "$":
-        return f"$.{segment}"
-    return f"{parent_path}.{segment}"
-
-
-def _is_scalar(value: Any) -> bool:
-    return not isinstance(value, (dict, list))
 
 
 @dataclass
@@ -71,9 +57,11 @@ class NormalizationRunner:
             entity_name=manifest.entity_name,
             ingest_date=manifest.ingest_started_at.date().isoformat(),
             run_id=manifest.run_id,
-            max_identifier_length=self.max_identifier_length,
-            separator=self.separator,
-            value_column_name=self.value_column_name,
+            policy=IdentifierPolicy(
+                max_identifier_length=self.max_identifier_length,
+                separator=self.separator,
+                value_column_name=self.value_column_name,
+            ),
         )
         root_table = state.get_or_create_table(
             logical_path="$",
@@ -122,7 +110,10 @@ class NormalizationRunner:
                 error_code="NORMALIZE_INVALID_CSV",
                 error_category=ErrorCategory.input_contract_error,
                 retryable=False,
-                context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+                context={
+                    "artifact_id": manifest.artifact_id,
+                    "data_path": manifest.data_path,
+                },
             ) from exc
 
         if not reader.fieldnames:
@@ -131,7 +122,10 @@ class NormalizationRunner:
                 error_code="NORMALIZE_CSV_HEADER_REQUIRED",
                 error_category=ErrorCategory.input_contract_error,
                 retryable=False,
-                context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+                context={
+                    "artifact_id": manifest.artifact_id,
+                    "data_path": manifest.data_path,
+                },
             )
 
         state = _RunnerState(
@@ -139,9 +133,11 @@ class NormalizationRunner:
             entity_name=manifest.entity_name,
             ingest_date=manifest.ingest_started_at.date().isoformat(),
             run_id=manifest.run_id,
-            max_identifier_length=self.max_identifier_length,
-            separator=self.separator,
-            value_column_name=self.value_column_name,
+            policy=IdentifierPolicy(
+                max_identifier_length=self.max_identifier_length,
+                separator=self.separator,
+                value_column_name=self.value_column_name,
+            ),
         )
         root_table = state.get_or_create_table(
             logical_path="$",
@@ -191,7 +187,10 @@ class NormalizationRunner:
                     error_code="NORMALIZE_TEXT_DECODE_FAILED",
                     error_category=ErrorCategory.input_contract_error,
                     retryable=False,
-                    context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+                    context={
+                        "artifact_id": manifest.artifact_id,
+                        "data_path": manifest.data_path,
+                    },
                 ) from exc
         return payload
 
@@ -212,7 +211,10 @@ class NormalizationRunner:
                     error_code="NORMALIZE_INVALID_JSON",
                     error_category=ErrorCategory.input_contract_error,
                     retryable=False,
-                    context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+                    context={
+                        "artifact_id": manifest.artifact_id,
+                        "data_path": manifest.data_path,
+                    },
                 ) from exc
         else:
             document = payload
@@ -223,7 +225,10 @@ class NormalizationRunner:
                 error_code="NORMALIZE_UNSUPPORTED_ROOT",
                 error_category=ErrorCategory.input_contract_error,
                 retryable=False,
-                context={"artifact_id": manifest.artifact_id, "data_path": manifest.data_path},
+                context={
+                    "artifact_id": manifest.artifact_id,
+                    "data_path": manifest.data_path,
+                },
             )
         return document
 
@@ -288,17 +293,19 @@ class NormalizationRunner:
         elif isinstance(value, list):
             self._register_scalar_column(
                 table_state=table_state,
-                logical_path=f"{table_path}.{self.value_column_name}",
-                physical_name=self.value_column_name,
+                logical_path=f"{table_path}.{runner_state.policy.value_column_name}",
+                physical_name=runner_state.policy.value_column_name,
             )
-            row[self.value_column_name] = json.dumps(value, sort_keys=True)
+            row[runner_state.policy.value_column_name] = json.dumps(
+                value, sort_keys=True
+            )
         else:
             self._register_scalar_column(
                 table_state=table_state,
-                logical_path=f"{table_path}.{self.value_column_name}",
-                physical_name=self.value_column_name,
+                logical_path=f"{table_path}.{runner_state.policy.value_column_name}",
+                physical_name=runner_state.policy.value_column_name,
             )
-            row[self.value_column_name] = value
+            row[runner_state.policy.value_column_name] = value
 
         table_state.rows.append(row)
 
@@ -315,7 +322,7 @@ class NormalizationRunner:
     ) -> None:
         for key, nested_value in value.items():
             current_segments = [*field_segments, key]
-            logical_path = _join_path(table_path, key)
+            logical_path = join_path(table_path, key)
             if isinstance(nested_value, dict):
                 self._populate_from_object(
                     row=row,
@@ -387,19 +394,15 @@ class _RunnerState:
         entity_name: str,
         ingest_date: str,
         run_id: str,
-        max_identifier_length: int,
-        separator: str,
-        value_column_name: str,
+        policy: IdentifierPolicy,
     ) -> None:
         self.source_name = source_name
         self.entity_name = entity_name
         self.ingest_date = ingest_date
         self.run_id = run_id
-        self.max_identifier_length = max_identifier_length
-        self.separator = separator
-        self.value_column_name = value_column_name
+        self.policy = policy
+        self.policy.reset()
         self._tables_by_logical_path: dict[str, _TableState] = {}
-        self._logical_path_by_physical_name: dict[str, str] = {}
         self._table_order: list[str] = []
 
     def get_or_create_table(
@@ -413,7 +416,7 @@ class _RunnerState:
         if existing is not None:
             return existing
 
-        candidate_name = self.make_table_name(
+        candidate_name = self.policy.make_table_name(
             name_segments=name_segments,
             logical_path=logical_path,
         )
@@ -425,19 +428,11 @@ class _RunnerState:
             join_key_columns=join_key_columns,
         )
         self._tables_by_logical_path[logical_path] = table_state
-        self._logical_path_by_physical_name[candidate_name] = logical_path
         self._table_order.append(logical_path)
         return table_state
 
-    def make_table_name(self, *, name_segments: list[str], logical_path: str) -> str:
-        base_name = self.separator.join(_sanitize_identifier(segment) for segment in name_segments)
-        used_path = self._logical_path_by_physical_name.get(base_name)
-        if len(base_name) <= self.max_identifier_length and (used_path in (None, logical_path)):
-            return base_name
-        return self._build_hashed_identifier(base_name=base_name, logical_path=logical_path)
-
     def make_column_name(self, field_segments: list[str]) -> str:
-        return self.separator.join(_sanitize_identifier(segment) for segment in field_segments)
+        return self.policy.make_column_name(field_segments)
 
     def build_tables(self) -> list[NormalizedTable]:
         tables: list[NormalizedTable] = []
@@ -475,9 +470,10 @@ class _RunnerState:
                 )
             )
 
-        mapping_version = self._build_mapping_version(entries)
-        root_table_name = entries[0].physical_table_name if entries else _sanitize_identifier(
-            self.entity_name
+        mapping_version, root_table_name = build_mapping_catalog(
+            source_name=self.source_name,
+            entity_name=self.entity_name,
+            entries=entries,
         )
         return MappingCatalog(
             source_name=self.source_name,
@@ -486,45 +482,3 @@ class _RunnerState:
             root_table_name=root_table_name,
             entries=entries,
         )
-
-    def _build_mapping_version(self, entries: list[TableMappingEntry]) -> str:
-        canonical_payload = [
-            {
-                "logical_path": entry.logical_path,
-                "physical_table_name": entry.physical_table_name,
-                "parent_table_name": entry.parent_table_name,
-                "join_key_columns": entry.join_key_columns,
-                "column_mappings": [
-                    {"logical_path": mapping.logical_path, "physical_name": mapping.physical_name}
-                    for mapping in entry.column_mappings
-                ],
-            }
-            for entry in entries
-        ]
-        raw = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-    def _build_hashed_identifier(self, *, base_name: str, logical_path: str) -> str:
-        digest = hashlib.sha256(logical_path.encode("utf-8")).hexdigest()[:8]
-        suffix = f"{self.separator}{digest}"
-        allowed_prefix_length = self.max_identifier_length - len(suffix)
-        if allowed_prefix_length <= 0:
-            raise PipelineError(
-                message="Maximum identifier length is too small for hashed table names",
-                error_code="NORMALIZE_IDENTIFIER_LENGTH_INVALID",
-                error_category=ErrorCategory.config_error,
-                retryable=False,
-                context={"max_identifier_length": self.max_identifier_length},
-            )
-        prefix = base_name[:allowed_prefix_length].rstrip("_")
-        candidate_name = f"{prefix}{suffix}"
-        used_path = self._logical_path_by_physical_name.get(candidate_name)
-        if used_path not in (None, logical_path):
-            raise PipelineError(
-                message="Hashed table name collided with an existing derived table",
-                error_code="NORMALIZE_TABLE_NAME_COLLISION",
-                error_category=ErrorCategory.processing_error,
-                retryable=False,
-                context={"logical_path": logical_path, "candidate_name": candidate_name},
-            )
-        return candidate_name
