@@ -20,6 +20,9 @@ emr = [
   "boto3>=1.34,<2.0",
   "pyspark==4.1.2",
 ]
+delta = [
+  "delta-spark>=4.0,<5.0",
+]
 dev = [
   "pytest>=8.3,<9.0",
   "ruff>=0.12,<0.13",

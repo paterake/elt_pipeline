@@ -26,15 +26,18 @@ The work product *is not* scope drift: it directly aligns the execution model to
   - Scope recorded in § Audit Findings below.
   - Mercell/Camelot parity decision rationale recorded in § Open Decisions below.
   - Two distinct remediation tracks identified: (A) normalize Spark-native relationalization; (B) same-path DAG overwrite hazard (temp-area swap).
-- **Phase 1: Gate 1 (Design record + target contracts)** ⏳ NEXT UP.
-  - Gate deliverable: gated spec for Track A + Track B, preserving (byte-identical where possible) current output contracts:
-    - `Level2TableManifest` fields + `data_path` / `manifest_path` relative-layout semantics.
-    - `MappingCatalog.mapping_version` 16-hex hash computation must produce identical SHA-256 prefix on equivalent logical plan.
-    - `NormalizedTable` physical-name policy (63-char cap + SHA-8 suffix collision guard).
-    - `SqlLoadMode.partition_overwrite` semantics must match the existing contract (DYNAMIC required flag in runbook).
-  - Gate deliverable: add one new extras bucket `delta = ["delta-spark>=4.0,<5.0"]` for teams that want Delta Lake ACID over staging-swap (recorded as Open Decision OD-1 path (3)).
-- **Phase 2: Gate 2 (Track A: normalize Spark-native relationalization)** ⏳ PENDING design.
-- **Phase 3: Gate 3 (Track B: same-path overwrite hazard — staging-swap write protocol)** ⏳ PENDING design.
+- **Phase 1: Gate 1 (Design record + target contracts)** ✅ COMPLETED 2026-08-14.
+  - Gated spec for Track A + Track B recorded in § Gate 1 Design Record below, with four explicit target contracts:
+    - Contract C1: `Level2TableManifest` fields + `data_path` / `manifest_path` relative-layout semantics preserved byte-identical.
+    - Contract C2: `MappingCatalog.mapping_version` 16-hex hash computation produces identical SHA-256 prefix on equivalent logical plan (planner reuses verbatim `_build_mapping_version` + identifier policy code).
+    - Contract C3: `NormalizedTable` physical-name policy (63-char cap + SHA-8 suffix collision guard) preserved via shared policy module.
+    - Contract C4: `SqlLoadMode.partition_overwrite` semantics preserved — `partitionBy` + `mode("overwrite")` behavior unchanged; staging-swap wraps the write step, does not alter partition semantics.
+  - Extras bucket `delta = ["delta-spark>=4.0,<5.0"]` added to `pyproject.toml` for teams that want Delta Lake ACID over staging-swap (Open Decision OD-1 path (3)).
+  - Track A design: planner walks `StructType` metadata → emits `NormalizationPlan` → spark_runner executes `posexplode_outer`/struct-flatten chain, producing same `NormalizedTable` column layouts.
+  - Track B design: staging-swap write protocol with scheme-aware atomic swap (POSIX rename / S3 batch list-copy-delete).
+- **Phase 2: Gate 2 (Track A: normalize Spark-native relationalization)** ⏳ NEXT UP.
+  - Scope: `normalize/planner.py` metadata walk, `normalize/spark_runner.py` executor-side plans, pipeline rewiring, `path_content_length` dispatcher, `_rows_to_dataframe` dead-path removal, mapping-version parity tests.
+- **Phase 3: Gate 3 (Track B: same-path overwrite hazard — staging-swap write protocol)** ⏳ PENDING design complete.
 - **Phase 4: Gate 4 (Hardening / quality / docs sweep)** ⏳ PENDING.
 - **Phase 5: Gate 5 (Environment sign-off — same scope as PRD 08 Gate 5: JVM 17+ on workstation + EMR E2E)** ⏳ PENDING (environment-only).
 
@@ -202,6 +205,358 @@ Deliverables:
 
 ---
 
+## Gate 1 Design Record + Target Contracts (2026-08-14)
+
+### Contract C1: Level2TableManifest fields + relative layout semantics (byte-identical preserved)
+
+All 22 fields of `Level2TableManifest` in [normalize/models.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/models.py#L47-L69) are produced identically under the new Spark runner. The layout contract enforced by `LocalLevel2Layout.table_run_dir` in [level2_storage.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/level2_storage.py#L115-L142) is **unchanged** — the path segment order (`level2/source=/entity=/mapping_version=/partition_k=v*/table=/run_id=`) and `_sanitize_path_fragment` rules are byte-identical:
+
+| Field | Production rule | Preservation guarantee |
+|---|---|---|
+| `manifest_version` | Hardcoded `"v1"` | Unchanged (literal) |
+| `artifact_id` | `sha256(run_id:relative_data_path)[:24]` | Preserved — `relative_data_path` still built from identical `table_run_dir` + `path_relative_to(root_path)` |
+| `run_id`, `job_name`, `trigger_type`, `environment` | Pass-through from `RunContext` / `Level1ArtifactManifest` | Unchanged (Spark planner has no visibility into these) |
+| `source_name`, `entity_name`, `mapping_version` | Pass-through from `Level1ArtifactManifest` / `MappingCatalog` | `mapping_version` parity is Contract C2 below |
+| `input_artifact_id`, `input_data_path`, `input_manifest_path` | Pass-through from `Level1ArtifactManifest` | Unchanged |
+| `table_name` | `NormalizedTable.physical_name` | Contract C3 below |
+| `partition` | Pass-through caller dict | Unchanged |
+| `normalize_started_at`, `normalize_completed_at` | `RunContext.started_at` + completed timestamp | Unchanged (driver-side wall clock, not Spark) |
+| `record_count` | `len(table.rows)` in legacy | In Spark runner: `dataframe.count()` immediately post-write from staging read (same count source, same integer type) |
+| `file_count`, `total_file_size_bytes` | `_summarize_parquet_dir(data_dir)` glob | File-count source unchanged (glob of `*.parquet` parts). Size: Finding 4 fix switches s3 branch from full-GET to HEAD `ContentLength` per part (Gate 2 impl). Local `os.stat().st_size` unchanged. Numerical values for the same files are therefore byte-identical. |
+| `data_path`, `manifest_path` | `path_relative_to(data_dir, root_path)` | Preserved — layout segments identical, so relative paths are byte-identical |
+
+Manifest write still uses `_write_json_file` with temp-path + `path_replace` atomic swap (PRD 08 per-leaf semantics), so the on-disk `*.manifest.json` files remain identical in JSON shape (`sort_keys=True`, indent=2, UTF-8).
+
+### Contract C2: MappingCatalog.mapping_version 16-hex hash (identical SHA-256 prefix on same logical schema)
+
+The `mapping_version` hash is the linchpin of L2→L3 path lookups. Changing it would break existing L3 canonical partitions. The hash is produced by `_RunnerState._build_mapping_version` in [runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py#L490-L505):
+
+```
+canonical_payload = list[entry_dict] where each entry has:
+  logical_path, physical_table_name, parent_table_name,
+  join_key_columns (list order preserved),
+  column_mappings: list[{"logical_path": path, "physical_name": name}]
+                    SORTED by dict iteration order of column_mappings items?
+                    No — SORTED explicitly: sorted(table_state.column_mappings.items())
+raw = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":"))
+mapping_version = sha256(raw.encode("utf-8")).hexdigest()[:16]
+```
+
+**Preservation mechanism:**
+
+1. The `_build_mapping_version` function body is lifted **verbatim** into a new shared module `normalize/_policy.py` as pure functions:
+   - `build_mapping_version(entries: list[TableMappingEntry]) -> str`
+   - `_sanitize_identifier(value: str) -> str` (also lifted from runner.py line 25-27)
+   - `_join_path(parent_path, segment)` (lifted from runner.py line 30-33)
+
+2. Legacy `NormalizationRunner` (kept behind `--normalize-engine python` flag per OD-3) imports and calls these same functions from `_policy.py` — no logic copy, no drift risk.
+
+3. New `normalize/planner.py` (Spark planner) also imports the same policy functions, so the identifier sanitization + hashing pipeline is literally the same code path.
+
+4. The planner's `TableMappingEntry` list is produced from the same logical traversal order (depth-first, arrays as child tables at their logical_path) — verified by the 3-deep nested-array parity fixture in Gate 2.
+
+**Test parity assertion (Gate 2):**
+
+Given the same L1 JSON payload (3-deep nested arrays: root → items → tax_breakdowns → jurisdictions), the Spark planner's `mapping_version` must equal the legacy Python runner's `mapping_version` exactly (string equality of the 16-hex hash).
+
+### Contract C3: NormalizedTable physical-name policy (63-char cap + SHA-8 suffix collision guard)
+
+Table physical names are produced by `_RunnerState.make_table_name` + `_build_hashed_identifier` in [runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py#L432-L530). The policy:
+
+```
+base_name = separator.join(_sanitize_identifier(seg) for seg in name_segments)
+if len(base_name) <= 63 AND (no collision OR same logical_path already at this name):
+  return base_name
+else:
+  suffix = "__" + sha256(logical_path.encode())[:8]
+  allowed_prefix_length = 63 - len(suffix)  # = 63 - 10 = 53
+  prefix = base_name[:allowed_prefix_length].rstrip("_")
+  return prefix + suffix
+  (Plus collision guard: if the hashed name is taken by a *different* logical_path,
+   raise NORMALIZE_TABLE_NAME_COLLISION — this is structural, not a random event.)
+```
+
+**Preservation mechanism:**
+
+- `make_table_name`, `_build_hashed_identifier`, and `make_column_name` are lifted verbatim into `normalize/_policy.py` alongside the hashing helpers (Contract C2). The `NormalizationRunner` (legacy) and the `NormalizationPlanner` (new) both instantiate a shared policy object so the exact same:
+  - `max_identifier_length=63` default
+  - `separator="__"` default
+  - `sha256(logical_path)[:8]` suffix derivation
+  - `rstrip("_")` prefix truncation rule
+  - Collision-guard exception semantics
+
+…apply to both code paths. The identifier policy is platform law; Spark has no opinion on it, so it must remain pure Python with zero drift.
+
+**Test parity assertion (Gate 2):**
+
+A fixture with deliberately long name segments (>63 chars joined) must produce the same physical table name (with SHA-8 suffix) from both the legacy runner and the Spark planner. A deliberate collision fixture (two different logical_paths that would sanitize to the same base_name) must raise the same `NORMALIZE_TABLE_NAME_COLLISION` error code in both paths.
+
+### Contract C4: SqlLoadMode.partition_overwrite semantics preserved
+
+The overwrite semantics for `partition_overwrite` today in [spark_executor.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py#L182-L187) are:
+
+```python
+writer = dataframe.write.mode("overwrite")
+if effective_partition_columns:
+    writer = writer.partitionBy(*effective_partition_columns)
+writer.parquet(target_path)
+```
+
+Spark's plain-parquet `mode("overwrite")` + `partitionBy(X)` performs **dynamic partition overwrite** (only partitions present in the incoming DataFrame are replaced; other partitions under `target_path` are preserved). This is the operator contract documented in the runbook (DYNAMIC required flag).
+
+**Preservation mechanism with staging-swap (Track B):**
+
+The swap step operates on *directory granularity*, not partition granularity. The incoming DataFrame is written with identical `writer = dataframe.write.mode("overwrite").partitionBy(*cols).parquet(staging_path)`. This produces the same on-disk partition subdirectory layout under staging that the old code produced directly under target. Then:
+
+- For `full_refresh`: atomic_swap replaces the **entire** `target_path` directory tree with the staging directory tree (any pre-existing target data is removed). This matches the pre-swap `mode("overwrite")` behavior, but without the DAG hazard.
+- For `partition_overwrite`: **merge-on-swap**. atomic_swap does NOT delete the whole target dir — instead it deletes only the partition subdirectories under `target_path/` that have matching keys in the staging dir, then moves the staging partition subdirectories into place. This preserves the "only overwrite partitions present in the incoming DataFrame" dynamic-partition-overwrite semantic exactly.
+
+Append mode (OD-4 excluded from swap) remains a direct `mode("append").parquet(target_path)` call with no staging.
+
+**Post-swap row-count source optimization (bonus from Track B):**
+
+Today `_execute_model` does `writer.parquet(target_path); return self.spark.read.parquet(target_path).count()` (line 196) — a full re-read just to get row count. Under staging-swap, we already read the staging output for `validate_stage` (step 3 of the swap), so we reuse that same cached row count, eliminating the second full parquet read. The validation step's count becomes the returned `row_count`. Callers (`execute()` → `SqlExecutionRecord.row_count`) see no interface change.
+
+---
+
+### Track A Design: Normalize Spark-Native Relationalization (Detailed)
+
+**Overall flow (driver metadata-scale → executor data-scale):**
+
+```
+[Driver]
+  Level1ArtifactManifest.payload_bytes (raw L1 bytes)
+        │
+        ▼
+  spark.read.json (or csv) from payload_bytes → raw_df: DataFrame
+        │  (Executor-side: JSON/CSV parsing moved from Python json.loads to Spark)
+        ▼
+  raw_df.schema: StructType  (KB-scale metadata)
+        │
+        ▼
+  NormalizationPlanner.walk_schema(schema: StructType, …) → NormalizationPlan
+        │  (Driver-only, O(schema_nodes), no per-row code)
+        │  Uses _policy.py make_table_name / build_mapping_version verbatim
+        ▼
+  NormalizationPlan entries: one per logical table, each with:
+     - logical_path, physical_table_name, parent_table_name
+     - join_key_columns: ["_parent_row_id"] for child tables
+     - column_mappings: list[(logical_path, physical_name)] (scalar projections)
+     - child_array_paths: list[(field_path, child_table_logical_path)]
+        │
+        ▼
+  SparkRelationalizer.execute(raw_df, plan, run_ctx) → dict[str, DataFrame]
+        │  (Driver builds PySpark expressions; executors process rows)
+        ▼
+[Executor]
+  For each table in plan order:
+    - Root table: flatten all StructType columns with alias chain (a.b.c → a__b__c)
+    - Scalar columns: direct select + lit(source_name/ingest_date/_run_id) suffix
+    - uuid() → _row_id (generated executor-side, per row)
+    - For each child_array_path:
+        posexplode_outer(child_col) as (_array_index, item)
+        select _row_id as _parent_row_id, _array_index, item.* (flattened)
+        recurse on item struct schema for nested arrays (walked in same plan)
+        output → one DataFrame per child logical path
+[Driver]
+  dict[physical_table_name, DataFrame] handed to SparkLevel2Writer.write_table(...)
+  → write mode("error") to fresh run_id= dir (no same-path hazard, so no staging swap)
+```
+
+**Planner schema-walk algorithm (mirror of legacy _populate_from_object + _append_row recursion, but on StructType not data):**
+
+```
+walk_schema_node(schema_node: StructField | StructType, *,
+                 logical_path: str,
+                 field_segments: list[str],
+                 name_segments: list[str],
+                 parent_table_name: str | None,
+                 is_array_item: bool)
+  → void (mutates plan_builder state)
+
+Cases:
+  1. Node is StructField with dataType=StructType:
+     → For each inner field in struct.fields:
+         walk_schema_node(inner_field,
+                          logical_path=join_path(logical_path, inner_field.name),
+                          field_segments=[*field_segments, inner_field.name],
+                          name_segments=name_segments,           # stays at same table
+                          parent_table_name=parent_table_name,
+                          is_array_item=False)
+
+  2. Node is StructField with dataType=ArrayType:
+     → Create a child table entry in plan_builder at:
+         logical_path = current logical_path (of the array field itself)
+         name_segments = [entity_name, *field_segments]
+         parent_table_name = current table's physical_name
+         join_key_columns = ["_parent_row_id"]
+     → Recurse on array.elementType as the new table's row schema:
+         walk_schema_node(element_field (synthetic),
+                          logical_path=same as child table (array owner path),
+                          field_segments=[],                    # reset at child table
+                          name_segments=… (child's segments, already used above),
+                          parent_table_name=child_table_physical,
+                          is_array_item=True)
+
+  3. Node is StructField with dataType in (ScalarType | MapType unsupported → value column):
+     → If is_array_item==True AND field_segments==[] AND dataType is NOT Struct:
+         Register scalar at logical_path + ".value" → physical_name = "value"
+         (Mirrors legacy _append_row line 289-294 / 296-301: leaf scalars at root of an array item get the "value" column convention)
+     → Else:
+         physical_name = _policy.make_column_name(field_segments)
+         logical_path = full dotted path
+         Register scalar mapping in the current table's column_mappings.
+
+  4. Root: if root dataType is ArrayType (not Struct):
+     → The array elements become root table rows; root walk uses is_array_item=True with field_segments=[].
+     (Mirrors legacy normalize_level1_json line 237-247.)
+```
+
+This walk is metadata-only: for a 100-column schema with 4 nested array levels it runs ~400 field visits on the driver, vs O(rows × 400) Python function calls today. Catalyst then collapses the flat-projection + posexplode DAG into a single stage.
+
+**Column flattening equivalence (legacy recursive dict walk → Spark struct aliasing):**
+
+Legacy `_populate_from_object` recurses into dicts at line 319-328, extending `field_segments` with each key, then calls `make_column_name(current_segments)` for scalars. The Spark planner walks StructType fields identically (Case 1 above) to precompute the same `(logical_path, physical_name=seg1__seg2__seg3)` pairs. Then at execution time, `df.select(col("a.b.c").alias("a__b__c"), …)` projects all nested scalar paths to the same physical column names the legacy runner produced.
+
+**Foreign key plumbing equivalence (legacy _parent_row_id / _array_index → Spark select):**
+
+Legacy: `_append_row` injects `_row_id = uuid4()` per row (line 271-272), then when a child array is found (line 336-345) the recursive `_append_row` passes `parent_row_id=row_id` and `array_index=index`. Spark equivalent:
+
+```python
+# After root row projection:
+root_df = root_df.withColumn("_row_id", expr("uuid()"))
+# For each array child:
+exploded = root_df.select(
+    col("_row_id").alias("_parent_row_id"),
+    posexplode_outer(col("items")).alias("_array_index", "item"),
+).select(
+    col("_parent_row_id"),
+    col("_array_index"),
+    col("item.*"),  # flattens item struct for the next recursion level
+)
+# _row_id for the child rows is added at the child-table projection level:
+child_final = exploded.withColumn("_row_id", expr("uuid()"))
+```
+
+This produces the same FK chain: child `_parent_row_id` references parent `_row_id`; `_array_index` is the zero-based position in the source array.
+
+**CSV normalization path (no nested structure; simple loop replacement):**
+
+Legacy `normalize_level1_csv` does `csv.DictReader` → `for source_row in reader: root_table.rows.append(row_with_uuid)`. Spark equivalent is a single-line: `spark.read.csv(rdd_with_header, header=True, inferSchema=False).withColumn("_row_id", expr("uuid()"))`. Column mapping policy uses the same `make_column_name([fieldname])` sanitization as legacy.
+
+### Track B Design: Staging-Swap Write Protocol (Detailed)
+
+**Default layout of staging area (configurable):**
+
+```
+{warehouse_root}/
+├── _staging/
+│   ├── stage=level3/
+│   │   └── canonical_orders/
+│   │       └── run_id=20260814_abcdef/
+│   │           ├── business_date=2026-08-13/
+│   │           │   └── part-0000-....snappy.parquet
+│   │           └── …
+│   └── stage=level4/
+│       └── report_monthly/
+│           └── run_id=…/
+├── level3/
+│   └── canonical_orders/          ← target_path; swapped atomically
+│       ├── business_date=2026-08-13/
+│       └── …
+└── level4/
+    └── report_monthly/
+```
+
+Optional config: `SqlModelManifest.staging_root: str | None` (defaults to `join_paths(warehouse_root, "_staging")`). Allows teams that run on separate S3 buckets for temp-vs-perm to point staging at a dedicated bucket.
+
+**`_execute_model` full_refresh branch rewrite (steps numbered per Scope § Track B):**
+
+```python
+def _execute_model_full_refresh(self, *, model, dataframe, target_path, effective_partition_columns) -> int:
+    scheme = detect_scheme(target_path)
+    if scheme not in (_StorageScheme.file, _StorageScheme.local_unschemed, _StorageScheme.s3):
+        # Consistent with PRD 08 dispatch guard pattern
+        raise _NO_STAGING_MOVE_error(scheme, model.model_id)
+
+    staging_root = model.manifest.staging_root or join_paths(self.warehouse_root, "_staging")
+    staging_path = join_paths(
+        staging_root, model.stage.value, model.target_table_name,
+        "run_id=" + self.run_context.run_id
+    )
+
+    # Step 1 + 2: Write to staging with identical mode/partitionBy
+    writer = dataframe.write.mode("overwrite")
+    if effective_partition_columns:
+        writer = writer.partitionBy(*effective_partition_columns)
+    writer.parquet(staging_path)
+
+    # Step 3: validate_stage → get row count, eliminating post-swap re-read
+    try:
+        staging_df = self.spark.read.parquet(staging_path)
+        row_count = staging_df.count()
+    except PySparkException as exc:
+        _best_effort_delete(staging_path, scheme)
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.staging_write_failed,
+            message="Staging write unverifiable — could not read back staging parquet",
+            context={"model_id": model.model_id, "staging_path": staging_path},
+        ) from exc
+
+    # Step 4: atomic_swap — scheme-dispatched
+    try:
+        if scheme in (_StorageScheme.file, _StorageScheme.local_unschemed):
+            _atomic_swap_posix(staging_path, target_path, mode="full_refresh")
+        elif scheme == _StorageScheme.s3:
+            _atomic_swap_s3(staging_path, target_path, mode="full_refresh")
+    except Exception as exc:
+        _best_effort_delete(staging_path, scheme)
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.atomic_swap_failed,
+            message="Atomic swap from staging to canonical path failed",
+            context={
+                "model_id": model.model_id,
+                "staging_path": staging_path,
+                "target_path": target_path,
+                "operator_action": (
+                    "Inspect target path for partial state. Staging contents preserved "
+                    "in staging_path on a best-effort basis if the error occurred mid-copy."
+                ),
+            },
+        ) from exc
+    return row_count
+```
+
+**POSIX atomic swap (`_atomic_swap_posix`):**
+
+- **`mode="full_refresh"`:** `shutil.rmtree(target_path)` followed by `os.rename(staging_path, target_path)`. On POSIX, `rename(2)` is atomic when source and dest are on the same filesystem. The rmtree-then-rename window is the same exposure the Mercell/Camelot Scala code uses; the DAG hazard is fully eliminated because input files under `target_path` are never referenced by the staging DataFrame's read plan.
+- **`mode="partition_overwrite"`:** Merge semantics. Iterate partition directories under staging (e.g., `business_date=2026-08-13/`), for each: delete matching dir under target (if exists), then `rename(staging_part_dir, target_part_dir)`. Staging's top-level table dir is removed on success (empty if all partitions moved). This preserves the dynamic-partition-overwrite contract: only partitions present in the incoming DataFrame are replaced.
+
+**S3 atomic swap (`_atomic_swap_s3`):**
+
+S3 has no cross-key rename; CopyObject + DeleteObject + source-DELETE are the minimum. The swap is "effectively atomic" from the query perspective (target dirs are only ever: OLD-valid, EMPTY-transient, NEW-valid). We never DeleteObject a key before CopyObject of the replacement succeeds, so readers only see complete states per partition key:
+
+- **`mode="full_refresh"`:**
+  1. `list_v2(target_prefix)` → list existing target keys K_T.
+  2. For each staging key K_S under `staging_prefix`:
+       `CopyObject(Bucket, K_T_new ← K_S)` — where K_T_new = replace_prefix(K_S, staging_prefix → target_prefix).
+  3. `list_v2(target_prefix)` again → confirm all staging keys now appear under target prefix; verify count matches.
+  4. Batch `DeleteObjects` on all old K_T from step 1 (anything that was there before and wasn't overwritten by staging gets deleted).
+  5. Batch `DeleteObjects` on all staging keys (cleanup).
+
+- **`mode="partition_overwrite"`:**
+  1. Identify partition sub-prefixes under staging (e.g., `business_date=2026-08-13/`).
+  2. For each partition sub-prefix PART present in staging:
+       a. `list_v2(target_prefix + PART)` → all old keys K_T under this partition.
+       b. Copy all staging keys under `staging_prefix + PART` → `target_prefix + PART`.
+       c. Batch DeleteObjects on old K_T (step 2a) — only this partition's old keys.
+  3. After all partitions copied: batch DeleteObjects on all staging keys.
+  4. Partitions NOT present in staging are untouched → dynamic overwrite semantic preserved.
+
+Fail-fast scheme guard: any path whose `detect_scheme` result is NOT in {`file`, `local_unschemed`, `s3`} raises a clear `_NO_STAGING_MOVE` error pointing the operator at PRD 08's supported scheme set. This prevents accidentally testing the protocol against a storage backend with no known-atomic semantics.
+
+---
+
 ## Open Decisions
 
 ### OD-1 (2026-08-13): Same-path overwrite default remediation path
@@ -246,7 +601,11 @@ Deliverables:
 
 ## Completion Checklist
 
-- [ ] Gate 1 design record written; pyproject delta extras added.
+- [x] Gate 1 design record written; pyproject delta extras added. ✅ 2026-08-14
+  - Four target contracts recorded: C1 Level2TableManifest layout, C2 mapping_version hash parity, C3 table-name policy parity, C4 partition_overwrite semantics.
+  - Track A detailed design: StructType metadata walk → NormalizationPlan → posexplode/struct-flatten execution, CSV path.
+  - Track B detailed design: staging layout, scheme-dispatched atomic swap (POSIX rename, S3 list-copy-delete), merge-on-swap partition_overwrite, row-count re-read elimination.
+  - Extras bucket `delta = ["delta-spark>=4.0,<5.0"]` added to `pyproject.toml` (OD-1 path (3)).
 - [ ] Track A: normalize/planner.py + metadata walk + mapping_version parity test passes vs legacy.
 - [ ] Track A: normalize/spark_runner.py + posexplode/struct-flatten execution produces identical row-level outputs for the 3-deep nested fixture + CSV fixture.
 - [ ] Track A: pipeline.py rewire complete; `_rows_to_dataframe` no longer on hot path; `path_content_length` dispatcher added + s3 HEAD.
