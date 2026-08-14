@@ -16,11 +16,16 @@ The platform is designed to align with DAMA-DMBOK v2 principles for:
 The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` through `level5` naming used here. Instead, those levels are the platform's chosen architecture model for operationalizing DMBOK-aligned concerns in a concrete implementation.
 
 ## Source Code references
-/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt
-/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg
-/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main
-/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main
-/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main
+
+**Baseline legacy archives (workstation reference, 2026-08-14 session):**
+- Camelot (main): `/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt` → *now also accessible on current session workstation at* `~/Documents/__code/archive/camelot/__code/bi-bdp-elt`
+- Camelot (cfg): `/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg` → *now also accessible at* `~/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg`
+- Mercell (main): `/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main` → *now also accessible at* `~/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main`
+- Mercell (transformation cfg): `/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main` → *now also accessible at* `~/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main`
+- Mercell (ingestion cfg): `/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main` → *now also accessible at* `~/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main`
+
+**Location governance note:**
+Workstation-specific paths for the baseline reference archives are formally tracked in [IMPLEMENTATION_SOURCE_PROVENANCE.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/IMPLEMENTATION_SOURCE_PROVENANCE.md) § *Local Machine Source Map (Not Committed)* — for any future workstation path change, update that provenance doc first (and if the change applies to a new workstation only, prefer the gitignored local override `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.local.md` rather than editing README paths). Client-neutral guardrails apply: no proprietary code or config is copied from these archives into `elt_pipeline`; they are design baselines only.
 
 ## Platform Model
 

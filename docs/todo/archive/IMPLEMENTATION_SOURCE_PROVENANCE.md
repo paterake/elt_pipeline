@@ -51,6 +51,24 @@ This file is expected to contain workstation-specific absolute paths to the arch
 
 That local file is ignored by `.gitignore` and should not be committed.
 
+#### Current-Session workstation root (2026-08-14, Rakesh workstation)
+
+The session-specific archive root used during the Track A/Track B custom-code parity review is:
+
+- Archive root: `~/Documents/__code/archive`
+
+Expanded mapping (for reference during this active backlog session only — when a new workstation is used, write the gitignored `.local.md` override instead of editing this row):
+
+| Redacted baseline identifier in this document | Workstation path (2026-08-14 session only) |
+|---|---|
+| `bi-bdp-elt` (Camelot, main code) | `~/Documents/__code/archive/camelot/__code/bi-bdp-elt` |
+| `bi-bdp-elt-cfg` (Camelot, config) | `~/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg` |
+| `edp-elt-ingestion-main` (Mercell, main code) | `~/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main` |
+| `edp-elt-transformation-cfg-main` (Mercell, transformation cfg) | `~/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main` |
+| `edp-elt-ingestion-cfg-main` (Mercell, ingestion cfg) | `~/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main` |
+
+Governance: the table above is a session continuity note only, captured because the active TODO backlog for Track A/Track B ports specific Scala patterns (schema-walk relationalize + staging-swap write protocol) from these exact baselines. For any new session on a different workstation, prefer the gitignored local file instead, per the rule above. Retain `Client-Neutral Guardrails` section of this provenance doc always: no verbatim proprietary copy.
+
 ## Review Breakdown (Legacy Baselines)
 
 This section defines the review breakdown for the legacy baselines that were referenced during implementation.
