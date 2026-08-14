@@ -19,13 +19,13 @@ from elt_pipeline.shared.path_utils import (
     path_exists,
     path_mkdir,
     path_normalize,
+    path_open_for_append,
     path_parent,
     path_relative_to,
     path_replace,
+    path_with_suffix,
     path_write_bytes,
     path_write_text,
-    path_open_for_append,
-    path_with_suffix,
 )
 from elt_pipeline.shared.runtime import RunContext
 
@@ -49,7 +49,7 @@ def _sanitize_path_fragment(value: str) -> str:
 def _write_json_file(path: str, payload: BaseModel | dict[str, Any]) -> None:
     path_mkdir(path_parent(path), parents=True, exist_ok=True)
     data = payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
-    temp_path = path_with_suffix(path, f".json.tmp")
+    temp_path = path_with_suffix(path, ".json.tmp")
     path_write_text(
         temp_path,
         json.dumps(data, indent=2, sort_keys=True),

@@ -118,7 +118,10 @@ def test_local_artifact_store_persists_run_artifacts(tmp_path: Path) -> None:
     assert "environment=" not in audit_path
 
     stored_audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
-    stored_log = [json.loads(line) for line in Path(log_path).read_text(encoding="utf-8").splitlines()]
+    stored_log = [
+        json.loads(line)
+        for line in Path(log_path).read_text(encoding="utf-8").splitlines()
+    ]
     stored_error = [
         json.loads(line) for line in Path(error_path).read_text(encoding="utf-8").splitlines()
     ]

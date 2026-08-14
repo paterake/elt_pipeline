@@ -9,6 +9,11 @@ from pydantic import ValidationError
 
 from elt_pipeline.config.models import PipelineConfig, ResolvedEntityConfig
 from elt_pipeline.shared.errors import ConfigValidationError
+from elt_pipeline.shared.path_utils import (
+    _StorageScheme,
+    _validate_root_is_string,
+    detect_scheme,
+)
 
 
 def load_pipeline_config(config_path: str | Path) -> PipelineConfig:
@@ -129,3 +134,85 @@ def _merge_two_dicts(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[
         else:
             merged[key] = value
     return merged
+
+
+def _iter_configured_bucket_paths(config: PipelineConfig) -> list[str]:
+    buckets: list[str] = []
+    for source in config.sources:
+        payload = source.to_payload(exclude={"name", "connector_type", "entities"})
+        for candidate_key in ("bucket_path", "root_path", "data_root", "kafka_log_path"):
+            candidate = payload.get(candidate_key)
+            if isinstance(candidate, str) and candidate:
+                buckets.append(candidate)
+        for entity in source.entities:
+            entity_payload = entity.to_payload(exclude={"name"})
+            for candidate_key in ("bucket_path", "root_path", "data_root"):
+                candidate = entity_payload.get(candidate_key)
+                if isinstance(candidate, str) and candidate:
+                    buckets.append(candidate)
+    return buckets
+
+
+def validate_config_root_schemes(
+    *,
+    root_path: str,
+    warehouse_root: str,
+    config: PipelineConfig | None = None,
+    extra_paths: list[str] | None = None,
+) -> None:
+    paths_to_check = [root_path, warehouse_root]
+    if config is not None:
+        paths_to_check.extend(_iter_configured_bucket_paths(config))
+    if extra_paths:
+        paths_to_check.extend(extra_paths)
+
+    invalid: list[tuple[str, str]] = []
+    for path_str in paths_to_check:
+        if not isinstance(path_str, str) or not path_str:
+            continue
+        try:
+            _validate_root_is_string(path_str)
+        except (ConfigValidationError, TypeError, ValueError):
+            invalid.append((path_str, f"root-not-string:{type(path_str).__name__}"))
+            continue
+        # detect_scheme() raises ConfigValidationError itself for unsupported :// prefixes
+        try:
+            scheme = detect_scheme(path_str)
+        except ConfigValidationError as exc:
+            detail = exc.context.get("message") if exc.context else str(exc.message)
+            invalid.append((path_str, detail or "unsupported-scheme-in-path"))
+            continue
+        # Suffix / prefix hygiene checks (scheme is already valid enum member at this point)
+        if scheme == _StorageScheme.file:
+            # Triple-slash variant file:/// is valid (matches RFC); we permit both
+            # file:// and file:///. Error only for literal file:/ single slash:
+            single_slash = path_str.startswith("file:/") and not path_str.startswith("file://")
+            if single_slash:
+                invalid.append(
+                    (
+                        path_str,
+                        "unsupported-file-scheme-single-slash:file:/... (expected 'file://')",
+                    )
+                )
+                continue
+        if scheme == _StorageScheme.s3:
+            cleaned = path_str[len("s3://"):]
+            if not cleaned or cleaned == "/":
+                invalid.append((path_str, "s3-bucket-empty:expected s3://<bucket>/<prefix>"))
+                continue
+
+    if invalid:
+        raise ConfigValidationError(
+            message=(
+                "One or more storage roots use unsupported schemes. "
+                "Allowed schemes are: s3:// (object storage), file:// (absolute "
+                "local), or an un-prefixed absolute/relative POSIX path. "
+                "Unsupported: s3a://, hdfs://, gs://, abfss://, wasb(s)://, etc."
+            ),
+            context={
+                "valid_schemes": ["s3://", "file://", "(unprefixed POSIX path)"],
+                "invalid_paths": [
+                    {"path": path, "detail": detail} for path, detail in invalid
+                ],
+            },
+        )

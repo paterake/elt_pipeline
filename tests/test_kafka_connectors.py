@@ -88,7 +88,9 @@ def test_kafka_connector_base_persists_before_checkpoint_update(tmp_path: Path) 
         "recorded_at": result.checkpoint_after["recorded_at"],
     }
     assert checkpoint_document.current_checkpoint["offset"] == 12
-    assert [Path(p) for p in checkpoint_document.history[0].manifest_paths] == [Path(result.manifests[0].manifest_path)]
+    assert [Path(p) for p in checkpoint_document.history[0].manifest_paths] == [
+        Path(result.manifests[0].manifest_path)
+    ]
 
 
 def test_local_kafka_connector_consumes_from_log_and_updates_checkpoint(tmp_path: Path) -> None:

@@ -385,6 +385,163 @@ Operator guidance:
 - If you are unsure which `ingest_date` window carried the late rows, use Spark shell or a quick L2 query to find them: L2 carries `ingest_date` as both a Spark-discovered partition column and an in-data column, so `SELECT DISTINCT ingest_date FROM level2_parquet WHERE business_date = '2026-07-31'` gives you the exact windows to replay.
 - The reference example `examples/sql/local_demo/level3/sales/canonical_orders/` implements this pattern end-to-end; use it as a template for new L3 models.
 
+## Cloud Native (No-Mounts) EMR / S3 Execution Pattern
+
+This section applies when running the pipeline on **AWS EMR** (or any cloud
+Spark runtime) with S3 as storage, using the platform's native URI dispatch
+**without FUSE, Mountpoint for S3, or any file-system mount layer.**
+
+The storage-root contract is sharp and zero-inference — per
+[PRD 08](../prd/08-prd-storage-root-uri-io-dispatch.md):
+
+- Every root is a **string URI**. The scheme prefix on the string is the single
+  routing key for dispatch.
+- `s3://` URIs are handed **verbatim** to Spark parquet reads and writes.
+  No `pathlib.Path` wrapping, no URI mangling, no prefix reconstruction, no
+  POSIX assumptions applied in Python code.
+- Config (YAML + CLI args) is the **sole** dictum of prefix + root.
+
+### IAM Roles and Bucket Setup
+
+Use environment-scoped buckets. Do not put dev/staging/prod on one bucket with
+prefixes — use peer buckets. Example:
+
+```text
+s3://corp-elt-dev-runtime-us-east-1/       # --root-path for dev (L1/L2 raw)
+s3://corp-elt-dev-warehouse-us-east-1/     # --warehouse-root for dev (L3/L4 curated)
+
+s3://corp-elt-staging-runtime-us-east-1/   # --root-path for staging
+s3://corp-elt-staging-warehouse-us-east-1/ # --warehouse-root for staging
+
+s3://corp-elt-prod-runtime-us-east-1/      # --root-path for prod
+s3://corp-elt-prod-warehouse-us-east-1/    # --warehouse-root for prod
+```
+
+Attach the following as an **instance profile** on the EMR primary/core nodes
+(or as an execution-role ARN on EMR Serverless). Scope `Resource` to the exact
+env/buckets above. **Never use long-lived credentials inside the Spark job.**
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::corp-elt-dev-runtime-us-east-1",
+        "arn:aws:s3:::corp-elt-dev-runtime-us-east-1/*",
+        "arn:aws:s3:::corp-elt-dev-warehouse-us-east-1",
+        "arn:aws:s3:::corp-elt-dev-warehouse-us-east-1/*"
+      ]
+    }
+  ]
+}
+```
+
+Each source bucket that the object-storage or kafka connectors read from gets a
+similar, separate IAM grant. Keep connector `bucket_path` source buckets and
+platform `--root-path / --warehouse-root` buckets on separate IAM scopes so
+audit trail distinguishes reads from writes.
+
+### 4-Stage EMR Step Pattern (Validate → Ingest → Normalize → SQL → Publish)
+
+Run each stage as its **own EMR Step** / EMR Serverless job run. Keeping stages
+separate gives independent retry, per-stage Spark config, and clear failure
+boundaries.
+
+```bash
+# Stage 0 — validate config + package shapes (single-process, negligible CPU)
+spark-submit --deploy-mode client \
+  --packages org.apache.hadoop:hadoop-aws:3.3.6 \
+  -m elt_pipeline validate-config s3://corp-elt-dev-runtime-us-east-1/configs/local_object_storage_orders.yaml \
+  --environment dev --source local_files --entity orders
+
+# Stage 1 — ingest (connector reads → L1 raw files on s3 runtime bucket)
+spark-submit --deploy-mode cluster \
+  --packages org.apache.hadoop:hadoop-aws:3.3.6 \
+  -m elt_pipeline ingest run \
+    s3://corp-elt-dev-runtime-us-east-1/configs/local_object_storage_orders.yaml \
+    --environment dev \
+    --root-path s3://corp-elt-dev-runtime-us-east-1/
+
+# Stage 2 — normalize (L1 raw → L2 parquet tables on s3 runtime bucket)
+spark-submit --deploy-mode cluster \
+  --packages org.apache.hadoop:hadoop-aws:3.3.6 \
+  -m elt_pipeline normalize run \
+    s3://corp-elt-dev-runtime-us-east-1/configs/local_object_storage_orders.yaml \
+    --environment dev \
+    --root-path s3://corp-elt-dev-runtime-us-east-1/ \
+    --window-start 2026-08-13T00:00:00+00:00 \
+    --window-end   2026-08-13T23:59:59+00:00
+
+# Stage 3 — sql (L2 reads → L3 canonical tables → L4 marts on s3 warehouse bucket)
+spark-submit --deploy-mode cluster \
+  --conf spark.sql.sources.partitionOverwriteMode=DYNAMIC \
+  --packages org.apache.hadoop:hadoop-aws:3.3.6 \
+  -m elt_pipeline sql run \
+    s3://corp-elt-dev-runtime-us-east-1/sql_packages/local_demo \
+    --environment dev \
+    --root-path     s3://corp-elt-dev-runtime-us-east-1/ \
+    --warehouse-root s3://corp-elt-dev-warehouse-us-east-1/ \
+    --start-date 2026-08-13 --end-date 2026-08-13
+
+# Stage 4 — publish (L4 reads → level5 CSV/TSV/ZIP delivery artifacts)
+spark-submit --deploy-mode cluster \
+  --packages org.apache.hadoop:hadoop-aws:3.3.6 \
+  -m elt_pipeline publish run \
+    s3://corp-elt-dev-runtime-us-east-1/publish_packages/local_demo \
+    --environment dev \
+    --root-path     s3://corp-elt-dev-runtime-us-east-1/ \
+    --warehouse-root s3://corp-elt-dev-warehouse-us-east-1/ \
+    --start-date 2026-08-13 --end-date 2026-08-13
+```
+
+Note: `configs/`, `sql_packages/`, `publish_packages/` are **package-file
+paths** (local YAML/SQL inputs to the platform), not storage roots. They live
+on the EMR primary node's local FS (uploaded as part of the bootstrap step or
+a step dependency zip) and intentionally remain `pathlib.Path`-typed within
+the platform code. Storage roots (the `s3://…` strings above) are always
+string-typed and flow verbatim through the dispatch layer to Spark.
+
+### Scheme Prefix Troubleshooting
+
+The guard `validate_config_root_schemes(...)` in
+`src/elt_pipeline/config/loader.py` runs a fail-fast check on every storage
+root and bucket path before I/O or Spark starts. If you see an
+`Unsupported storage scheme` / `ConfigValidationError`:
+
+| Error | Cause | Fix |
+|---|---|---|
+| `unsupported-scheme-prefix:s3a` | Config or CLI arg used legacy `s3a://` prefix. | Switch to `s3://` — EMR + `hadoop-aws` bundle handle `s3://` natively with EMRFS. |
+| `unsupported-scheme-prefix:hdfs` or `gs`, `abfss`, `wasb(s)` | Platform explicitly does not support these schemes today. | Separate PRD required if you need to add new scheme members to `_StorageScheme` in `src/elt_pipeline/shared/path_utils.py`. |
+| `s3-bucket-empty` | Root was literally `s3://` or `s3:///` with no bucket name. | Use full `s3://<bucket-name>/<optional-prefix>/` — bucket + prefix required. |
+| `unsupported-file-scheme-single-slash:file:/...` | Triple-slash `file:/…` / `file:///…` was used inconsistently. | Write `file://` + absolute path; or drop the scheme entirely and pass a plain POSIX path (preferred for local dev). |
+| `root-not-string` | Someone called the runner with a `pathlib.Path` object instead of `str`. | Fix the call site; storage-root call signatures are `str`, not `Path \| str`. |
+
+### Cloud Operator Guidance
+
+- **Do not introduce FUSE / Mountpoint for S3 at any point.** The code contract
+  explicitly avoids mounts. Adding a mount layer after the platform already
+  handles `s3://` natively is double-indirection and breaks the Mercell/Camelot
+  sharp-root convention.
+- `spark.sql.sources.partitionOverwriteMode=DYNAMIC` on the Stage 3 SQL submit
+  is **required** for the Mercell re-co-location + Camelot late-arrival
+  pattern. Without it, `partition_overwrite` load modes behave like
+  full-refresh and destroy sibling `(source_name, business_date)` partitions.
+- **Late-arrival replays on EMR** are identical in form to the local recovery
+  procedure above. Replay stages 1–3 pointing at the same env roots but with a
+  historical or expanded `--window-start/--end-date`; the dynamic partition
+  overwrite will surgically fix only the touched partitions.
+- For EMR Serverless, add the EMR Serverless `s3` access policy to the
+  application's runtime role, and pass the same bucket set above. Nothing
+  changes in the command lines — the string roots are unchanged.
+
 ## Known Limitations
 
 These are current, intentional constraints of the local-first Spark implementation. They are

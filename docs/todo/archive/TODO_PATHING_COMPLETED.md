@@ -7,7 +7,8 @@ the analysis.
 
 ## Status
 
-- Backlog status: active (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, Phase 1 — P1 linchpin COMPLETED 2026-08-12, Phase 2 — P5 no-env-paths COMPLETED 2026-08-12, Phase 3 — L2 reader parent-directory partition discovery COMPLETED 2026-08-12, Phase 4 — L3/L4 default partitions + decouple load_mode + late-arrival E2E COMPLETED 2026-08-12, Phase 5 — ergonomics/hardening COMPLETED 2026-08-13)
+- Backlog status: **COMPLETED / ARCHIVED** (decisions finalized, Phase 0 — PRD update COMPLETED 2026-08-11, Phase 1 — P1 linchpin COMPLETED 2026-08-12, Phase 2 — P5 no-env-paths COMPLETED 2026-08-12, Phase 3 — L2 reader parent-directory partition discovery COMPLETED 2026-08-12, Phase 4 — L3/L4 default partitions + decouple load_mode + late-arrival E2E COMPLETED 2026-08-12, Phase 5 — ergonomics/hardening COMPLETED 2026-08-13)
+- **Follow-up work on object storage URIs, scheme dispatch, and root-path contract is tracked separately** (this backlog scoped only to path grammar + partitioning within a fixed POSIX assumption for storage roots): see `docs/todo/TODO_STORAGE_URI.md` (active implementation backlog) plus the architectural specification in `docs/prd/08-prd-storage-root-uri-io-dispatch.md`. PRD 08 corrects the storage-root contract to match Mercell/Camelot conventions (string URI roots, scheme-as-single-routing-key, zero pathlib on root joins, native `s3://` handoff to Spark parquet reads/writes without FUSE/Mountpoint).
 - Driver: architectural review after the Spark engine migration (see
   `docs/todo/archive/TODO_SPARK_COMPLETED.md`) + research validation against Spark medallion
   best practice

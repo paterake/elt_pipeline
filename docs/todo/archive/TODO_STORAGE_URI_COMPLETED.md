@@ -1,22 +1,26 @@
-# Storage URI + I/O Dispatch Backlog (Active Implementation)
+# Storage URI + I/O Dispatch Backlog (Completed Snapshot)
 
 ## Purpose
 
-This file is the **active implementation backlog** for [PRD 08: URI-Aware Storage Root Paths and Explicit-Config I/O Dispatch](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/08-prd-storage-root-uri-io-dispatch.md) — correction of the storage-root contract to match the `mercell` / `camelot` conventions: sharp explicit roots (string URIs), scheme-as-single-routing-key, no mounts, zero inference, zero pathlib used on root joins, full-URI level-to-level handoffs.
+This file is the **COMPLETED SNAPSHOT** for the URI-aware storage-root backlog. The active-approved-specification version of the PRD is:
+- [PRD 08: URI-Aware Storage Root Paths and Explicit-Config I/O Dispatch](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/08-prd-storage-root-uri-io-dispatch.md)
 
-This backlog is the **single session continuity document** for this implementation initiative. Once complete, it will be moved to `docs/todo/archive/TODO_STORAGE_URI_COMPLETED.md`.
+This document is the historical completed-tracker record. A summary entry is indexed in `docs/todo/TODO.md` under the Archived backlogs table. All code changes referenced herein are **COMPLETE in the repository as of 2026-08-13; Gate 5 environment-verification items (JVM + EMR E2E) are pending execution on a suitable workstation / AWS account, per the status row below.**
 
-Use it as the working handoff between sessions. It captures the approved requirements baseline (from PRD 08), the gated implementation order, the next build step, open decisions, completion checklist, and references to prior archived backlogs whose "descoped" items are now **reinstated as approved scope** by PRD 08.
+The work corrected the storage-root contract to match the `mercell` / `camelot` conventions: sharp explicit roots (string URIs), scheme-as-single-routing-key, no mounts, zero inference, zero `pathlib` used on root joins, full-URI level-to-level handoffs.
+
+Per repo governance: this completed snapshot stays in `docs/todo/archive/`. When Gate 5 (JVM + EMR E2E) items are all green, update the "Pending Gate 5" line below → remove the pending note. Do not move this file back out of archive unless a formal PRD re-opens the scope.
+
 
 ## Current Status
 
 - **Phase 0: PRD Approved** ✅ COMPLETED 2026-08-13 — [PRD 08](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/08-prd-storage-root-uri-io-dispatch.md) Approved v1. Top-level tracker [TODO.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO.md) updated. Descoped items from prior archived backlogs cross-referenced.
-- **Phase 1: Gate 0 (path_utils module + tests)** ✅ COMPLETED 2026-08-13 — Gate 0 checklist all pass. Defensive one-line fix added in shared errors module (`PipelineError.__init__` now sets `self.message`, matching its declared attribute; was missing on Exception subclass despite explicit annotation). No storage-module / connector / SQL files yet touched.
-- **Phase 2: Gate 1 (CLI typing + root signature flow-in)** 🔄 NEXT UP — open item.
-- **Phase 3: Gate 2 (storage module + connector I/O migration)** ⏳ pending.
-- **Phase 4: Gate 3 (SQL + Publish stage migration)** ⏳ pending.
-- **Phase 5: Gate 4 (hardening, safety, docs, sweep)** ⏳ pending.
-- **Phase 6: Gate 5 (verification, E2E on EMR, sign off)** ⏳ pending.
+- **Phase 1: Gate 0 (path_utils module + tests)** ✅ COMPLETED 2026-08-13 — Gate 0 checklist all pass. Defensive one-line fix added in shared errors module (`PipelineError.__init__` now sets `self.message`, matching its declared attribute; was missing on Exception subclass despite explicit annotation).
+- **Phase 2: Gate 1 (CLI typing + root signature flow-in)** ✅ COMPLETED 2026-08-13 — argparse storage-root args (`--root-path`, `--warehouse-root`, `--kafka-log-path`) all `type=str` with string defaults. All top-level runner function entry-point signatures (`_run_ingest_entity`, `_run_normalize_manifest`, `run_sql_models_locally`, `run_publish_definitions_locally`) accept `root_path: str`, `warehouse_root: str`. Static grep audit: `git grep "root_path: Path|warehouse_root: Path" src/` → 0 matches. Package-file paths (`config_path`, `plan_path`, `package_path`) deliberately kept `type=Path` (local YAML/SQL inputs, not storage targets).
+- **Phase 3: Gate 2 (storage module + connector I/O migration)** ✅ COMPLETED 2026-08-13 — ingest `storage.py`/`state.py`, `LocalObjectStorageConnector`, `LocalRestConnector`, `LocalSqlConnector`, `LocalKafkaConnector` all reworked: constructor root→str; all `/` concat via `join_paths()`; all I/O calls through path_utils scheme dispatch; LocalObjectStorage `.is_dir()` POSIX guard replaced with `path_is_dir()`. Gate 2b sub-gate also complete: normalize `storage.py`/`level2_storage.py`/`pipeline.py` plus integrations `quality.py`/`lineage.py` all accept str roots and use path_utils I/O.
+- **Phase 4: Gate 3 (SQL + Publish stage migration)** ✅ COMPLETED 2026-08-13 — `sql/models.py` and `publish/models.py` storage-root attributes (`warehouse_root`, `artifact_root`, `run_dir`, `audit_path`, `log_path`, `lineage_path`, `error_path`, `run_scoped_path`, `stable_delivery_path`, `export_manifest_path`) typed `str`; package-file attributes (`package_root`, `manifest_path`, `sql_path`, `package_path`, `query_path`) retained as `Path`. `sql/level2_source.py`, `sql/spark_executor.py`, `sql/runtime.py` rewritten: executor `_table_path()` returns a plain string from `join_paths()`; Spark receives raw string URIs directly on `spark.read.parquet / writer.parquet` — zero `Path()` wrapping, zero `str(path_obj)` coercion. `publish/runtime.py` fully rewritten with scheme guards (`_local_path_or_exception()` for operations that require local POSIX like zipfile/CSV writers), dispatch helpers (`_file_size_bytes`, `_copy_file`), and path_utils-based concat for `level4` source reads and manifest sidecars.
+- **Phase 5: Gate 4 (hardening, safety, docs, sweep)** ✅ COMPLETED 2026-08-13 — full sweep audit: 0 signatures with `root_path: Path`; 0 `root_path /"X"` storage-root concat via `/` operator; remaining `from pathlib import Path` imports in `src/` are limited to (a) immediate leaf POSIX call sites that use `strip_file_scheme()` first, or (b) sql/discovery.py + publish/discovery.py scanning local package directories (package-file paths, not storage roots). Fail-fast scheme guard `validate_config_root_schemes(...)` added in `src/elt_pipeline/config/loader.py`. `pyproject.toml` extras: `s3 = [boto3>=1.34,<2.0]` and `emr = [s3 + spark]`. Archived backlogs cross-referenced (`TODO_PATHING_COMPLETED.md` and `TODO_SPARK_COMPLETED.md` updated with follow-up and "subsequently implemented, complete" annotations). LOCAL_OPERATOR_RUNBOOK.md now has § "Cloud Native (No-Mounts) EMR / S3 Execution Pattern" with bucket naming, IAM policy template, 4-stage EMR step pattern, and scheme troubleshooting table. Status header updated; "Open Decisions" section populated with 3 closed decisions. `ruff check src tests` → 0 issues. `GetDiagnostics` across all files → 0 errors.
+- **Phase 6: Gate 5 (verification, E2E on EMR, sign off)** ⏳ **PENDING — requires actual workstation JVM 17+ plus AWS environment.** Checklist items: 5.a (static POSIX subset green on JVM-enabled machine), 5.b `tests/test_path_utils.py` 48 green, 5.c `tests/test_sql_models.py` Spark compile-model tests green, 5.d JVM + Spark-integration tests ~51 PASS on JVM workstation, 5.e full EMR E2E with real S3 buckets + CLI flow validate→ingest→normalize→sql→publish NO mounts NO FUSE, 5.f final lint sweep, 5.g final diagnostics 0. When G5 passes: move file to `docs/todo/archive/TODO_STORAGE_URI_COMPLETED.md` and update `TODO.md` row (per instructions at bottom of this file).
 
 No gate is marked complete until its explicit "Acceptance Criteria" subsection below passes.
 
@@ -216,7 +220,39 @@ Execute all success criteria from PRD 08 § Success Criteria:
 
 ## Open Decisions (closed during implementation — capture resolution here)
 
-None yet. The PRD 08 resolves all architecture questions. Implementation-level decisions for each gate should be recorded here when they arise during coding sessions, with the date and rationale.
+### OD-1 (2026-08-13): Storage-root paths vs Package-file paths — explicit type split
+
+**Decision:** Two separate path categories with distinct Python types, enforced in function signatures and model annotations.
+
+- **Storage root paths** (anything that flows through Spark parquet read/write, leveled storage, artifact roots, or manifests carrying data outputs): **always `str`.** Never `Path`, never `str | Path` unions. This includes `root_path`, `warehouse_root`, `artifact_root`, `run_dir`, `run_scoped_path`, `stable_delivery_path`, `audit_path`, `log_path`, `lineage_path`, `error_path`, `export_manifest_path`, connector `bucket_path`, and `kafka_log_path`.
+- **Package-file paths** (local YAML/SQL/config inputs — files the platform code reads in the driver process before any Spark activity): **always `pathlib.Path`.** This includes `config_path` (ingest/schedule/normalize config YAML), `plan_path` (schedule plan YAML), `package_path` (SQL model packages, publish packages), `CompiledSqlModel.package_root / manifest_path / sql_path`, and any publish `query_path`.
+
+**Rationale:** This split is the sharpest boundary for PRD 08's zero-inference rule. Storage-root strings are passed "as-is" into `join_paths` and straight down into Spark parquet I/O — `pathlib` never touches them because it collapses `s3://` → `s3:/` and mangles scheme prefixes. Package-file paths, by contrast, are always local POSIX files and `Path` provides the cleanest `exists()`, `read_text()`, and `is_dir()` semantics on driver-only code paths.
+
+**Impact on code:** All constructor and runner signatures explicitly declare which side they're on. Tests now apply a consistent boundary pattern: `str(tmp_path)` for Category A constructors, and `Path(returned_str)` on the test assertion side only when doing local filesystem checks.
+
+### OD-2 (2026-08-13): schedule `plan_path` stays Path
+
+**Decision:** The `schedule run <plan-path>` argparse arg stays `type=Path`, and `shared/scheduler.py` keeps `load_schedule_plan(path: Path)` requiring a `pathlib.Path` object. **Storage roots declared INSIDE the plan YAML stay `str`.**
+
+**Rationale:** `plan_path` is the YAML schedule file itself — a local POSIX input to the scheduler wrapper. The scheduler does local file I/O (read YAML, write DAG files) and calls subprocess/cli wrappers with CLI args — the wrapper itself never carries the `plan_path` into a Spark R/W path. The PRD 08 strict string rule applies to all values INSIDE the plan (roots, bucket paths, etc.), not to the filesystem path of the plan file itself.
+
+**Note from implementation:** Gate 1 initially converted `plan_path` to `type=str` matching the storage-root rule, but this broke `scheduler.py:load_schedule_plan(path: Path).resolve()` in tests — this was corrected to `type=Path` in Gate Safety and is the settled convention.
+
+### OD-3 (2026-08-13): sql/discovery.py + publish/discovery.py keep `Path` on package scanning
+
+**Decision:** `discover_sql_models(package_root: str | Path)` and `discover_publish_definitions(package_root: str | Path)` convert their argument to `Path()` immediately and use plain `Path.rglob("*.yaml")` / `Path.glob()` / `Path.read_text()` for package scanning. This stays as-is and is out of scope for PRD 08's root-path conversion.
+
+**Rationale:** Both functions only scan local YAML/SQL package directories — they are part of the "compile/plan" phase that runs before Spark and before any storage write happens. The argument they take is a "SQL package directory" or "publish package directory", always a local POSIX directory. It is explicitly NOT a storage root (no data written here, no Spark R/W target). PRD 08's rule set is scoped to storage roots, Spark R/W targets, and leveled-data paths.
+
+**Audit-proof pattern:** In `src/` the remaining `from pathlib import Path` imports after Gate 3 are:
+1. These two discovery modules (package-file scanning only);
+2. `config/loader.py` — used only on `config_path` (package-file path category B);
+3. `cli.py` — only on `config_path` and `plan_path` (both package-file category B);
+4. Immediate leaf helpers with `strip_file_scheme()` on POSIX call sites.
+
+None of the remaining `Path` uses are applied to `root_path`, `warehouse_root`, or any storage-typed attribute.
+
 
 ## Known Risks and Mitigations
 
