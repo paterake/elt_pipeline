@@ -46,7 +46,10 @@ class PlannedTable:
             physical_table_name=self.physical_table_name,
             parent_table_name=self.parent_table_name,
             join_key_columns=self.join_key_columns,
-            column_mappings=self.column_mappings,
+            column_mappings=sorted(
+                self.column_mappings,
+                key=lambda m: m.logical_path,
+            ),
         )
 
 
