@@ -428,3 +428,102 @@ class TestPublishServingEndpointKwarg:
         params = sig.parameters
         assert "serving_endpoint" in params
         assert params["serving_endpoint"].default is None
+
+
+class TestPublishDualPathP2Fix:
+    def test_publish_runtime_zero_hardcoded_spark_parquet_namespace(self):
+        src = inspect.getsource(__import__("elt_pipeline.publish.runtime", fromlist=[""]))
+        assert 'namespace="spark_parquet"' not in src
+        assert "namespace='spark_parquet'" not in src
+
+    def test_register_level4_source_has_iceberg_branch(self):
+        from elt_pipeline.publish.runtime import _register_level4_source
+        src = inspect.getsource(_register_level4_source)
+        assert "_is_iceberg_enabled" in src
+        assert "spark.table" in src
+        assert "_iceberg_table_fq" in src
+        assert "manifest.domain" in src
+        assert '"level4"' not in src.split("SqlModelStage.level4")[0]
+
+    def test_source_namespace_computed_from_use_iceberg(self):
+        src = inspect.getsource(__import__("elt_pipeline.publish.runtime", fromlist=[""]))
+        assert 'source_namespace = "iceberg" if use_iceberg else "spark_parquet"' in src
+
+
+class TestCliPublishIcebergFlagParity:
+    @staticmethod
+    def _build_parser():
+        from elt_pipeline.cli import build_parser
+        return build_parser()
+
+    def test_publish_run_parser_has_8_iceberg_flags(self):
+        parser = self._build_parser()
+        publish_actions = [
+            a for a in parser._subparsers._group_actions[0].choices["publish"]
+            ._subparsers._group_actions[0].choices["run"]._actions
+        ]
+        iceberg_flag_names = sorted(
+            {
+                a.dest
+                for a in publish_actions
+                if isinstance(a.dest, str) and a.dest.startswith("iceberg_")
+            }
+        )
+        assert len(iceberg_flag_names) == 8
+        assert iceberg_flag_names == [
+            "iceberg_catalog_name",
+            "iceberg_catalog_type",
+            "iceberg_catalog_uri",
+            "iceberg_enabled",
+            "iceberg_glue_region",
+            "iceberg_rest_token",
+            "iceberg_rest_warehouse",
+            "iceberg_warehouse_dir",
+        ]
+
+    def test_sql_and_publish_parsers_share_same_iceberg_flag_contracts(self):
+        parser = self._build_parser()
+        subchoices = parser._subparsers._group_actions[0].choices
+        sql_run = (
+            subchoices["sql"]._subparsers._group_actions[0].choices["run"]
+        )
+        publish_run = (
+            subchoices["publish"]._subparsers._group_actions[0].choices["run"]
+        )
+        for dest in (
+            "iceberg_enabled",
+            "iceberg_catalog_name",
+            "iceberg_catalog_type",
+            "iceberg_catalog_uri",
+            "iceberg_rest_token",
+            "iceberg_rest_warehouse",
+            "iceberg_glue_region",
+            "iceberg_warehouse_dir",
+        ):
+            sql_a = next(a for a in sql_run._actions if a.dest == dest)
+            pub_a = next(a for a in publish_run._actions if a.dest == dest)
+            assert sql_a.choices == pub_a.choices, f"choices mismatch: {dest}"
+            assert sql_a.default == pub_a.default, f"default mismatch: {dest}"
+
+    def test_publish_run_invokes_catalog_binding_validation(self):
+        src = inspect.getsource(__import__("elt_pipeline.cli", fromlist=[""]))
+        publish_run_block_start = src.find("publish_run_parser = ")
+        validation_callsite = src.find(
+            "_validate_iceberg_catalog_binding(args)",
+            publish_run_block_start,
+        )
+        assert validation_callsite > 0, (
+            "publish run command handler must call _validate_iceberg_catalog_binding(args)"
+        )
+
+    def test_publish_run_uses_resolve_iceberg_session_kwargs(self):
+        src = inspect.getsource(__import__("elt_pipeline.cli", fromlist=[""]))
+        publish_run_block_start = src.find("publish_run_parser = ")
+        resolver_callsite = src.find(
+            "_resolve_iceberg_session_kwargs(",
+            publish_run_block_start,
+        )
+        assert resolver_callsite > 0, (
+            "publish run build_spark_session must use **_resolve_iceberg_session_kwargs(...) "
+            "for uniform CLI-arg > env > warehouse fallback precedence"
+        )
