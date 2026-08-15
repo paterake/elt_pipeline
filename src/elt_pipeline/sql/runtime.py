@@ -122,6 +122,7 @@ def run_sql_models_locally(
             warehouse_root=warehouse_root,
             root_path=root_path,
             environment=environment,
+            run_id=run_context.run_id,
             partition_values=partition_values,
         )
         execution_result = executor.execute(

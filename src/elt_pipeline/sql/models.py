@@ -79,6 +79,7 @@ class SqlModelManifest(BaseModel):
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
     owner: SqlModelOwner
     tags: list[str] = Field(default_factory=list)
+    staging_root: str | None = None
 
     @field_validator("name", "domain")
     @classmethod
@@ -142,6 +143,7 @@ class CompiledSqlModel(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     sources: list[SqlModelSourceRef] = Field(default_factory=list)
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
+    staging_root: str | None = None
 
 
 class SqlExecutionRecord(BaseModel):

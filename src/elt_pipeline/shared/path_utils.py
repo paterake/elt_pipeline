@@ -779,6 +779,58 @@ def path_replace(src: str, dst: str) -> None:
         ) from exc
 
 
+def path_delete_tree(path: str) -> None:
+    """Recursively delete a directory tree or S3 key prefix.
+
+    For POSIX: equivalent to `shutil.rmtree(path, ignore_errors=False)`.
+    For S3: paginates all keys under the prefix and batch-deletes them.
+    Missing paths are tolerated (no-op) so callers can use this for
+    best-effort cleanup without pre-checking path_exists.
+    """
+    scheme = detect_scheme(path)
+    if scheme is _StorageScheme.s3:
+        bucket, prefix = _split_s3_path(path)
+        if prefix and not prefix.endswith("/"):
+            prefix = prefix + "/"
+        s3 = _s3_client()
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                contents = page.get("Contents", [])
+                if not contents:
+                    continue
+                keys = [{"Key": obj["Key"]} for obj in contents]
+                s3.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
+        except s3.exceptions.ClientError as exc:  # type: ignore[attr-defined]
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code in ("404", "NoSuchBucket"):
+                return
+            raise PipelineError(
+                message=f"Failed delete_tree on S3 path {path!r}: {exc}",
+                error_code="STORAGE_S3_OP_FAILED",
+                error_category=ErrorCategory.processing_error,
+                retryable=True,
+                context={"operation": "delete_tree", "path": path, "error": str(exc)},
+            ) from exc
+        return
+    import shutil
+
+    stripped = strip_file_scheme(path)
+    try:
+        if os.path.isdir(stripped):
+            shutil.rmtree(stripped)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise PipelineError(
+            message=f"Failed delete_tree on path {path!r}: {exc}",
+            error_code="STORAGE_WRITE_FAILED",
+            error_category=ErrorCategory.storage_write_error,
+            retryable=False,
+            context={"operation": "delete_tree", "path": path, "error": str(exc)},
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # S3 helpers + lazy client singleton
 # ---------------------------------------------------------------------------

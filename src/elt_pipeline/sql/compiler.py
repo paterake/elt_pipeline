@@ -52,6 +52,7 @@ def compile_sql_model(
         depends_on=model.manifest.depends_on,
         sources=model.manifest.sources,
         quality=model.manifest.quality,
+        staging_root=model.manifest.staging_root,
     )
 
 

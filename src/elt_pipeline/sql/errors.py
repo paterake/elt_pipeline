@@ -16,6 +16,9 @@ class SqlRuntimeErrorCode(str, Enum):
     identifier_invalid = "SQL_IDENTIFIER_INVALID"
     dependency_not_materialized = "SQL_DEPENDENCY_NOT_MATERIALIZED"
     level2_source_not_found = "SQL_LEVEL2_SOURCE_NOT_FOUND"
+    staging_write_failed = "SQL_STAGING_WRITE_FAILED"
+    atomic_swap_failed = "SQL_ATOMIC_SWAP_FAILED"
+    staging_scheme_unsupported = "SQL_STAGING_SCHEME_UNSUPPORTED"
 
 
 _SQL_RUNTIME_ERROR_CATEGORIES = {
@@ -28,6 +31,9 @@ _SQL_RUNTIME_ERROR_CATEGORIES = {
     SqlRuntimeErrorCode.identifier_invalid: ErrorCategory.config_error,
     SqlRuntimeErrorCode.dependency_not_materialized: ErrorCategory.config_error,
     SqlRuntimeErrorCode.level2_source_not_found: ErrorCategory.input_contract_error,
+    SqlRuntimeErrorCode.staging_write_failed: ErrorCategory.processing_error,
+    SqlRuntimeErrorCode.atomic_swap_failed: ErrorCategory.processing_error,
+    SqlRuntimeErrorCode.staging_scheme_unsupported: ErrorCategory.config_error,
 }
 
 

@@ -309,6 +309,24 @@ class _FakeS3Client:
         self.objects.pop((kwargs["Bucket"], kwargs["Key"]), None)
         return {}
 
+    def delete_objects(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("delete_objects", kwargs))
+        deleted: list[dict[str, str]] = []
+        errors: list[dict[str, str]] = []
+        bucket = kwargs["Bucket"]
+        for entry in kwargs.get("Delete", {}).get("Objects", []):
+            key = entry["Key"]
+            if (bucket, key) in self.objects:
+                del self.objects[(bucket, key)]
+            deleted.append({"Key": key})
+        result: dict[str, Any] = {}
+        if not kwargs.get("Delete", {}).get("Quiet", False):
+            if deleted:
+                result["Deleted"] = deleted
+            if errors:
+                result["Errors"] = errors
+        return result
+
     def list_objects_v2(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("list_objects_v2", kwargs))
         bucket = kwargs["Bucket"]
@@ -485,3 +503,102 @@ class TestMockedS3Routing:
         with pytest.raises(ConfigValidationError) as exc_info:
             pu.path_write_text("s3a://b/k", "x")
         assert "Unsupported storage scheme" in exc_info.value.message
+
+    # --- path_delete_tree S3 routing ---
+
+    def test_s3_delete_prefix_uses_paginator_and_batch_delete(
+        self, fake_s3: _FakeS3Client
+    ) -> None:
+        prefix = "data/tree/"
+        for i in range(5):
+            fake_s3.objects[("bkt", f"{prefix}file_{i}.parquet")] = b"x" * i
+        fake_s3.objects[("bkt", "other/keep.parquet")] = b"keep"
+        pu.path_delete_tree("s3://bkt/data/tree")
+        remaining = [k for (b, k) in fake_s3.objects.keys() if b == "bkt"]
+        assert remaining == ["other/keep.parquet"]
+        list_calls = [
+            c for c in fake_s3.calls if c[0] == "list_objects_v2"
+        ]
+        batch_calls = [
+            c for c in fake_s3.calls if c[0] == "delete_objects"
+        ]
+        assert len(list_calls) >= 1
+        assert len(batch_calls) >= 1
+        first_batch = batch_calls[0][1]["Delete"]
+        assert len(first_batch["Objects"]) == 5
+        assert first_batch["Quiet"] is True
+
+    def test_s3_delete_empty_prefix_is_noop(
+        self, fake_s3: _FakeS3Client
+    ) -> None:
+        pu.path_delete_tree("s3://bkt/empty/prefix")
+        op_names = [c[0] for c in fake_s3.calls]
+        assert "list_objects_v2" in op_names
+        assert "delete_objects" not in op_names
+        assert "delete_object" not in op_names
+
+    def test_s3_delete_missing_bucket_tolerates_404(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = _FakeS3Client()
+
+        def _raise_404(**_kw: Any) -> list[dict[str, Any]]:
+            exc = fake.exceptions.ClientError("NoSuchBucket")
+            exc.response = {"Error": {"Code": "NoSuchBucket"}}
+            raise exc
+
+        class _BadPaginator:
+            def paginate(self_2, **_kw: Any) -> Any:  # type: ignore[override]
+                return iter([{}])
+
+        bad_client = _FakeS3Client()
+
+        def _bad_get_paginator(name: str) -> Any:
+            assert name == "list_objects_v2"
+            p = _BadPaginator()
+
+            def raising(**kw: Any) -> Any:  # type: ignore[override]
+                _raise_404(**kw)
+                yield from ()
+
+            p.paginate = raising  # type: ignore[method-assign]
+            return p
+
+        bad_client.get_paginator = _bad_get_paginator  # type: ignore[method-assign]
+        monkeypatch.setattr(pu, "_S3_CLIENT", None)
+        monkeypatch.setattr(pu, "_s3_client", lambda: bad_client)
+        pu.path_delete_tree("s3://ghost-bucket/prefix")
+
+
+# ---------------------------------------------------------------------------
+# path_delete_tree — POSIX (Gate 4 hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestPathDeleteTreePosix:
+    def test_delete_existing_nested_tree(self, tmp_path) -> None:
+        root = str(tmp_path)
+        tree = pu.join_paths(root, "a", "b", "c")
+        os.makedirs(tree, exist_ok=True)
+        pu.path_write_text(pu.join_paths(tree, "f1.txt"), "x")
+        pu.path_write_text(pu.join_paths(tree, "sub", "f2.txt"), "y")
+        top = pu.join_paths(root, "a")
+        assert pu.path_exists(top)
+        pu.path_delete_tree(top)
+        assert not pu.path_exists(top)
+
+    def test_delete_missing_path_is_noop(self, tmp_path) -> None:
+        root = str(tmp_path)
+        missing = pu.join_paths(root, "definitely_not_there")
+        assert not pu.path_exists(missing)
+        pu.path_delete_tree(missing)
+
+    def test_delete_file_scheme_tree(self, tmp_path) -> None:
+        root = str(tmp_path)
+        target = pu.join_paths(root, "target")
+        os.makedirs(target, exist_ok=True)
+        pu.path_write_text(pu.join_paths(target, "x.txt"), "data")
+        file_root = "file://" + target
+        pu.path_delete_tree(file_root)
+        assert not os.path.isdir(target)
+

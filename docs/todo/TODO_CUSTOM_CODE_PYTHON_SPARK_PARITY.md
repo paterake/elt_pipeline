@@ -35,10 +35,29 @@ The work product *is not* scope drift: it directly aligns the execution model to
   - Extras bucket `delta = ["delta-spark>=4.0,<5.0"]` added to `pyproject.toml` for teams that want Delta Lake ACID over staging-swap (Open Decision OD-1 path (3)).
   - Track A design: planner walks `StructType` metadata → emits `NormalizationPlan` → spark_runner executes `posexplode_outer`/struct-flatten chain, producing same `NormalizedTable` column layouts.
   - Track B design: staging-swap write protocol with scheme-aware atomic swap (POSIX rename / S3 batch list-copy-delete).
-- **Phase 2: Gate 2 (Track A: normalize Spark-native relationalization)** ⏳ NEXT UP.
-  - Scope: `normalize/planner.py` metadata walk, `normalize/spark_runner.py` executor-side plans, pipeline rewiring, `path_content_length` dispatcher, `_rows_to_dataframe` dead-path removal, mapping-version parity tests.
-- **Phase 3: Gate 3 (Track B: same-path overwrite hazard — staging-swap write protocol)** ⏳ PENDING design complete.
-- **Phase 4: Gate 4 (Hardening / quality / docs sweep)** ⏳ PENDING.
+- **Phase 2: Gate 2 (Track A: normalize Spark-native relationalization)** ✅ COMPLETED 2026-08-14.
+  - `planner.py` `plan_from_schema` walks `StructType` metadata depth-first → produces `PlannedTable` / `PlannedArrayExplosion` plan nodes.
+  - `spark_runner.py` `SparkRelationalizer.execute` runs `posexplode_outer` + struct flatten + `uuid()` FK chain for root + all child tables.
+  - `pipeline.py` rewired with `NormalizeEngine = Literal["python", "spark"]` dual-engine gate behind `normalize_engine="python"` default (OD-3).
+  - `path_content_length` dispatcher added to `shared/path_utils.py` (S3 HEAD Object → ContentLength; POSIX `os.stat`). Finding 4 fix retrofitted to `_summarize_parquet_dir`.
+  - `_rows_to_dataframe` retained as legacy dead-path behind python engine only; `SparkLevel2Writer.write_dataframe` new entry for Spark path.
+  - Contract C2 verified: 3-deep nested-orders `mapping_version` parity test PASS (identical 16-hex SHA-256 prefix between legacy runner vs Spark planner).
+  - Track A row-level `SparkRelationalizer` parity tests (2) written as `@pytest.mark.skipif(not _HAS_PYSPARK_JVM, …)` → Gate 5 execution environment sign-off scope (JVM 17+ required).
+- **Phase 3: Gate 3 (Track B: same-path overwrite hazard — staging-swap write protocol)** ✅ COMPLETED 2026-08-14.
+  - `SqlModelManifest.staging_root: str | None` field added + propagated through `CompiledSqlModel` → `compile_sql_model` return.
+  - New module `sql/_staging_swap.py`: `validate_swap_scheme` (scheme guard with PRD 08 operator hint), `best_effort_delete_staging`, `build_staging_path` (layout contract), scheme-dispatched `atomic_swap` for POSIX rename(2) and S3 `CopyObject→DeleteObject` with partition merge semantics.
+  - New `path_delete_tree` primitive in `shared/path_utils.py`: S3 paginated `list_objects_v2` + `delete_objects` 1000-key batches, tolerates 404/NoSuchBucket; POSIX `shutil.rmtree`, tolerates `FileNotFound`.
+  - `SparkSqlModelExecutor` accepts `run_id: str` constructor arg; `_execute_model` rewrite for overwrite modes follows `validate_swap_scheme → staging write → validate read → atomic_swap → best_effort cleanup`. Append kept direct (OD-4). L2 normalize writes still direct per-run unique dirs (OD-4).
+  - 3 new `SqlRuntimeErrorCode`s: `staging_write_failed`, `atomic_swap_failed`, `staging_scheme_unsupported`.
+  - `run_id=run_context.run_id` threaded from `sql/runtime.py` `SparkSqlModelExecutor(...)` constructor.
+- **Phase 4: Gate 4 (Hardening / quality / docs sweep)** ✅ COMPLETED 2026-08-14.
+  - `uv run ruff check src/ tests/` → 0 diagnostics.
+  - Non-JVM regression sweep: **166 passed** (54 `test_path_utils` including new `path_delete_tree` POSIX + mocked S3; 24 `test_staging_swap` covering scheme guard, staging path layout, POSIX full_refresh/partition_overwrite swap, mocked S3 swap, best-effort cleanup; 5 `test_normalize_engine_parity` metadata parity incl. C2 3-deep `mapping_version`; remaining runner/config/runtime/connectors/lineage/quality all green).
+  - Two `ERROR`s only: `test_spark_relationalizer_row_level_parity_for_3_deep_nested_arrays` + `test_spark_csv_relationalizer_row_level_parity` → explicit Gate 5 scope (no JVM on sandbox).
+  - Unit tests added:
+    - `test_path_utils.py` + `_FakeS3Client.delete_objects` batch API + 6 `path_delete_tree` tests (POSIX 3 ways + mocked S3 3 ways).
+    - `test_staging_swap.py` 24 tests (4 scheme guard + 3 staging path layout + 3 best effort tolerance + 4 POSIX atomic_swap + 5 mocked S3 atomic_swap + 5 partition/S3 cross-check helpers).
+  - `build_staging_path` helper extracted from inline construction → unit-testable unit (Gate 4 hardening step).
 - **Phase 5: Gate 5 (Environment sign-off — same scope as PRD 08 Gate 5: JVM 17+ on workstation + EMR E2E)** ⏳ PENDING (environment-only).
 
 Active workstream as of 2026-08-14.
@@ -606,12 +625,25 @@ Fail-fast scheme guard: any path whose `detect_scheme` result is NOT in {`file`,
   - Track A detailed design: StructType metadata walk → NormalizationPlan → posexplode/struct-flatten execution, CSV path.
   - Track B detailed design: staging layout, scheme-dispatched atomic swap (POSIX rename, S3 list-copy-delete), merge-on-swap partition_overwrite, row-count re-read elimination.
   - Extras bucket `delta = ["delta-spark>=4.0,<5.0"]` added to `pyproject.toml` (OD-1 path (3)).
-- [ ] Track A: normalize/planner.py + metadata walk + mapping_version parity test passes vs legacy.
-- [ ] Track A: normalize/spark_runner.py + posexplode/struct-flatten execution produces identical row-level outputs for the 3-deep nested fixture + CSV fixture.
-- [ ] Track A: pipeline.py rewire complete; `_rows_to_dataframe` no longer on hot path; `path_content_length` dispatcher added + s3 HEAD.
-- [ ] Track B: staging_root config, `_execute_model` overwrite branches use staging_path + atomic_swap (POSIX rename + S3 batch copy/delete).
-- [ ] Track B: same-path self-query model test passes on both local POSIX and mocked s3.
-- [ ] Gate 4: ruff all clean; diagnostics 0; regression all 113 existing non-Spark tests green; Gate 5 environment sign-off same scope as PRD 08.
+- [x] Track A: normalize/planner.py + metadata walk + mapping_version parity test passes vs legacy. ✅ 2026-08-14
+  - `plan_from_schema` walks `StructType` for root-Object and root-Array; uses `_policy.py` verbatim.
+  - 5 metadata-only parity tests PASS: C2 mapping_version 3-deep hash parity (identical bytes), C3 identifier/collision parity, CSV header parity, flat payload parity.
+- [ ] Track A: normalize/spark_runner.py + posexplode/struct-flatten execution produces identical row-level outputs for the 3-deep nested fixture + CSV fixture. ⏳ **Gate 5 environment scope**
+  - 2 row-level parity tests written: `test_spark_relationalizer_row_level_parity_for_3_deep_nested_arrays` + `test_spark_csv_relationalizer_row_level_parity` (`@pytest.mark.skipif(not _HAS_PYSPARK_JVM)`). Require JVM 17+ workstation or EMR E2E.
+- [x] Track A: pipeline.py rewire complete; `_rows_to_dataframe` no longer on hot path; `path_content_length` dispatcher added + s3 HEAD. ✅ 2026-08-14
+  - `NormalizeEngine = Literal["python", "spark"]` dual engine with `normalize_engine="python"` default (OD-3).
+  - `path_content_length` S3 HEAD Object dispatcher retrofitted to `_summarize_parquet_dir` (Finding 4 fix).
+  - `SparkLevel2Writer.write_dataframe` new method; legacy `_rows_to_dataframe` kept only behind python-engine dead-path (OD-3).
+- [x] Track B: staging_root config, `_execute_model` overwrite branches use staging_path + atomic_swap (POSIX rename + S3 batch copy/delete). ✅ 2026-08-14
+  - `SqlModelManifest.staging_root` optional field propagated through `CompiledSqlModel` → compiler.
+  - `sql/_staging_swap.py` module implements full Mercell/Camelot staging-swap protocol (validate_swap_scheme, build_staging_path, atomic_swap, best_effort_delete_staging, POSIX rename, S3 CopyObject→DeleteObject with partition merge).
+  - `shared/path_utils.py` new `path_delete_tree` primitive (S3 paginate+batch 1000-key deletes; POSIX shutil.rmtree).
+  - `SparkSqlModelExecutor._execute_model` rewritten for overwrite modes: staging_write → validate_read → atomic_swap → cleanup. Append direct (OD-4). L2 normalize direct (OD-4).
+- [x] Track B: same-path self-query model test passes on both local POSIX and mocked s3. ✅ 2026-08-14
+  - 24 `test_staging_swap.py` tests: 4 scheme guard, 3 staging path layout (Mercell/Camelot contract), 3 best-effort cleanup tolerance, 4 POSIX atomic_swap (full_refresh + partition_overwrite + file:// scheme + missing staging raises context), 5 mocked S3 atomic_swap (full_refresh + cross-bucket reject + empty prefix + partition overwrite merge), plus 5 cross-check helpers.
+- [x] Gate 4: ruff all clean; diagnostics 0; regression all 113 existing non-Spark tests green; Gate 5 environment sign-off same scope as PRD 08. ✅ 2026-08-14
+  - `uv run ruff check src/ tests/` → 0 diagnostics.
+  - Full regression sweep: **166 passed, 2 errors**. The 2 errors are *exclusively* the two row-level SparkRelationalizer parity tests (JVM not installed on sandbox) → explicit Gate 5 environment scope.
 - [ ] Update operator runbook § overwrite protocol.
 - [ ] Move this TODO file → `docs/todo/archive/TODO_CUSTOM_CODE_PYTHON_SPARK_PARITY_COMPLETED.md`; update top-level `docs/todo/TODO.md` index row.
 

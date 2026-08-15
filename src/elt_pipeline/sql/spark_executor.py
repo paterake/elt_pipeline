@@ -3,10 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from pyspark.errors import PySparkException
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame, SparkSession
 
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.path_utils import join_paths
+from elt_pipeline.sql._staging_swap import (
+    SwapMode,
+    atomic_swap,
+    best_effort_delete_staging,
+    build_staging_path,
+    validate_swap_scheme,
+)
 from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.level2_source import Level2DatasetLocator
 from elt_pipeline.sql.models import (
@@ -31,12 +38,14 @@ class SparkSqlModelExecutor:
         warehouse_root: str,
         root_path: str,
         environment: str,
+        run_id: str,
         partition_values: dict[str, str] | None = None,
     ) -> None:
         self.spark = spark
         self.warehouse_root = warehouse_root
         self.root_path = root_path
         self.environment = environment
+        self.run_id = run_id
         self.partition_values = partition_values or {}
         self._level2_locator = Level2DatasetLocator(root_path=self.root_path, spark=spark)
 
@@ -169,31 +178,113 @@ class SparkSqlModelExecutor:
         target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
         effective_partition_columns = self._effective_partition_columns(model=model)
 
-        if model.load_mode == SqlLoadMode.full_refresh:
-            writer = dataframe.write.mode("overwrite")
-            if effective_partition_columns:
-                writer = writer.partitionBy(*effective_partition_columns)
-            writer.parquet(target_path)
-        elif model.load_mode == SqlLoadMode.append:
+        if model.load_mode == SqlLoadMode.append:
             writer = dataframe.write.mode("append")
             if effective_partition_columns:
                 writer = writer.partitionBy(*effective_partition_columns)
             writer.parquet(target_path)
-        elif model.load_mode == SqlLoadMode.partition_overwrite:
+            return self.spark.read.parquet(target_path).count()
+
+        if model.load_mode == SqlLoadMode.partition_overwrite:
             self._validate_partition_requirements(model=model)
+
+        scheme = validate_swap_scheme(target_path, model.model_id)
+        staging_root = model.staging_root or join_paths(self.warehouse_root, "_staging")
+        staging_path = build_staging_path(
+            staging_root=staging_root,
+            stage=model.stage,
+            target_table_name=model.target_table_name,
+            run_id=self.run_id,
+        )
+
+        try:
             writer = dataframe.write.mode("overwrite")
             if effective_partition_columns:
                 writer = writer.partitionBy(*effective_partition_columns)
-            writer.parquet(target_path)
-        else:
+            writer.parquet(staging_path)
+        except PySparkException as exc:
+            best_effort_delete_staging(staging_path, scheme)
             raise build_sql_runtime_error(
-                message=f"Unsupported SQL load mode '{model.load_mode.value}'",
-                code=SqlRuntimeErrorCode.load_mode_unsupported,
-                retryable=False,
-                context={"model_id": model.model_id, "load_mode": model.load_mode.value},
-            )
+                code=SqlRuntimeErrorCode.staging_write_failed,
+                message="Failed to write staging parquet output during SQL materialization",
+                retryable=True,
+                context={
+                    "model_id": model.model_id,
+                    "staging_path": staging_path,
+                    "target_path": target_path,
+                },
+            ) from exc
 
-        return self.spark.read.parquet(target_path).count()
+        try:
+            staging_df: DataFrame = self.spark.read.parquet(staging_path)
+            row_count = staging_df.count()
+        except PySparkException as exc:
+            best_effort_delete_staging(staging_path, scheme)
+            raise build_sql_runtime_error(
+                code=SqlRuntimeErrorCode.staging_write_failed,
+                message=(
+                    "Staging write unverifiable — could not read back staging parquet output. "
+                    "Input DataFrame write reported success, but post-write read failed."
+                ),
+                retryable=True,
+                context={
+                    "model_id": model.model_id,
+                    "staging_path": staging_path,
+                    "target_path": target_path,
+                },
+            ) from exc
+
+        swap_mode: SwapMode = (
+            "partition_overwrite"
+            if model.load_mode == SqlLoadMode.partition_overwrite
+            else "full_refresh"
+        )
+        try:
+            atomic_swap(
+                staging_path=staging_path,
+                target_path=target_path,
+                scheme=scheme,
+                mode=swap_mode,
+            )
+        except PipelineError as exc:
+            best_effort_delete_staging(staging_path, scheme)
+            raise build_sql_runtime_error(
+                code=SqlRuntimeErrorCode.atomic_swap_failed,
+                message=(
+                    "Atomic swap from staging to canonical path "
+                    "failed during SQL materialization"
+                ),
+                retryable=exc.retryable,
+                context={
+                    "model_id": model.model_id,
+                    "staging_path": staging_path,
+                    "target_path": target_path,
+                    "swap_mode": swap_mode,
+                    "operator_action": (
+                        "Inspect target path for partial state. Staging contents preserved "
+                        "in staging_path on a best-effort basis if the error occurred mid-copy; "
+                        "staging cleanup may have been partial."
+                    ),
+                    "underlying_error": str(exc),
+                },
+            ) from exc
+        except Exception as exc:
+            best_effort_delete_staging(staging_path, scheme)
+            raise build_sql_runtime_error(
+                code=SqlRuntimeErrorCode.atomic_swap_failed,
+                message="Unexpected error during atomic swap from staging to canonical path",
+                retryable=False,
+                context={
+                    "model_id": model.model_id,
+                    "staging_path": staging_path,
+                    "target_path": target_path,
+                    "swap_mode": swap_mode,
+                    "underlying_error": str(exc),
+                },
+            ) from exc
+
+        best_effort_delete_staging(staging_path, scheme)
+        return row_count
 
     def _validate_model(
         self,
