@@ -492,6 +492,99 @@ Scope: Static gap-audit of the 2026-08-19 "code-complete" backlog for **regressi
 2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
 3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm: (a) publish emits `namespace=iceberg` in 3 lineage `DatasetRef` inputs; (b) Level5 export CSV/JSONL/TSV written; (c) zero `AnalysisException: Path does not exist`; (d) `artifacts.audit_path` JSON for both SQL and Publish stages contains the `serving_endpoint` top-level key under `context.serving_endpoint` (workstation end-to-end of the audit persistence + P-2 fixes now both have pure-logic regression tests locking the behavior).
 
+## Summary of 2026-08-15 session (Full Current-State Baseline + All Prior-Gap Closure Confirmation)
+
+Environment: macOS sandbox, Python 3.13.14 (uv venv), PySpark 4.1.2 installed, **NO JVM on PATH** (identical environment to all prior sessions — Spark data-plane / Trino / JDBC probes remain workstation-pending).
+
+Scope: Full end-to-end static baseline verification of the entire L3/L4 Iceberg Serving backlog. The prior 5 sessions incrementally closed specific gaps (P-1 path layout, P-2 publish dual-path, CLI flag parity, Gate I3 audit persistence, Gate I5 parity-logic tests, P-2 regression-lock tests). This session asked: *is every single claimed fix and claimed closure ACTUALLY still present in the code RIGHT NOW, measured by fresh test runs, lint, and source-level grep?* — a comprehensive "is the entire claimed state truthful?" audit.
+
+### Audit Findings: All Prior Fixes and All Prior Gap Closures Confirmed Intact
+
+**Gate-by-gate full-scope confirmation:**
+
+**Gate I1 (Iceberg write path) — confirmed GREEN:**
+- `_execute_iceberg_write()` maps all 3 load modes: `full_refresh`=createOrReplace, `partition_overwrite`=overwritePartitions(dynamic), `append`=append + first-run fallback to create(). Verified in source.
+- `_effective_partition_columns` passed verbatim to `.partitionedBy(*cols)`. Verified in source.
+- `_is_iceberg_enabled(spark)` dual-guard: env var + `spark.sql.extensions` contains `IcebergSparkSessionExtensions` (belt + suspenders — prevents half-configured sessions from accidentally using a Parquet path layout when someone sets the env var but forgets the runtime jars). Verified in source at [spark_executor.py lines 38-51](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py#L38-L51).
+- 5 regression tests in `test_sql_iceberg_write.py` exist (JVM-pending; code bodies match Iceberg 1.11 `writeTo()` contract).
+
+**Gate I2 (Pluggable catalog binding) — confirmed GREEN:**
+- 4-way dispatch in `build_spark_session()`: hadoop / jdbc / rest / glue. All 4 present.
+- `SparkSessionCatalog` bound as `spark_catalog` + `SparkCatalog` bound as named catalog for ALL 4 types. `spark.sql.defaultCatalog = spark_catalog` explicitly set (CRITICAL for Spark 4.1 MERGE rewrite rules — project-memory finding confirmed in source).
+- 23/23 config tests PASS → **zero regressions**.
+
+**Gate I3 (Serving engine + BI proof) — confirmed GREEN (all scripted pieces):**
+- `ops/trino_serving/run_trino.sh` source-level grep confirms:
+  - `fs.hadoop.enabled=true` count = **exactly 2** (hadoop block line 180 + jdbc block line 192 — Trino 468 file:// scheme requirement). ✅
+  - 4 catalog-type `case` arms in `write_configs()`: hadoop (176) / jdbc (183) / rest (200) / glue (219) → **4/4 present**. ✅
+  - URI prereq validation: jdbc (`if [[ -z "${ICEBERG_CATALOG_URI}" ]]` at 184 → exit 3) + rest (same at 201 → exit 3). ✅
+  - `env` subcommand also has 4-way type dispatch for details dump: jdbc (293) / rest (294) / glue (299). ✅
+- Operator runbook § Trino + § Athena Binding exist and match env var set.
+- `_build_serving_endpoint(args)` output dict 4-engine shape (trino / athena / spark_thrift / duckdb) locked by 6 tests in `test_iceberg_parity_and_audit.py` → 6/6 PASS.
+- Gate I3 DoD **checkbox line 190 (Trino SELECT proof)** — still unchecked (workstation-only; requires JDK 17+ + Trino install).
+
+**Gate I4 (Retire staging-swap for L3/L4) — confirmed GREEN:**
+- Early-return bypass in `_execute_model()`: `if use_iceberg: return self._execute_iceberg_write(...)` → returns before any staging-swap code line runs. Verified at lines 225-230.
+- `_execute_iceberg_write()` function body grep for keywords: `staging` / `SwapMode` / `atomic_swap` / `build_staging_path` → **0 matches** (swap-code-free Iceberg-native write path).
+- Same-path rebuild read-your-writes: regression test exists (seed 2 rows → self-query doubling → amounts 200/400 → ≥2 snapshots in `.history`). Logic verified.
+- **OD-I1 soak strategy confirmed active:**
+  - Iceberg default = strictly opt-in (CLI `action="store_true"` → argparse default False; `_iceberg_effective_enabled(args)` returns `None` when neither CLI `--iceberg-enabled` nor env `ELT_PIPELINE_ICEBERG_ENABLED=true` are set). ✅
+  - Staging-swap module `sql/_staging_swap.py` still imported in spark_executor.py (1 import site — exclusively used by legacy else-branch; lint clean, no F401). ✅
+  - Delete sequence unchanged per OD-I1: (a) flip default → opt-out after I5 workstation parity green; (b) next cycle delete swap module for L3/L4. ✅
+- **Publish runtime dual-path (P-2 fix) confirmed GREEN:**
+  - `_register_level4_source()` at [publish/runtime.py lines 397-419](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L397-L419): Iceberg branch = `spark.table(_iceberg_table_fq(stage, manifest.domain, name))` with manifest.domain for correct FQ resolution; Parquet branch = generalized to `join_paths(warehouse_root, stage, dataset)` (not hardcoded `"level4"`). ✅
+  - `grep namespace=\"spark_parquet\" publish/runtime.py` → **0 matches** (all 3 `DatasetRef` emission sites use computed `source_namespace`). ✅
+  - Regression lock: 3 tests in `TestPublishDualPathP2Fix` → 3/3 PASS. ✅
+
+**Gate I5 (Re-materialize L3/L4 with parity) — confirmed GREEN (tooling):**
+- `measure_model_parity()` dual-path: Iceberg = `spark.table(fq_table)`; Parquet = `warehouse_root / stage.value / table_name` (**NO `/domain/` segment — P-1 fix in place**). ✅
+- `_sorted_row_md5()`: order-independent (row hashes sorted before concat) + column-order-independent (struct columns sorted before `cast("string")`). Logic verified.
+- `compare_parity_reports()`: handles match / row-count diff / md5 diff / missing both sides / empty inputs. All 5 semantics locked → 5/5 PASS.
+- Parity script `ops/run_local_demo_iceberg_parity.sh` runs parquet + iceberg in separate `warehouse_root` and `environment` names → zero cross-pollution risk. ✅
+- **Publish CLI flag parity (gap closure) confirmed GREEN:**
+  - `sql_run_parser`: 8 `--iceberg-*` flags with choices/defaults contracts. ✅
+  - `publish_run_parser`: **8/8 `--iceberg-*` flags present with IDENTICAL `choices` + `default` contracts as sql run** (verified by 2 tests in `TestCliPublishIcebergFlagParity`: flag-count + shared-contract assertions → 2/2 PASS). ✅
+  - `_validate_iceberg_catalog_binding(args)` called BEFORE `build_spark_session()` in BOTH command handlers (fail-fast before JVM creation). Verified by source grep + 1 test → PASS. ✅
+  - `_resolve_iceberg_session_kwargs()` used at BOTH build_spark_session() call sites for uniform CLI-arg > env > warehouse-root/iceberg fallback precedence. Verified by source grep + 1 test → PASS. ✅
+
+**Gate I3 audit persistence (2026-08-19 gap closure) — confirmed GREEN:**
+- `run_sql_models_locally(serving_endpoint: … | None = None)` + `_build_audit_context(serving_endpoint=…)` with `json.dumps(sort_keys=True)` serialization (identical convention to partition_values / extra_values siblings). ✅
+- `run_publish_definitions_locally(serving_endpoint: … | None = None)` + pre-built `publish_audit_context` dict with identical conditional insertion pattern. ✅
+- BOTH function signatures have default `None` → all 15 existing test call sites (non-CLI integrators) remain backward-compatible. Regression-locked by 2 signature-introspection tests → 2/2 PASS. ✅
+- CLI stdout payload for BOTH `sql run` AND `publish run` now carries `serving_endpoint` from the same local variable as the audit record → stdout and permanent audit JSON are byte-identical. ✅
+- Full coverage: 8 tests across 4 classes in `TestSqlAuditContextServingEndpoint` / `TestBuildServingEndpointDisabled` / `TestBuildServingEndpointEnabledShape` / `TestPublishServingEndpointKwarg` → **8/8 PASS**. ✅
+
+### Regression Test Baseline (2026-08-15 Full-Baseline vs Most Recent Prior Session)
+
+| Baseline metric | Prior session (P-2 regression-lock) | Today (full audit) | Status |
+|---|---|---|---|
+| `tests/test_iceberg_catalog_config.py` | 23/23 PASS | **23/23 PASS** | ✅ No regressions |
+| `tests/test_iceberg_parity_and_audit.py` | 25/25 PASS | **25/25 PASS** | ✅ No regressions |
+| Combined Iceberg-only total | 48 PASS | **48 PASS** | ✅ Stable |
+| Core non-JVM suite (6 files: config_loader, path_utils, merge_sql_generator, quality_adapter, lineage_adapter, staging_swap) | 105 PASS | **105 PASS** | ✅ Stable |
+| Connector/runtime suite (6 files: ingest_storage, object_storage_connectors, rest_connectors, sql_connectors, kafka_connectors, runtime) | 46 PASS | **46 PASS** | ✅ Stable |
+| Pure-logic CLI tests (test_cli.py + test_publish_cli.py, non-data-plane) | 7 PASS | **7 PASS** | ✅ Stable |
+| CLI data-plane failures/errors (normalize/schedule/sql/publish commands) | 7 fail + 11 error = JVM-only | **7 fail + 11 error = JVM-only** | ✅ Identical class: JAVA_GATEWAY_EXITED / subprocess CalledProcessError no-JVM only; ZERO new logical failures |
+| Non-JVM grand total | 199 PASS approx | **206 PASS** (48 + 105 + 46 + 7) | ✅ All accounted for, all green |
+| `ruff check src/` entire tree | 0 errors | **All checks passed! (0 errors)** | ✅ No new lint |
+| VS Code `GetDiagnostics` | Empty | **Empty** | ✅ |
+| `fs.hadoop.enabled=true` in Trino write_configs() | Claimed ×2 | **Confirmed ×2** (grep lines 180, 192) | ✅ |
+| 4-way catalog-type dispatch in Trino write_configs() | Claimed 4/4 | **Confirmed 4/4** (hadoop 176, jdbc 183, rest 200, glue 219) | ✅ |
+| URI prereq validation in Trino write_configs() (jdbc+rest) | Claimed exit 3 | **Confirmed** (jdbc 184, rest 201 `if [[ -z … ]]`) | ✅ |
+| P-1 parity path (no domain segment) regression locks | 3 tests PASS | **3 tests PASS** | ✅ |
+| P-2 publish dual-path regression locks | 3 tests PASS | **3 tests PASS** | ✅ |
+| Publish CLI 8-flag parity regression locks | 4 tests PASS | **4 tests PASS** | ✅ |
+| `_execute_iceberg_write()` body: swap-keyword grep (staging/SwapMode/atomic_swap/build_staging_path) | Claimed 0 matches | **Confirmed 0 matches** | ✅ |
+| `grep namespace=\"spark_parquet\" publish/runtime.py` | Claimed 0 matches | **Confirmed 0 matches** | ✅ |
+| Iceberg opt-in default: argparse store_true + _iceberg_effective_enabled returns None without flag/env | Claimed | **Confirmed in source** (cli lines 519, 645; lines 141-150) | ✅ |
+
+### Remaining Workstation Proof Items (unchanged; require JDK 17+ install — outside sandbox)
+
+1. **Gate I3 Trino SELECT proof:** `bash ops/trino_serving/run_trino.sh bootstrap start && bash ops/trino_serving/run_trino.sh cli -- --execute "SELECT * FROM iceberg.level3.sales.base_orders LIMIT 10"` — confirm L3 + L4 tables queryable via JDBC. Updates DoD checkbox line 190 (last remaining unchecked DoD item).
+2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
+3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm: (a) publish emits `namespace=iceberg` in 3 lineage `DatasetRef` inputs; (b) Level5 export CSV/JSONL/TSV written; (c) zero `AnalysisException: Path does not exist`; (d) `artifacts.audit_path` JSON for both SQL and Publish stages contains `context.serving_endpoint` with correct non-empty JSON-string value (end-to-end audit-persistence verification).
+4. **OD-I1 step (a): Default flag flip** — after items 1-3 are green on a workstation, the OD-I1 delete sequence activates: flip Iceberg default from opt-in → opt-out in CLI argparse + env-default in `_iceberg_effective_enabled()` and `_is_iceberg_enabled()` (e.g., swap the `"false"` default to `"true"` and require explicit `ELT_PIPELINE_ICEBERG_ENABLED=false` to disable); mark this step complete in the OD-I1 status line of the Open Decisions block above.
+
 ## Cross-References
 
 - Decision: [PRD 09 — L3/L4 Serving and Table Format](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/09-prd-level3-level4-serving-and-table-format.md) (Accepted 2026-08-15).
