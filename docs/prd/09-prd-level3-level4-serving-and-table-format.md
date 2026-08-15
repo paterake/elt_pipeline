@@ -1,0 +1,136 @@
+# PRD 09: Level3/Level4 Serving Layer and Table Format
+
+## Document Status
+
+- Status: **Accepted v1 (ratified 2026-08-15)** — Option B (Apache Iceberg at `level3`/`level4`) confirmed as the serving-layer direction. Delta Lake (Option C) retained only as a documented fallback for a future provably Spark/Databricks-only deployment.
+- Product area: `elt_pipeline`
+- Scope: `level3`, `level4`, and the serving contract to downstream consumers
+- Depends on: [00-prd-platform-principles.md](00-prd-platform-principles.md), [00-prd-oss-adoption-strategy.md](00-prd-oss-adoption-strategy.md), [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md), [03-prd-sql-level2-to-level3-and-level3-to-level4.md](03-prd-sql-level2-to-level3-and-level3-to-level4.md), [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md)
+
+## Purpose
+
+Close the platform's serving gap. `elt_pipeline` currently transforms governed data through `level1`→`level5` correctly and lands `level3`/`level4` as **plain Parquet directories**. Nothing downstream can query those directories directly. This PRD decides how `level3`/`level4` become **consumable by BI tools (e.g. Qlik, Tableau, Quicksight) and ad-hoc SQL** without abandoning the platform's portability and client-neutrality principles.
+
+The platform's stated reason to exist is a governed data layer that BI tools can sit on. Until a serving contract exists, the pipeline is ELT-complete but consumption-incomplete — not a usable end state.
+
+## Problem Statement
+
+### Current state (verified 2026-08-15)
+
+- `level3`/`level4` are written with `DataFrame.write.parquet(target_path)` — plain Parquet, no table format, no catalog. See [sql/spark_executor.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py) (`writer.parquet(...)`).
+- There is **no metastore/catalog**: no Glue, Hive, Iceberg, or Delta anywhere in `src/`. Table discovery is by filesystem path convention only.
+- Atomic/overwrite correctness is provided by a **bespoke staging-swap protocol** ([sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py)) — scheme-dispatched POSIX rename / S3 copy-delete, plus a manual partition-overwrite merge.
+
+### Why this blocks consumption
+
+BI and SQL consumers do not connect to raw Parquet paths. They connect to one of:
+
+- a **catalog** (Glue / Hive / REST / JDBC) that exposes tables, or
+- a **table format** (Apache Iceberg / Delta Lake) that provides snapshots, schema, and a catalog entry, or
+- a **query endpoint** (Athena / Trino / Spark Thrift / DuckDB) that resolves one of the above.
+
+With none of these, `level3`/`level4` are inert to every downstream tool named in the platform goal.
+
+### The custom-code irony
+
+The staging-swap protocol is **custom platform code re-implementing a commodity problem** — atomic overwrite, partition overwrite, snapshot isolation — that table formats solve natively. This runs against the platform's own direction of "library purity, not custom-code maintenance." A table format both closes the serving gap **and** lets us delete this bespoke code.
+
+## Requirements
+
+1. `level3`/`level4` datasets must be queryable by an external SQL/BI consumer through a catalog or query endpoint, without a custom exporter per tool.
+2. Transforms remain **SQL-only**; the execution engine remains **Spark** (Platform Principles 3–4). No change to the authoring model — a user still writes `model.sql` + `manifest.yaml`.
+3. Portability and client-neutrality preserved (Platform Principle 2): no hard AWS/Glue dependency in business logic; the catalog binding must be pluggable the same way storage scheme is dispatched today (PRD 08).
+4. The level model and governance boundaries stay **platform-owned** (OSS Strategy): the table format is wrapped behind the existing write/read abstraction; it must not define the level contract.
+5. Overwrite/partition-overwrite semantics currently guaranteed by the staging-swap protocol must be preserved or improved.
+6. **BI-tool agnosticism is a first-class platform contract.** The platform must not bind to any specific BI tool (Quicksight/Qlik/Tableau/Power BI/…). It exposes **open standard interfaces** — Iceberg tables in a catalog, reachable via an **ANSI SQL JDBC/ODBC endpoint** — and treats the **serving engine as a configurable dispatch binding** (the same pattern as storage-scheme dispatch in PRD 08), so any BI tool connects via standard drivers and the engine is chosen per environment in config, never in code.
+
+## Options Considered
+
+### Option A — Status quo: plain Parquet + bespoke staging-swap (rejected)
+- **Pros:** zero new dependency; already built.
+- **Cons:** fails Requirement 1 outright — nothing can query it. Perpetuates custom table-management code. **Rejected: it is the non-usable end state this PRD exists to fix.**
+
+### Option B — Apache Iceberg at L3/L4 (recommended)
+- Write `level3`/`level4` as Iceberg tables via the Spark `iceberg` format; register in a **pluggable catalog** — Hadoop/filesystem catalog locally, Glue (or REST/JDBC) in cloud — dispatched by environment, mirroring PRD 08 storage-scheme dispatch.
+- **Pros:** broadest engine interoperability — Athena (native), Trino, Spark, Flink, Snowflake read Iceberg, so Quicksight/Tableau/Qlik reach it via Athena/Trino/Spark SQL. Snapshot isolation, hidden partitioning, schema/partition evolution, time travel — **replaces the staging-swap protocol natively.** Open, vendor-neutral (Apache), aligns to client-neutrality. Catalog is swappable, preserving portability.
+- **Cons:** new dependency + catalog concept to operate; maintainers learn Iceberg semantics; local dev needs a filesystem/JDBC catalog wired.
+
+### Option C — Delta Lake at L3/L4
+- Write as Delta via the `delta` format.
+- **Pros:** simplest Spark-side ergonomics; ACID + time travel; strong if the world is Spark-centric.
+- **Cons:** engine interoperability is narrower and historically Databricks-centric; Athena/Trino Delta support is thinner than Iceberg's. Weaker fit for a **tool-agnostic, portable** serving goal. Catalog story less uniform outside Spark.
+
+### Option D — External catalog over existing Parquet (Glue/Hive), no table format
+- Keep plain Parquet, register tables in a catalog so Athena/Trino can read paths.
+- **Pros:** minimal write-path change; makes data queryable.
+- **Cons:** no ACID/snapshots — keeps the staging-swap custom code (fails the de-duplication goal); schema evolution and partition changes remain manual; re-introduces AWS-Glue coupling unless a portable catalog is added anyway. Solves consumption but not the custom-code or correctness concerns.
+
+## Recommendation
+
+**Adopt Option B — Apache Iceberg at `level3`/`level4`, behind a pluggable catalog and the existing storage abstraction.**
+
+Rationale, mapped to principles:
+
+- **Closes the serving gap** (Req 1): Iceberg tables are natively queryable by Athena/Trino/Spark SQL, which is how Qlik/Tableau/Quicksight connect. This is the usable end state.
+- **Deletes custom code** (Req 5 + OSS Strategy): Iceberg's atomic commits, partition overwrite (`overwrite`/`MERGE`/`replaceWhere`-equivalent), and snapshot isolation **replace [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the manual partition merge.** Net custom-code *reduction* — advancing "library purity" further than the normalize cutover did.
+- **Preserves portability** (Req 3): open Apache format on any Spark; catalog is env-dispatched (Hadoop/JDBC local, Glue/REST cloud) exactly like storage scheme in PRD 08. No AWS in business logic.
+- **Keeps the model owned** (Req 4): the level contract, mapping catalog, audit/lineage, and SQL authoring model are unchanged. Iceberg is wrapped behind the L3/L4 write/read layer — it is the commodity substrate, not the architecture.
+- **No change to the user contract** (Req 2): transforms stay SQL, engine stays Spark. The change is in *how the result is materialized*, invisible to config authors.
+
+Delta (Option C) is the documented fallback if a future deployment is provably Spark/Databricks-only and interoperability breadth is not required.
+
+### Ratification (2026-08-15)
+
+Option B accepted. The decision rests on **fit for a client-neutral, portable, BI-tool-agnostic governed platform** — Iceberg is the vendor-neutral interchange standard, natively reachable by the platform's BI targets, and it lets us delete the bespoke staging-swap code — **not** on raw installed-base counts (where Delta, via Databricks, remains large). Iceberg's momentum as the open standard (broad engine support across Athena/Trino/Snowflake/BigQuery/Flink; the industry's convergence on it) is the durable basis for the choice.
+
+## Serving Topology (how consumers actually connect)
+
+The platform owns everything up to and including a **JDBC/ODBC SQL endpoint over Iceberg tables**. The serving engine and catalog are **configurable bindings**; the BI tool is outside the platform boundary and connects via a standard driver.
+
+```
+                         ┌──────────── PLATFORM BOUNDARY (owned + configurable) ───────────┐
+                         │                                                                  │
+level3/level4  ──(Iceberg tables)──►  Catalog binding            Serving-engine binding     │
+                         │            (Iceberg REST spec):       (ANSI SQL / JDBC-ODBC):     │
+                         │            Hadoop·JDBC local          Trino  (portable ref)       │
+                         │            REST server (Polaris/      Athena (AWS binding)        │
+                         │              Nessie/Lakekeeper)       Spark Thrift (no extra infra)│
+                         │            Glue (AWS)                 DuckDB (local dev)          │
+                         │                                          │                        │
+                         └──────────────────────────────────────────┼────────────────────────┘
+                                                                     │  JDBC / ODBC (standard driver)
+                            ┌───────────────┬────────────────┬───────┴────────┬───────────────┐
+                         Tableau          Qlik           Quicksight        Power BI        Superset
+                                              (any BI tool — deployment concern, not platform code)
+```
+
+Two open contracts make this work for *any* tool: the **Iceberg REST Catalog spec** (metadata) and **ANSI SQL over JDBC/ODBC** (access). The serving-engine binding is selected per environment in config — `trino` (portable default) · `athena` (AWS) · `spark_thrift` · `duckdb` — none hard-wired.
+
+`level5` publish/export (single-file CSV/TSV/JSONL delivery artifacts) is **unchanged** — it remains the "nice to have" derived-delivery path and is orthogonal to this serving layer.
+
+## Impact and Migration
+
+- **Write path:** L3/L4 materialization switches from `writer.parquet(target_path)` to Iceberg table writes behind the same abstraction. `load_mode` (`full_refresh`, `partition_overwrite`, `append`) maps to Iceberg native operations.
+- **Staging-swap:** [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the Track B same-path-overwrite handling become **obsolete** for L3/L4 (Iceberg commits are atomic and read-consistent). Removal is in scope once parity is verified. This also dissolves the Spark 4.x same-path overwrite DAG hazard by construction.
+- **Catalog config:** a new catalog binding enters the config contract (`elt_pipeline_cfg`) — env-scoped, defaulting to a local filesystem/JDBC catalog so local-first dev keeps working with no cloud account.
+- **PRD 03** (SQL L2→L3→L4) and **PRD 08** (storage dispatch) need follow-up revisions to reference the table-format materialization and catalog dispatch.
+- **L2:** out of scope. L2 stays source-aligned relational Parquet; only the SQL-modelled L3/L4 gain table-format serving.
+
+## Open Questions
+
+- **OQ-1 (catalog choice per environment):** Hadoop/filesystem vs JDBC catalog for local; Glue vs REST catalog for cloud. Recommendation: JDBC (portable, testable) local; Glue cloud — both behind one dispatch seam.
+- **OQ-2 (default query engine for BI validation):** Athena (managed, Iceberg-native) is the fastest path to prove Quicksight/Tableau/Qlik connectivity. Confirm the primary BI target to pick the reference engine.
+- **OQ-3 (staging-swap removal timing):** delete on L3/L4 Iceberg parity sign-off, or keep behind a flag for one soak cycle (mirroring the normalize cutover's C2→C3 pattern).
+- **OQ-4 (migration of existing L3/L4 Parquet):** re-materialize from L2 via existing SQL models (clean, preferred) vs. in-place register. Re-materialize is simpler and audit-clean.
+
+## Consequences
+
+- **Positive:** platform becomes consumable — the stated goal is met; net custom-code reduction; same-path overwrite hazard eliminated by construction; schema/partition evolution and time-travel gained; portability and SQL-only authoring preserved.
+- **Negative / cost:** a real new dependency and the operational concept of a catalog; maintainer ramp on Iceberg; local-dev catalog wiring; follow-up revisions to PRD 03/08 and `elt_pipeline_cfg`.
+- **Net:** this is the change that turns a correct ELT engine into a usable governed data platform. Without it, the level model terminates in data nothing can read.
+
+## Cross-References
+
+- Serving gap identified in the 2026-08-15 platform assessment (all-Spark alignment review).
+- Custom table-management code targeted for removal: [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) (built under the now-archived Custom-Code Parity Track B).
+- Storage/scheme dispatch pattern to mirror for catalog dispatch: [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md).

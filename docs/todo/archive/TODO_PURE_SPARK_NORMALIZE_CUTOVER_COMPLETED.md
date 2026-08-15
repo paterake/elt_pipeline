@@ -1,6 +1,6 @@
-<!-- ARCHIVED 2026-08-15 — Gates C1-C3 COMPLETED.  Gate C4 (publish sink OD-P1) remains tracked separately in the live
-     docs/todo/TODO_PUBLISH_SINK_SPARK_PARITY.md decision backlog (it is a cross-reference in this doc's DoD, not an
-     in-scope work item).  See docs/todo/TODO.md Backlog Index for the live active backlog list. -->
+<!-- ARCHIVED 2026-08-15 — Gates C1–C4 COMPLETED.  Gate C4 (publish sink OD-P1) resolved separately in
+     archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md (Option 3 streaming + guardrail + documented sink boundary).
+     For current backlog see docs/todo/TODO.md Backlog Index (current count: 0 active). -->
 
 # Pure-Spark Cutover: Retire the Custom-Python Normalize Engine — COMPLETED 2026-08-15
 
@@ -21,7 +21,7 @@ A read-only audit of the current tree confirms the transition is incomplete agai
 | ~~Custom-Python relationalizer still present~~ | ~~[normalize/runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py) (~17KB)~~ | **DELETED in Gate C3** |
 | ~~It is the **runtime default**~~ | ~~[normalize/pipeline.py:116](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/pipeline.py#L116) `normalize_engine="python"`~~ | **FLIPPED to Spark in Gate C2; switch removed in C3** |
 | ~~Row-level Spark parity never executed~~ | ~~Parity tests marked `skipif(not _HAS_PYSPARK_JVM)`~~ | **Ran on Temurin 17; 2/2 PASS (Gate C1). Tests rewritten to Spark-native unconditional (Gate C3).** |
-| Publish sink is custom-Python over data | [publish/runtime.py:392](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L392) `result_df.collect()` → row-by-row Python write ([L671-705](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L671-L705)) | Second (smaller) custom-Python data-plane site. Tracked separately — see [TODO_PUBLISH_SINK_SPARK_PARITY.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_PUBLISH_SINK_SPARK_PARITY.md). Gate C4 cross-ref only, not a C1–C3 blocker. |
+| Publish sink is custom-Python over data | [publish/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py) old `result_df.collect()` → replaced with `toLocalIterator()` streaming + size guardrail 2026-08-15 | Second (smaller) custom-Python data-plane site — **RESOLVED 2026-08-15 (Gate C4)**. Tracked separately — see [archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md). |
 
 Clean confirmation from the same audit: **no** `pandas`/`toPandas`/Python UDFs/`.rdd`/`.map`/`.foreach` anywhere in `src/`. The SQL/transform core is already pure Spark. The only custom-Python data-plane code remaining is the normalize engine (this doc) and the publish sink (its own doc).
 
@@ -77,7 +77,7 @@ Once Spark has been the default through Gate C2 verification and any agreed soak
 
 ### Gate C4 — Publish sink decision (cross-reference only)
 
-Resolve OD-P1 in [TODO_PUBLISH_SINK_SPARK_PARITY.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_PUBLISH_SINK_SPARK_PARITY.md). Not a blocker for C1–C3; listed here so the "no custom-Python data plane" goal is tracked to completion across both sites.
+**RESOLVED 2026-08-15 per [archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md).** Not a blocker for C1–C3; listed here so the "no custom-Python data plane" goal is tracked to completion across both sites. Decision: Option 3 (`toLocalIterator()` streaming) + Option 1 documented sink boundary + size guardrail.
 
 ## Open Decisions
 
@@ -174,12 +174,12 @@ Returns **0 matches** under both `src/` and `tests/` (15 Aug 2026).
 
 ### Gate C4 — Publish Sink (Decision Cross-Reference Only)
 
-No action taken in this cutover. Decision remains open at [TODO_PUBLISH_SINK_SPARK_PARITY.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_PUBLISH_SINK_SPARK_PARITY.md) pending expected max publish output size for options (1) documented sink boundary + size guardrail; (2) `coalesce(1)` + rename; (3) `toLocalIterator()` to drop the driver-heap spike.
+**RESOLVED 2026-08-15 — see [archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md).** No action taken in the normalize cutover itself. Post-cutover decision = Option 3 (`toLocalIterator()` streaming drops the driver-heap spike) combined with Option 1 documented sink boundary + `ELT_PIPELINE_PUBLISH_MAX_ROWS` size guardrail (default 1M rows, fail-fast via Spark `.count()` pre-check).
 
 ## Cross-References
 
 - Completed parity work (built the Spark engine + staging-swap): [archive/TODO_CUSTOM_CODE_PYTHON_SPARK_PARITY_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_CUSTOM_CODE_PYTHON_SPARK_PARITY_COMPLETED.md)
-- Publish sink (second data-plane site): [TODO_PUBLISH_SINK_SPARK_PARITY.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_PUBLISH_SINK_SPARK_PARITY.md)
+- Publish sink (second data-plane site — now RESOLVED + archived): [archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_PUBLISH_SINK_SPARK_PARITY_COMPLETED.md)
 - JVM prerequisite that unblocked Gate 5: [maintainer/JVM_TOOLCHAIN_SETUP.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/maintainer/JVM_TOOLCHAIN_SETUP.md)
 - Source: [normalize/pipeline.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/pipeline.py), [normalize/runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/runner.py), [normalize/spark_runner.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/spark_runner.py)
 - Origin: 2026-08-15 pure-Spark alignment audit (read-only; no code changed).

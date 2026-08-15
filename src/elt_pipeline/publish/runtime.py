@@ -7,6 +7,7 @@ import os
 import posixpath
 import shutil
 import zipfile
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -49,6 +50,53 @@ from elt_pipeline.shared.path_utils import (
     strip_file_scheme,
 )
 from elt_pipeline.shared.runtime import RunContext, StageName
+
+_PUBLISH_MAX_ROWS_ENV_VAR = "ELT_PIPELINE_PUBLISH_MAX_ROWS"
+_PUBLISH_MAX_ROWS_DEFAULT = 1_000_000
+
+
+def _resolve_publish_max_rows() -> int:
+    raw = os.environ.get(_PUBLISH_MAX_ROWS_ENV_VAR)
+    if raw is None:
+        return _PUBLISH_MAX_ROWS_DEFAULT
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigValidationError(
+            message=f"{_PUBLISH_MAX_ROWS_ENV_VAR} must be a positive integer",
+            context={"value": raw},
+        ) from exc
+    if value <= 0:
+        raise ConfigValidationError(
+            message=f"{_PUBLISH_MAX_ROWS_ENV_VAR} must be a positive integer",
+            context={"value": raw},
+        )
+    return value
+
+
+def _enforce_publish_row_ceiling(
+    *,
+    publish_id: str,
+    row_count: int,
+    max_rows: int,
+) -> None:
+    if row_count > max_rows:
+        raise PipelineError(
+            message=(
+                "Publish result set exceeds configured max rows ceiling "
+                f"({row_count} > {max_rows}). Increase {_PUBLISH_MAX_ROWS_ENV_VAR} "
+                "or narrow the publish query."
+            ),
+            error_code="PUBLISH_ROWS_EXCEED_CEILING",
+            error_category=ErrorCategory.validation_error,
+            retryable=False,
+            context={
+                "publish_id": publish_id,
+                "row_count": row_count,
+                "max_rows": max_rows,
+                "env_var": _PUBLISH_MAX_ROWS_ENV_VAR,
+            },
+        )
 
 
 def explain_publish_definitions(
@@ -389,11 +437,19 @@ def _run_single_publish_definition(
     sql_text = _build_publish_sql(definition)
     result_df = spark.sql(sql_text)
     column_names = result_df.columns
-    rows = result_df.collect()
+
+    row_count = result_df.count()
+    max_rows = _resolve_publish_max_rows()
+    _enforce_publish_row_ceiling(
+        publish_id=definition.publish_id,
+        row_count=row_count,
+        max_rows=max_rows,
+    )
+
     validations = _validate_publish_output(
         definition=definition,
         column_names=column_names,
-        rows=rows,
+        row_count=row_count,
     )
 
     run_scoped_path = _resolve_run_scoped_output_path(root_path, run_context, definition)
@@ -404,12 +460,38 @@ def _run_single_publish_definition(
     )
     path_mkdir(path_parent(run_scoped_path), parents=True, exist_ok=True)
 
-    _write_publish_output(
+    # -- Publish sink boundary (accepted per OD-P1 2026-08-15) --
+    # This is an intentional driver-side step, not a Spark-executor-parallel step.
+    # Delivery contract for publish artifacts is a SINGLE file (.csv/.tsv/.jsonl)
+    # with a sha256 checksum over the whole file, plus optional archive packaging.
+    # Spark's df.write.<fmt>() produces part-* directories, which is the wrong
+    # output shape for an external-consumer delivery artifact. We mitigate the
+    # driver-heap spike from the old result_df.collect() by streaming partition
+    # by partition via toLocalIterator() (vs. full materialization), and we
+    # enforce a row-count ceiling via _enforce_publish_row_ceiling() above to
+    # fail fast rather than silently OOM on an oversized publish result set.
+    row_iterator: Iterator[Row] = result_df.toLocalIterator()
+    rows_written = _write_publish_output(
         output_path=run_scoped_path,
         output_format=definition.manifest.delivery.output_format,
         column_names=column_names,
-        rows=rows,
+        rows=row_iterator,
     )
+    if rows_written != row_count:
+        raise PipelineError(
+            message=(
+                f"Publish row count mismatch: Spark reported {row_count} rows "
+                f"but write pass wrote {rows_written} rows"
+            ),
+            error_code="PUBLISH_ROW_COUNT_MISMATCH",
+            error_category=ErrorCategory.processing_error,
+            retryable=True,
+            context={
+                "publish_id": definition.publish_id,
+                "spark_count": row_count,
+                "written_count": rows_written,
+            },
+        )
 
     checksum_sha256 = hashlib.sha256(path_read_bytes(run_scoped_path)).hexdigest()
     file_size_bytes = _file_size_bytes(run_scoped_path)
@@ -424,7 +506,7 @@ def _run_single_publish_definition(
             run_scoped_path=run_scoped_path,
             stable_delivery_path=stable_delivery_path,
             file_size_bytes=file_size_bytes,
-            row_count=len(rows),
+            row_count=row_count,
             checksum_sha256=checksum_sha256,
         )
     ]
@@ -469,7 +551,7 @@ def _run_single_publish_definition(
                 run_scoped_path=archive_run_scoped_path,
                 stable_delivery_path=archive_stable_delivery_path,
                 file_size_bytes=archive_file_size_bytes,
-                row_count=len(rows),
+                row_count=row_count,
                 checksum_sha256=archive_checksum_sha256,
             )
         )
@@ -513,7 +595,7 @@ def _run_single_publish_definition(
             message="Publish definition completed",
             details={
                 "publish_id": definition.publish_id,
-                "row_count": len(rows),
+                "row_count": row_count,
                 "run_scoped_path": run_scoped_path,
                 "stable_delivery_path": (
                     stable_delivery_path if stable_delivery_path is not None else ""
@@ -544,7 +626,7 @@ def _run_single_publish_definition(
                         "publish_id": definition.publish_id,
                         "manifest_path": manifest_path,
                         "output_format": definition.manifest.delivery.output_format.value,
-                        "row_count": len(rows),
+                        "row_count": row_count,
                     },
                 )
             ]
@@ -571,7 +653,7 @@ def _run_single_publish_definition(
     )
     return PublishRunResult(
         publish_id=definition.publish_id,
-        row_count=len(rows),
+        row_count=row_count,
         artifacts=artifacts,
         validations=validations,
     )
@@ -622,7 +704,7 @@ def _validate_publish_output(
     *,
     definition: DiscoveredPublishDefinition,
     column_names: list[str],
-    rows: list[Row],
+    row_count: int,
 ) -> list[PublishValidationResult]:
     validations: list[PublishValidationResult] = []
     missing_required_columns = [
@@ -644,10 +726,10 @@ def _validate_publish_output(
     validations.append(
         PublishValidationResult(
             validation_type="non_empty",
-            passed=(len(rows) > 0) or (not definition.manifest.validation.require_non_empty),
+            passed=(row_count > 0) or (not definition.manifest.validation.require_non_empty),
             message=(
                 None
-                if len(rows) > 0 or not definition.manifest.validation.require_non_empty
+                if row_count > 0 or not definition.manifest.validation.require_non_empty
                 else "Publish result set must not be empty"
             ),
         )
@@ -673,16 +755,19 @@ def _write_publish_output(
     output_path: str,
     output_format: PublishOutputFormat,
     column_names: list[str],
-    rows: list[Row],
-) -> None:
+    rows: Iterator[Row],
+) -> int:
     local_output_path = _local_path_or_exception(output_path)
+    rows_written = 0
+
     if output_format == PublishOutputFormat.csv:
         with open(local_output_path, "w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=column_names)
             writer.writeheader()
             for row in rows:
                 writer.writerow(_row_to_serializable_mapping(row=row, column_names=column_names))
-        return
+                rows_written += 1
+        return rows_written
 
     if output_format == PublishOutputFormat.tsv:
         with open(local_output_path, "w", encoding="utf-8", newline="") as handle:
@@ -690,7 +775,8 @@ def _write_publish_output(
             writer.writeheader()
             for row in rows:
                 writer.writerow(_row_to_serializable_mapping(row=row, column_names=column_names))
-        return
+                rows_written += 1
+        return rows_written
 
     if output_format == PublishOutputFormat.jsonl:
         with open(local_output_path, "w", encoding="utf-8", newline="") as handle:
@@ -702,7 +788,8 @@ def _write_publish_output(
                     )
                 )
                 handle.write("\n")
-        return
+                rows_written += 1
+        return rows_written
 
     raise ConfigValidationError(
         message="Unsupported publish output format",
