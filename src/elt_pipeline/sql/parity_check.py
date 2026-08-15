@@ -62,9 +62,9 @@ def _sorted_row_md5(df: DataFrame) -> tuple[int, str, list[str]]:
 
 
 def _warehouse_path_for_stage(
-    *, warehouse_root: str, stage: SqlModelStage, table_name: str, domain: str
+    *, warehouse_root: str, stage: SqlModelStage, table_name: str
 ) -> Path:
-    return Path(warehouse_root) / stage.value / domain / table_name
+    return Path(warehouse_root) / stage.value / table_name
 
 
 def measure_model_parity(
@@ -86,7 +86,6 @@ def measure_model_parity(
                 warehouse_root=warehouse_root,
                 stage=m.stage,
                 table_name=m.target_table_name,
-                domain=m.domain,
             )
             reader = spark.read.parquet(str(path))
         n_rows, md5_digest, cols = _sorted_row_md5(reader)

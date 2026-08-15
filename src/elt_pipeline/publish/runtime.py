@@ -50,6 +50,8 @@ from elt_pipeline.shared.path_utils import (
     strip_file_scheme,
 )
 from elt_pipeline.shared.runtime import RunContext, StageName
+from elt_pipeline.sql.models import SqlModelStage
+from elt_pipeline.sql.spark_executor import _iceberg_table_fq, _is_iceberg_enabled
 
 _PUBLISH_MAX_ROWS_ENV_VAR = "ELT_PIPELINE_PUBLISH_MAX_ROWS"
 _PUBLISH_MAX_ROWS_DEFAULT = 1_000_000
@@ -161,6 +163,9 @@ def run_publish_definitions_locally(
             context={"stage": run_context.stage.value},
         )
 
+    use_iceberg = _is_iceberg_enabled(spark)
+    source_namespace = "iceberg" if use_iceberg else "spark_parquet"
+
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
     artifacts = PublishRunArtifacts(
@@ -199,7 +204,7 @@ def run_publish_definitions_locally(
             job_name=run_context.job_name,
             inputs=[
                 DatasetRef(
-                    namespace="spark_parquet",
+                    namespace=source_namespace,
                     name=definition.manifest.source.dataset,
                     facets={
                         "publish_id": definition.publish_id,
@@ -338,7 +343,7 @@ def run_publish_definitions_locally(
                 job_name=run_context.job_name,
                 inputs=[
                     DatasetRef(
-                        namespace="spark_parquet",
+                        namespace=source_namespace,
                         name=definition.manifest.source.dataset,
                         facets={"publish_id": definition.publish_id},
                     )
@@ -389,9 +394,23 @@ def _register_level4_source(
     warehouse_root: str,
     definition: DiscoveredPublishDefinition,
 ) -> None:
-    dataset_path = join_paths(warehouse_root, "level4", definition.manifest.source.dataset)
-    dataframe = spark.read.parquet(dataset_path)
-    dataframe.createOrReplaceTempView(definition.manifest.source.dataset)
+    use_iceberg = _is_iceberg_enabled(spark)
+    dataset = definition.manifest.source.dataset
+    if use_iceberg:
+        stage_str = definition.manifest.source.stage
+        stage = (
+            SqlModelStage(stage_str)
+            if stage_str in {s.value for s in SqlModelStage}
+            else SqlModelStage.level4
+        )
+        domain = definition.manifest.domain
+        fq = _iceberg_table_fq(stage=stage, domain=domain, name=dataset)
+        dataframe = spark.table(fq)
+    else:
+        stage = definition.manifest.source.stage
+        dataset_path = join_paths(warehouse_root, stage, dataset)
+        dataframe = spark.read.parquet(dataset_path)
+    dataframe.createOrReplaceTempView(dataset)
 
 
 def _run_single_publish_definition(
@@ -405,6 +424,8 @@ def _run_single_publish_definition(
     lineage_adapter: LineageAdapter,
     definition: DiscoveredPublishDefinition,
 ) -> PublishRunResult:
+    use_iceberg = _is_iceberg_enabled(spark)
+    source_namespace = "iceberg" if use_iceberg else "spark_parquet"
     if definition.manifest.delivery.output_format not in {
         PublishOutputFormat.csv,
         PublishOutputFormat.jsonl,
@@ -613,7 +634,7 @@ def _run_single_publish_definition(
             job_name=run_context.job_name,
             inputs=[
                 DatasetRef(
-                    namespace="spark_parquet",
+                    namespace=source_namespace,
                     name=definition.manifest.source.dataset,
                     facets={"publish_id": definition.publish_id},
                 )

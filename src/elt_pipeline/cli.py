@@ -622,7 +622,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     publish_run_parser = publish_subparsers.add_parser(
         "run",
-        help="Run publish definitions against a Spark-backed parquet warehouse.",
+        help="Run publish definitions against a Spark-backed parquet or Iceberg warehouse.",
     )
     _add_publish_selection_arguments(publish_run_parser)
     publish_run_parser.add_argument("--root-path", type=str, default=_DEFAULT_ROOT_PATH)
@@ -640,6 +640,77 @@ def build_parser() -> argparse.ArgumentParser:
     publish_run_parser.add_argument(
         "--rerun-run-id",
         help="Reuse the publish/window selection from a prior publish run.",
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_true",
+        default=None,
+        help=(
+            "Enable Iceberg table format for level3/level4 source reads (overrides env "
+            "ELT_PIPELINE_ICEBERG_ENABLED). When set, reads from the configured Iceberg "
+            "catalog instead of plain parquet files."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-catalog-name",
+        default=None,
+        help="Override env ELT_PIPELINE_ICEBERG_CATALOG_NAME (default: iceberg).",
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-catalog-type",
+        default=None,
+        choices=["hadoop", "jdbc", "rest", "glue"],
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_CATALOG_TYPE (default: hadoop). "
+            "hadoop=filesystem (local zero-infra); jdbc=H2/Postgres-backed; "
+            "rest=Polaris/Nessie/Lakekeeper/Tabular (requires URI); "
+            "glue=AWS Glue Data Catalog (requires region or default SDK region)."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-catalog-uri",
+        default=None,
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_CATALOG_URI. Required when "
+            "--iceberg-catalog-type=jdbc (JDBC connection string) or "
+            "--iceberg-catalog-type=rest (REST server endpoint, e.g. http://localhost:8181/api/v1)."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-rest-token",
+        default=None,
+        dest="iceberg_rest_token",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_REST_TOKEN. Bearer / API token for "
+            "--iceberg-catalog-type=rest (Polaris/Nessie/Lakekeeper/Tabular auth)."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-rest-warehouse",
+        default=None,
+        dest="iceberg_rest_warehouse",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_REST_WAREHOUSE. Warehouse name/ID for "
+            "--iceberg-catalog-type=rest when the REST server hosts multiple warehouses."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-glue-region",
+        default=None,
+        dest="iceberg_glue_region",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_GLUE_REGION. AWS region for "
+            "--iceberg-catalog-type=glue (falls back to standard AWS SDK region chain)."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-warehouse-dir",
+        default=None,
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR. If omitted and Iceberg is "
+            "enabled, automatically falls back to <warehouse-root>/iceberg."
+        ),
     )
 
     schedule_parser = subparsers.add_parser(
@@ -1250,8 +1321,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.publish_command == "run":
+                _validate_iceberg_catalog_binding(args)
                 publish_spark = build_spark_session(
-                    app_name=f"elt-pipeline-publish-{getattr(args, 'job_name', 'publish-run')}"
+                    **_resolve_iceberg_session_kwargs(
+                        args=args,
+                        app_name=f"elt-pipeline-publish-{getattr(args, 'job_name', 'publish-run')}",
+                    )
                 )
                 try:
                     result = run_publish_definitions_locally(
