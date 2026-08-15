@@ -4,7 +4,7 @@ This repository uses `uv` for local development, test execution, and packaging.
 
 ## Local Development
 
-`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM (Java 17+) with `JAVA_HOME` set. The `dev` extra already pulls in `pyspark`; only the JVM itself is an external prerequisite.
+`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM (Java 17+) with `JAVA_HOME` set. The `dev` extra already pulls in `pyspark`; only the JVM itself is an external prerequisite. To provision that JVM cleanly (without polluting the OS), see [JVM_TOOLCHAIN_SETUP.md](JVM_TOOLCHAIN_SETUP.md).
 
 Sync the locked development environment from the repository root:
 

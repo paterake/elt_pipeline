@@ -6,7 +6,7 @@ This runbook covers the local v1 operator flows for on-demand execution, targete
 
 - Run commands from the repository root.
 - Install dependencies with `uv sync --extra dev --extra spark`.
-- `normalize`, `sql`, and `publish` run on Apache Spark and require a local JVM (Java 17+) with `JAVA_HOME` set.
+- `normalize`, `sql`, and `publish` run on Apache Spark and require a local JVM (Java 17+) with `JAVA_HOME` set. See [JVM_TOOLCHAIN_SETUP.md](../maintainer/JVM_TOOLCHAIN_SETUP.md) to install one.
 - Use a writable runtime root such as `.ignore/runtime-demo`.
 - Validate configs before running jobs.
 
