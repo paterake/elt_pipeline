@@ -260,6 +260,65 @@ Scope: Static gap-audit of the 2026-08-15 "code-complete" backlog for cross-modu
 2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
 3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm publish emits `namespace=iceberg` in its 3 lineage `DatasetRef` inputs, Level5 export CSV/JSONL/TSV files are written, and zero `AnalysisException: Path does not exist` is raised.
 
+## Summary of 2026-08-19 session (Gate I3 audit persistence gap closure)
+
+Environment: macOS sandbox, Python 3.13.14 (uv venv), PySpark 4.1.2 installed, **NO JVM on PATH** (identical environment to prior sessions — Spark data-plane / Trino / JDBC probes remain workstation-pending).
+
+Scope: Static gap-audit of the Gate I3 spec requirement. The 2026-08-15 / 2026-08-18 sessions confirmed `_build_serving_endpoint(args)` constructs the correct endpoint dict and serializes it to **CLI stdout JSON** for both `sql run` and `publish run` commands. However, the Gate I3 spec explicitly mandates that `serving_endpoint` be written into **"every SQL stage audit JSON"** — meaning the persistent `AuditRecord` stored at `artifacts.audit_path` (written by `run_sql_models_locally()` and `run_publish_definitions_locally()` to `root_path` / artifact store), not just the transient CLI stdout. This gap would have caused audit consumers reading the permanent artifact store (e.g., runbook § "Audit JSON Schema", lineage adapters, or post-hoc BI tooling on historical runs) to have no record of which catalog/engine binding was active for a given run.
+
+### Gap Found and Closed: Gate I3 — `serving_endpoint` Not Persisted to AuditRecord
+
+**Gap Severity:** High. Permanent audit artifacts for SQL + Publish runs would not contain the `serving_endpoint` dict, even though the spec requires it. Downstream consumers of `artifacts.audit_path` (not CLI stdout) would not be able to determine catalog type, Trino JDBC URL, Athena binding note, etc. for historical runs.
+
+**Root Cause:**
+- In `sql/runtime.py`: `_build_serving_endpoint(args)` was called inside `cli.py` `sql run` handler and inserted into the CLI stdout `payload` dict, but `run_sql_models_locally()` had no `serving_endpoint` parameter. The dict was never threaded into the `_build_audit_context()` call that builds the `AuditRecord.context=` field.
+- In `publish/runtime.py`: Same pattern — `serving_endpoint` was only ever in CLI stdout. The inline `context=` dict literal inside `AuditRecord(...)` constructor had no `serving_endpoint` key.
+- Symmetry gap: `sql run` stdout had no `serving_endpoint` in the stdout payload (only `publish run` had it after the 2026-08-18 CLI parity session).
+
+**Fix: 5 edits across 3 files — full threading for SQL + Publish (both audit + stdout):**
+
+1. **[sql/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/runtime.py#L55):** Added `serving_endpoint: dict[str, object] | None = None` keyword-only parameter to `run_sql_models_locally()` signature.
+2. **[sql/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/runtime.py#L260):** Added `serving_endpoint=serving_endpoint` kwarg to the `_build_audit_context(...)` call at the audit record write site.
+3. **[sql/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/runtime.py#L398):** Added `serving_endpoint: dict[str, object] | None = None` parameter to `_build_audit_context()` function signature. Added conditional serialization: `if serving_endpoint is not None: context["serving_endpoint"] = json.dumps(serving_endpoint, sort_keys=True)` — using the same `json.dumps(..., sort_keys=True)` convention as `partition_values`, `extra_values`, `include_dependencies` in the surrounding dict, so the field format is uniform with other JSON-valued audit context entries.
+4. **[cli.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L1125):** Added `serving_endpoint=_build_serving_endpoint(args)` kwarg to the `run_sql_models_locally(...)` call site in the `sql run` command handler.
+5. **[cli.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L1332-L1406):** In `publish run` command handler: (a) hoisted `serving_endpoint = _build_serving_endpoint(args)` to a local variable BEFORE `run_publish_definitions_locally()` is called, so the same value is reused consistently; (b) passed it into `run_publish_definitions_locally(serving_endpoint=serving_endpoint)`; (c) preserved the existing stdout payload `"serving_endpoint": serving_endpoint` entry (ensures 1:1 parity with `sql run` stdout format now that both commands serialize it via the same local variable pattern).
+6. **[publish/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L156):** Added `serving_endpoint: dict[str, object] | None = None` parameter to `run_publish_definitions_locally()` signature. Refactored the inline `context=` dict literal inside the `AuditRecord(...)` constructor into a pre-built `publish_audit_context: dict[str, str]` variable (lines 270–312), then added conditional insertion at lines 313–316: `if serving_endpoint is not None: publish_audit_context["serving_endpoint"] = json.dumps(serving_endpoint, sort_keys=True)`. This avoids Python's syntactic limitation of not allowing `if` expressions inside inline dict literals for optional keys, while preserving exact equivalence with the original context dict (verified by re-reading: all 13 original context keys are present unchanged — only the `serving_endpoint` entry is new). The `AuditRecord` constructor is then updated to `context=publish_audit_context`.
+
+**Design note — Backward compatibility:** Both new `serving_endpoint=` parameters default to `None`. All existing callers (15 test call sites across `test_sql_models.py` + `test_publish_models.py` plus any external `run_sql_models_locally()` / `run_publish_definitions_locally()` integrators) continue to work without modification. When `None`, the `serving_endpoint` key is simply not present in the `AuditRecord.context` dict — matching the pre-fix behavior exactly (no empty strings, no null-value pollution).
+
+**Verification (static + tests):**
+- `ruff check src/` (entire tree) → **0 errors** (both before and after the 5 edits — no new lint introduced).
+- `tests/test_iceberg_catalog_config.py` → **23/23 PASS** (no regressions in catalog dispatch / CLI validation / endpoint shape tests).
+- Full non-JVM suite (tests/test_config_loader.py, test_path_utils.py, test_merge_sql_generator.py, test_quality_adapter.py, test_lineage_adapter.py, test_iceberg_catalog_config.py) → **104/104 PASS**.
+- JVM-only errors in test_sql_models.py / test_publish_models.py remain at 19, all identical `JAVA_GATEWAY_EXITED: Unable to locate a Java Runtime` — zero new logical test failures.
+- VS Code `GetDiagnostics` → **Empty** (no type errors or warnings).
+- Call-site audit: `grep run_sql_models_locally\|run_publish_definitions_locally` across entire repo → 17 matches. Only the 2 CLI call sites pass `serving_endpoint=`. All 15 remaining call sites (test files) rely on `None` default — backwards-compatible ✅.
+- Function export audit: `sql/__init__.py` re-exports `run_sql_models_locally` unchanged (new kwarg is defaulted, no API surface change). `publish/__init__.py` re-exports `run_publish_definitions_locally` unchanged (same reasoning). Both `__all__` lists untouched. ✅
+- JSON serialization convention audit: `serving_endpoint` serialized via `json.dumps(..., sort_keys=True)` in both audit context builders — identical format to `partition_values`, `extra_values`, `include_dependencies`, `export_manifest_paths`, `run_scoped_artifact_paths` in surrounding context dicts. Consistent and parseable by a single JSON-decoding path in audit consumers. ✅
+- Symmetry audit: `serving_endpoint` now appears in 4 places end-to-end for both commands:
+  - CLI stdout payload (`sql run` line 1150 approx + `publish run` line 1406)
+  - `AuditRecord.context["serving_endpoint"]` (SQL via `_build_audit_context` + Publish via `publish_audit_context`)
+  — All 4 entries populated from the same `_build_serving_endpoint(args)` call per command, so CLI stdout and permanent audit JSON are always byte-identical for the `serving_endpoint` dict.
+
+### Regression Test Baseline (2026-08-19 session vs 2026-08-18)
+
+| Baseline metric | 2026-08-18 | 2026-08-19 | Status |
+|---|---|---|---|
+| `tests/test_iceberg_catalog_config.py` | 23/23 PASS | 23/23 PASS | ✅ No regressions |
+| Non-JVM suite (7 files subset) | 104 PASS | 104 PASS | ✅ No regressions |
+| JVM-dependent errors | 19 errors (test_sql + test_publish) | 19 errors (same `JAVA_GATEWAY_EXITED` only) | ✅ Zero new logical failures |
+| `ruff check src/` entire tree | 0 errors | 0 errors | ✅ No new lint |
+| VS Code diagnostics | Empty | Empty | ✅ |
+| `serving_endpoint` in AuditRecord.context | ❌ Missing in both SQL + Publish | ✅ Present when provided | ✅ Gap closed |
+| `serving_endpoint` in `sql run` CLI stdout | ❌ Missing | ✅ Present (via same local var) | ✅ Symmetry with publish run restored |
+| `serving_endpoint` in `publish run` CLI stdout | ✅ Present | ✅ Present (local var hoisted for reuse) | ✅ No change |
+
+### Remaining Workstation Proof Items (unchanged; require JDK 17+ — outside sandbox)
+
+1. **Gate I3 Trino SELECT proof:** `bash ops/trino_serving/run_trino.sh bootstrap start && bash ops/trino_serving/run_trino.sh cli -- --execute "SELECT * FROM iceberg.level3.sales.base_orders LIMIT 10"` — confirm L3 + L4 tables queryable via JDBC. Updates DoD checkbox line 190.
+2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
+3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm: (a) publish emits `namespace=iceberg` in 3 lineage `DatasetRef` inputs; (b) Level5 export CSV/JSONL/TSV written; (c) zero `AnalysisException: Path does not exist`; (d) `artifacts.audit_path` JSON for both SQL and Publish stages contains the `serving_endpoint` top-level key under `context.serving_endpoint` (new 2026-08-19 verification point — confirms audit persistence gap closure end-to-end with real JVM data-plane).
+
 ## Summary of 2026-08-15 session verification pass (static regression audit)
 
 Environment: macOS sandbox, Python 3.13.14 (uv venv), PySpark 4.1.2 installed, **NO JVM on PATH** (identical environment to 2026-08-15 and 2026-08-18 sessions — Spark data-plane / Trino / JDBC probes remain workstation-pending).

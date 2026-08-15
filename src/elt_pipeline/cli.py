@@ -1049,13 +1049,13 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.sql_command == "run":
                 _validate_iceberg_catalog_binding(args)
-                sql_spark = build_spark_session(
-                    **_resolve_iceberg_session_kwargs(
-                        args=args,
-                        app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}",
-                    )
-                )
                 if args.validate_only or args.explain:
+                    sql_spark = build_spark_session(
+                        **_resolve_iceberg_session_kwargs(
+                            args=args,
+                            app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}",
+                        )
+                    )
                     try:
                         planning_result = SparkSqlModelExecutor(
                             spark=sql_spark,
@@ -1107,6 +1107,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(json.dumps(payload, indent=2))
                     return 0
 
+                sql_spark = build_spark_session(
+                    **_resolve_iceberg_session_kwargs(
+                        args=args,
+                        app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}",
+                    )
+                )
+                serving_endpoint = _build_serving_endpoint(args)
                 try:
                     result = run_sql_models_locally(
                         root_path=args.root_path,
@@ -1122,6 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
                         selection_domain=selection_domain,
                         selection_model=selection_model,
                         include_dependencies=selection_include_dependencies,
+                        serving_endpoint=serving_endpoint,
                     )
                 finally:
                     sql_spark.stop()
@@ -1159,7 +1167,7 @@ def main(argv: list[str] | None = None) -> int:
                             else None
                         ),
                     },
-                    "serving_endpoint": _build_serving_endpoint(args),
+                    "serving_endpoint": serving_endpoint,
                 }
                 print(json.dumps(payload, indent=2))
                 return 0
@@ -1328,6 +1336,7 @@ def main(argv: list[str] | None = None) -> int:
                         app_name=f"elt-pipeline-publish-{getattr(args, 'job_name', 'publish-run')}",
                     )
                 )
+                serving_endpoint = _build_serving_endpoint(args)
                 try:
                     result = run_publish_definitions_locally(
                         root_path=path_normalize(args.root_path),
@@ -1337,6 +1346,7 @@ def main(argv: list[str] | None = None) -> int:
                         warehouse_root=args.warehouse_root,
                         spark=publish_spark,
                         definitions=selected_definitions,
+                        serving_endpoint=serving_endpoint,
                     )
                 finally:
                     publish_spark.stop()
@@ -1400,6 +1410,7 @@ def main(argv: list[str] | None = None) -> int:
                             else None
                         ),
                     },
+                    "serving_endpoint": serving_endpoint,
                 }
                 print(json.dumps(payload, indent=2))
                 return 0

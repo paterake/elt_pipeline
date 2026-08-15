@@ -153,6 +153,7 @@ def run_publish_definitions_locally(
     warehouse_root: str,
     spark: SparkSession,
     definitions: list[DiscoveredPublishDefinition],
+    serving_endpoint: dict[str, object] | None = None,
 ) -> PublishStageRunResult:
     if run_context.stage != StageName.publish:
         raise PipelineError(
@@ -266,6 +267,53 @@ def run_publish_definitions_locally(
         for result in results:
             metrics.extra[f"publish.{result.publish_id}.row_count"] = result.row_count
 
+        publish_audit_context: dict[str, str] = {
+            "environment": environment,
+            "package_path": str(package_path),
+            "warehouse_root": warehouse_root,
+            "artifact_root": root_path,
+            "publish_count": str(len(definitions)),
+            "selected_publish_ids": ",".join(
+                definition.publish_id for definition in definitions
+            ),
+            "window_start": (
+                _string_or_none(run_context.attributes.get("window_start")) or ""
+            ),
+            "window_end": (
+                _string_or_none(run_context.attributes.get("window_end")) or ""
+            ),
+            "window_label": (
+                _string_or_none(run_context.attributes.get("window_label")) or ""
+            ),
+            "checkpoint_mode": _string_or_none(
+                run_context.attributes.get("checkpoint_mode")
+            )
+            or "",
+            "rerun_of_run_id": _string_or_none(
+                run_context.attributes.get("rerun_of_run_id")
+            )
+            or "",
+            "export_manifest_paths": json.dumps(
+                [
+                    join_paths(
+                        path_parent(result.artifacts[0].run_scoped_path),
+                        "manifest.json",
+                    )
+                    for result in results
+                ]
+            ),
+            "run_scoped_artifact_paths": json.dumps(
+                [
+                    artifact.run_scoped_path
+                    for result in results
+                    for artifact in result.artifacts
+                ]
+            ),
+        }
+        if serving_endpoint is not None:
+            publish_audit_context["serving_endpoint"] = json.dumps(
+                serving_endpoint, sort_keys=True
+            )
         artifacts.audit_path = artifact_store.write_audit_record(
             run_context=run_context,
             environment=environment,
@@ -289,49 +337,7 @@ def run_publish_definitions_locally(
                     }
                     for result in results
                 ],
-                context={
-                    "environment": environment,
-                    "package_path": str(package_path),
-                    "warehouse_root": warehouse_root,
-                    "artifact_root": root_path,
-                    "publish_count": str(len(definitions)),
-                    "selected_publish_ids": ",".join(
-                        definition.publish_id for definition in definitions
-                    ),
-                    "window_start": (
-                        _string_or_none(run_context.attributes.get("window_start")) or ""
-                    ),
-                    "window_end": (
-                        _string_or_none(run_context.attributes.get("window_end")) or ""
-                    ),
-                    "window_label": (
-                        _string_or_none(run_context.attributes.get("window_label")) or ""
-                    ),
-                    "checkpoint_mode": _string_or_none(
-                        run_context.attributes.get("checkpoint_mode")
-                    )
-                    or "",
-                    "rerun_of_run_id": _string_or_none(
-                        run_context.attributes.get("rerun_of_run_id")
-                    )
-                    or "",
-                    "export_manifest_paths": json.dumps(
-                        [
-                            join_paths(
-                                path_parent(result.artifacts[0].run_scoped_path),
-                                "manifest.json",
-                            )
-                            for result in results
-                        ]
-                    ),
-                    "run_scoped_artifact_paths": json.dumps(
-                        [
-                            artifact.run_scoped_path
-                            for result in results
-                            for artifact in result.artifacts
-                        ]
-                    ),
-                },
+                context=publish_audit_context,
             ),
         )
         artifacts.lineage_path = lineage_adapter.emit(

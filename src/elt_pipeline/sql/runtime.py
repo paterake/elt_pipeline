@@ -52,6 +52,7 @@ def run_sql_models_locally(
     selection_model: str | None = None,
     include_dependencies: bool = False,
     quality_hook: QualityHookAdapter | None = None,
+    serving_endpoint: dict[str, object] | None = None,
 ) -> SqlStageRunResult:
     if run_context.stage != StageName.sql:
         raise build_sql_runtime_error(
@@ -256,6 +257,7 @@ def run_sql_models_locally(
                     include_dependencies=include_dependencies,
                     run_context=run_context,
                     quality_summary=quality_summary,
+                    serving_endpoint=serving_endpoint,
                 ),
             ),
         )
@@ -393,6 +395,7 @@ def _build_audit_context(
     include_dependencies: bool,
     run_context: RunContext,
     quality_summary: QualityHookSummary | None,
+    serving_endpoint: dict[str, object] | None = None,
 ) -> dict[str, str]:
     context = {
         "environment": environment,
@@ -435,6 +438,8 @@ def _build_audit_context(
         context["rerun_of_run_id"] = rerun_of_run_id
     if quality_summary is not None:
         context["quality_backend_type"] = quality_summary.backend_type
+    if serving_endpoint is not None:
+        context["serving_endpoint"] = json.dumps(serving_endpoint, sort_keys=True)
     return context
 
 
