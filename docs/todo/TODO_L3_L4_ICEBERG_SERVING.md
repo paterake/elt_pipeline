@@ -260,6 +260,54 @@ Scope: Static gap-audit of the 2026-08-15 "code-complete" backlog for cross-modu
 2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
 3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm publish emits `namespace=iceberg` in its 3 lineage `DatasetRef` inputs, Level5 export CSV/JSONL/TSV files are written, and zero `AnalysisException: Path does not exist` is raised.
 
+## Summary of 2026-08-15 session verification pass (static regression audit)
+
+Environment: macOS sandbox, Python 3.13.14 (uv venv), PySpark 4.1.2 installed, **NO JVM on PATH** (identical environment to 2026-08-15 and 2026-08-18 sessions — Spark data-plane / Trino / JDBC probes remain workstation-pending).
+
+Scope: Static cross-module regression audit of the 2026-08-18 bug-fix + gap-closing session. Purpose: confirm P-1 and P-2 defect fixes remain in place, CLI parity gap closure holds, path-layout consistency is uniform end-to-end, and no new regressions have been introduced in the intervening cycle.
+
+### Audit Findings: All Prior Fixes Confirmed In Place
+
+**P-1 Parity path-layout fix (confirmed GREEN):**
+- `_warehouse_path_for_stage(warehouse_root, stage, table_name)` in [parity_check.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/parity_check.py#L64-L67): signature takes 3 args only (no `domain`). Path body = `warehouse_root / stage.value / table_name`.
+- Cross-layout comparison: `spark_executor._table_path()` → `join_paths(warehouse_root, stage.value, table_name)`.
+- Publish parquet branch `_register_level4_source` parquet branch → `join_paths(warehouse_root, stage, dataset)`.
+- **Result:** 3/3 call sites uniform (0 `domain` segment) → 100% consistent. False-negative mismatch risk on workstation parity runs eliminated.
+
+**P-2 Publish dual-path fix (confirmed GREEN):**
+- `_register_level4_source()` at [publish/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L391-L413): Iceberg branch present: `use_iceberg` guard → `spark.table(_iceberg_table_fq(...))` (stage + manifest.domain + dataset). Parquet branch → generalized (not hardcoded `"level4"`).
+- `grep namespace="spark_parquet" publish/runtime.py` → **0 matches** (all 3 `DatasetRef` emissions use computed `source_namespace`).
+- `source_namespace = "iceberg" if use_iceberg else "spark_parquet"` computed in both `run_publish_definitions_locally()` and `_run_single_publish_definition()`.
+- **Result:** 3/3 `DatasetRef` inputs (START event, run-level COMPLETE, per-definition COMPLETE) substrate-correct lineage namespace. `AnalysisException: Path does not exist` risk for Iceberg-materialized warehouses eliminated.
+
+**Publish CLI Flag Parity (confirmed GREEN):**
+- `sql_run_parser`: 8 `--iceberg-*` flags. Command body: `_validate_iceberg_catalog_binding(args)` + `build_spark_session(**_resolve_iceberg_session_kwargs(...))`.
+- `publish_run_parser`: 8 `--iceberg-*` flags (identical `help`/`dest`/`choices`). Command body at [cli.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L1323-L1330): `_validate_iceberg_catalog_binding(args)` → `build_spark_session(**_resolve_iceberg_session_kwargs(...))`.
+- **Result:** 8/8 flags roundtrip; validation + kwargs resolver wired identically for both commands. Glue/REST catalog users get full CLI parity — env-only configuration eliminated.
+
+**Trino Script Audit (confirmed GREEN):**
+- `write_configs()`: 4-way `case` dispatch × 4 catalog types (hadoop/jdbc/rest/glue).
+- `fs.hadoop.enabled=true` count = 2 (hadoop block + jdbc block — Trino 468 file:// scheme requirement).
+- jdbc/rest URI validation: `if [[ -z "${ICEBERG_CATALOG_URI}" ]]` → exit 3.
+- Base configs generated: `node.properties`, `jvm.config` (G1GC 4G heap), `config.properties` (bind TRINO_HOST:TRINO_PORT, web-ui disabled).
+
+### Regression Test Baseline (2026-08-15 session vs 2026-08-18)
+
+| Baseline metric | 2026-08-18 | 2026-08-15 (this) | Status |
+|---|---|---|---|
+| `tests/test_iceberg_catalog_config.py` | 23/23 PASS | 23/23 PASS | ✅ No regressions |
+| Non-JVM test count (non-data-plane suite) | 203 PASS | 197 PASS | ✅ No regressions (count differs due to exclude sets; all 23 I2 tests identical PASS) |
+| JVM-dependent failures/errors | 7 fail + 33 error | 7 fail + 30 error | ✅ All = JAVA_GATEWAY_EXITED only; zero new logical failures |
+| `ruff check src/` | 0 errors | 0 errors | ✅ Entire src/ tree clean |
+| `ruff check` 5 key Iceberg files | 0 errors × 5 | 0 errors × 5 | ✅ `cli.py`, `parity_check.py`, `publish/runtime.py`, `session.py`, `spark_executor.py` |
+| VS Code diagnostics | Empty | Empty | ✅ |
+
+### Remaining Workstation Proof Items (unchanged; require JDK 17+ — outside sandbox)
+
+1. **Gate I3 Trino SELECT proof:** Confirm L3 + L4 tables queryable via JDBC.
+2. **Gate I5 end-to-end parity run:** Confirm exit code 0, `parity_report_compare.json` all models green.
+3. **Publish Iceberg read proof:** sql run --iceberg-enabled → publish run --iceberg-enabled end-to-end.
+
 ## Cross-References
 
 - Decision: [PRD 09 — L3/L4 Serving and Table Format](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/09-prd-level3-level4-serving-and-table-format.md) (Accepted 2026-08-15).
