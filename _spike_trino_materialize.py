@@ -8,9 +8,16 @@ from pyspark.sql.types import (
 )
 from elt_pipeline.spark.session import build_spark_session
 
-ART_DIR = Path(__file__).resolve().parent / ".artifacts"
+import os
+
+REPO_ROOT = Path(__file__).resolve().parent
+_HOME = Path(os.path.expanduser("~"))
+_DEFAULT_RUN_DIR = _HOME / "Documents" / "__data" / "repo_run" / "results" / "elt_pipeline"
+_env_override = os.environ.get("ELT_PIPELINE_REPO_RUN_DIR", "").strip()
+REPO_RUN_DIR = Path(_env_override).expanduser().resolve() if _env_override else _DEFAULT_RUN_DIR
+ART_DIR = REPO_RUN_DIR / ".artifacts"
 WAREHOUSE = ART_DIR / "iceberg_trino_spike_warehouse"
-DERBY_DIR = ART_DIR / "iceberg_trino_spike_derby"
+H2_BASE = ART_DIR / "iceberg_trino_spike_derby"
 CATALOG_NAME = "iceberg"
 NAMESPACE = "level3_sales"
 TABLE = "base_orders"
@@ -19,13 +26,19 @@ FQ = f"{CATALOG_NAME}.{NAMESPACE}.{TABLE}"
 
 def main() -> None:
     import shutil
-    for d in (WAREHOUSE, DERBY_DIR):
+    REPO_RUN_DIR.mkdir(parents=True, exist_ok=True)
+    for d in (WAREHOUSE,):
         if d.exists():
             shutil.rmtree(d)
+    H2_PARENT = H2_BASE.parent
+    H2_PARENT.mkdir(parents=True, exist_ok=True)
+    for suffix in (".mv.db", ".trace.db"):
+        p = H2_BASE.with_suffix(suffix) if suffix == ".mv.db" else H2_BASE.parent / f"{H2_BASE.name}{suffix}"
+        if p.exists():
+            p.unlink()
     ART_DIR.mkdir(parents=True, exist_ok=True)
 
-    H2_FILE = DERBY_DIR  # reuse dir name variable; it's now H2, not Derby
-    h2_uri = f"jdbc:h2:file:{H2_FILE.as_posix()};DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE"
+    h2_uri = f"jdbc:h2:file:{H2_BASE.as_posix()};DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE"
 
     spark: SparkSession = build_spark_session(
         app_name="trino-spike-materialize-jdbc",
