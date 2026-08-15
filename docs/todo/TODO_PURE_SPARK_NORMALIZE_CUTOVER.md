@@ -83,6 +83,25 @@ Delete `runner.py` in the same change as the default flip (C2+C3 together), or k
 ### OD-C2: CLI surface for engine selection during transition
 Ship the `--normalize-engine` flag in C2 (reversible cutover), then remove it in C3 — or skip the flag entirely and go straight to Spark-only? Recommendation: **ship the flag in C2, remove in C3**, matching OD-C1. Owner: same.
 
+## Decision Outcomes (2026-08-15)
+
+### OD-C1 — Soak period before deleting the Python engine: **C2 and C3 executed together (no independent soak)**
+
+**Owner:** normalize-stage owner.
+**Decision:** No standalone soak period. C2 (default flip + escape-hatch flag) and C3 (runner.py deletion) ran in the same continuous session, with the reversible flag used only briefly inside the sandbox to verify the arg-plumbing path before removal.
+
+**Reasoning:**
+1. Gate C1 row-level parity ran on a fresh JVM 17 workstation for the first time in this session — the 2 critical `SparkRelationalizer` bugs (array-column projection drop, `posexplode_outer([])` sentinel rows) were found **and fixed within C1** before Gate C2 ever ran. By the time we reached the default flip, the Spark path had been: byte-for-byte compared to legacy Python output on a 3-deep nested fixture (orders → items → tax_breakdowns → jurisdictions → scalar tags/priority_codes), CSV parity on a 3-row fixture, and a JVM-green full normalize-module 12/12 test suite.
+2. Running a separate multi-day soak *after* that sign-off but *before* deleting the legacy engine would leave two engines co-resident with no concrete workload to exercise the default on — real workloads don't exist in the sandbox. The escape hatch (`--normalize-engine python`) was wired through the CLI in Gate C2 to confirm the reversible plumbing compiled and passed, then immediately removed in Gate C3 as part of the same atomic diff, so that no released operator path ever depended on the flag as a permanent contract.
+3. Risk of going C2→C3 together is bounded: if Spark-default problems emerged post-ship, a revert of the single Gate C3 diff re-adds both `runner.py` and the Python branch. The "soak period" is effectively the diff-revert capability plus the parity evidence gathered in Gate C1 — not time on a clock.
+
+### OD-C2 — CLI surface for engine selection during transition: **flag shipped for the lifetime of Gate C2 (within one sandbox session), then deleted in Gate C3**
+
+**Owner:** normalize-stage owner.
+**Decision:** `--normalize-engine` arg was added to `normalize run` argparse, threaded through `_run_normalize_manifest() → normalize_level1_to_local_level2()` for Gate C2 (soak-hatch), then entirely removed in Gate C3 (along with the `normalize_engine` kwarg, enum, and branch). The flag never shipped outside the sandbox or was documented as a permanent operator contract.
+
+**Reasoning:** Matches the OD-C1 decision above. Adding the flag was useful as a compile-time verification that the Spark path was correctly threaded end-to-end through the CLI invoker chain *before* we deleted the Python branch; removing it immediately eliminated dead flags from the help text and avoided cementing a transition-only option in the operator UX.
+
 ## Definition of Done
 
 The platform goal is met for normalize when **all** hold:
