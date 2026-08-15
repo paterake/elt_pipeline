@@ -77,6 +77,7 @@ from elt_pipeline.sql import (
     run_sql_models_locally,
     topologically_sort_sql_models,
 )
+from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.models import SqlModelStage
 
 # Default local scratch locations for runtime output. Both live under a single gitignored
@@ -110,6 +111,176 @@ class _PublishRerunSelection:
     window_end: str | None
     window_label: str | None
     backfill: bool
+
+
+def _repo_run_dir() -> Path | None:
+    import os as _os
+
+    explicit = _os.environ.get("ELT_PIPELINE_REPO_RUN_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    home = Path(_os.path.expanduser("~"))
+    canonical = home / "Documents" / "__data" / "repo_run" / "results" / "elt_pipeline"
+    if canonical.parent.exists():
+        return canonical
+    return None
+
+
+def _resolve_defaults_for_repo_run() -> tuple[str, str]:
+    target = _repo_run_dir()
+    if target is None:
+        return _DEFAULT_ROOT_PATH, _DEFAULT_WAREHOUSE_ROOT
+    root = str((target / "runtime").as_posix())
+    warehouse = str((target / "warehouse").as_posix())
+    return root, warehouse
+
+
+_DEFAULT_ROOT_PATH_EVAL, _DEFAULT_WAREHOUSE_ROOT_EVAL = _resolve_defaults_for_repo_run()
+
+
+def _iceberg_effective_enabled(args: Any) -> bool | None:
+    explicit = getattr(args, "iceberg_enabled", None)
+    if explicit is True:
+        return True
+    import os as _os
+
+    env = _os.environ.get("ELT_PIPELINE_ICEBERG_ENABLED", "false").lower()
+    if env in ("true", "1", "yes", "on"):
+        return True
+    return None
+
+
+def _validate_iceberg_catalog_binding(args: Any) -> None:
+    import os as _os
+
+    catalog_type = (
+        getattr(args, "iceberg_catalog_type", None)
+        or _os.environ.get("ELT_PIPELINE_ICEBERG_CATALOG_TYPE", "").strip().lower()
+        or "hadoop"
+    )
+    catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_URI", ""
+    )
+    if catalog_type == "jdbc" and not catalog_uri:
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.config_invalid,
+            message=(
+                "Iceberg catalog binding requires --iceberg-catalog-uri (or env "
+                "ELT_PIPELINE_ICEBERG_CATALOG_URI) when --iceberg-catalog-type=jdbc."
+            ),
+            retryable=False,
+            context={
+                "iceberg_catalog_type": catalog_type,
+                "provided_uri": bool(catalog_uri),
+            },
+        )
+    if catalog_type not in {"hadoop", "jdbc"}:
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.config_invalid,
+            message=(
+                "Unsupported Iceberg catalog binding type. Supported: hadoop, jdbc."
+            ),
+            retryable=False,
+            context={"requested_catalog_type": catalog_type},
+        )
+
+
+def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
+    import os as _os
+
+    enabled = _iceberg_effective_enabled(args)
+    if enabled is None:
+        return None
+    catalog_name = getattr(args, "iceberg_catalog_name", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_NAME"
+    ) or "iceberg"
+    catalog_type = getattr(args, "iceberg_catalog_type", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_TYPE"
+    ) or "hadoop"
+    catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_URI"
+    )
+    warehouse_dir = getattr(args, "iceberg_warehouse_dir", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR"
+    )
+    if not warehouse_dir:
+        warehouse_root = getattr(args, "warehouse_root", None)
+        if warehouse_root:
+            warehouse_dir = str(Path(path_normalize(warehouse_root)) / "iceberg")
+    trino_port = (
+        _os.environ.get("ELT_PIPELINE_TRINO_PORT", "").strip() or "8080"
+    )
+    trino_host = (
+        _os.environ.get("ELT_PIPELINE_TRINO_HOST", "").strip() or "127.0.0.1"
+    )
+    jdbc = (
+        f"jdbc:trino://{trino_host}:{trino_port}/{catalog_name}"
+    )
+    return {
+        "table_format": "iceberg",
+        "catalog_name": catalog_name,
+        "catalog_type": catalog_type,
+        "catalog_uri_provided": bool(catalog_uri),
+        "warehouse_dir": warehouse_dir or "",
+        "engines": {
+            "trino": {
+                "host": trino_host,
+                "port": trino_port,
+                "jdbc_url": jdbc,
+                "driver_class": "io.trino.jdbc.TrinoDriver",
+                "script_path": "ops/trino_serving/run_trino.sh",
+            },
+            "spark_thrift": {
+                "note": "Use spark.sql.catalog." + catalog_name + " with Spark Thrift server sharing the warehouse_dir.",
+            },
+            "athena": {
+                "binding_doc": "docs/operator/LOCAL_OPERATOR_RUNBOOK.md (AWS Athena binding)",
+                "note": "Managed Trino-compatible engine; register catalog + point warehouse_dir at same S3 prefix.",
+            },
+            "duckdb": {
+                "note": "Attach via iceberg extension and the same catalog/warehouse_dir.",
+            },
+        },
+    }
+
+
+def _resolve_iceberg_session_kwargs(
+    *, args: Any, app_name: str
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"app_name": app_name}
+    enabled = _iceberg_effective_enabled(args)
+    if enabled is None:
+        return kwargs
+    kwargs["iceberg_enabled"] = enabled
+    import os as _os
+
+    catalog_name = getattr(args, "iceberg_catalog_name", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_NAME"
+    )
+    catalog_type = getattr(args, "iceberg_catalog_type", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_TYPE"
+    )
+    catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_CATALOG_URI"
+    )
+    warehouse_dir = getattr(args, "iceberg_warehouse_dir", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR"
+    )
+    if not warehouse_dir and enabled:
+        warehouse_root = getattr(args, "warehouse_root", None)
+        if warehouse_root:
+            warehouse_dir = str(
+                Path(path_normalize(warehouse_root)) / "iceberg"
+            )
+    if catalog_name:
+        kwargs["iceberg_catalog_name"] = catalog_name
+    if catalog_type:
+        kwargs["iceberg_catalog_type"] = catalog_type
+    if catalog_uri:
+        kwargs["iceberg_catalog_uri"] = catalog_uri
+    if warehouse_dir:
+        kwargs["iceberg_warehouse_dir"] = warehouse_dir
+    return kwargs
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -246,17 +417,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = sql_subparsers.add_parser(
         "run",
-        help="Run SQL models against a Spark-backed local parquet warehouse.",
+        help="Run SQL models against a Spark-backed local parquet or Iceberg warehouse.",
     )
     _add_sql_selection_arguments(run_parser)
     run_parser.add_argument("--include-deps", action="store_true")
     run_parser.add_argument(
         "--root-path",
         type=str,
-        default=_DEFAULT_ROOT_PATH,
-        help="Pipeline runtime root containing level1/level2 data and run artifacts.",
+        default=_DEFAULT_ROOT_PATH_EVAL,
+        help=(
+            "Pipeline runtime root containing level1/level2 data and run artifacts. "
+            "Defaults to ELT_PIPELINE_REPO_RUN_DIR/runtime if the project-wide repo_run "
+            "directory is available, otherwise .ignore/runtime."
+        ),
     )
-    run_parser.add_argument("--warehouse-root", type=str, default=_DEFAULT_WAREHOUSE_ROOT)
+    run_parser.add_argument(
+        "--warehouse-root",
+        type=str,
+        default=_DEFAULT_WAREHOUSE_ROOT_EVAL,
+        help=(
+            "SQL warehouse root for level3/level4 output. Defaults to "
+            "ELT_PIPELINE_REPO_RUN_DIR/warehouse if repo_run is available, else "
+            ".ignore/warehouse."
+        ),
+    )
     run_parser.add_argument("--job-name", default="sql-run")
     run_parser.add_argument("--trigger-type", default="manual")
     run_parser.add_argument(
@@ -272,6 +456,45 @@ def build_parser() -> argparse.ArgumentParser:
         "--explain",
         action="store_true",
         help="Include sqlite query plan details; implies a validate-only planning run.",
+    )
+    run_parser.add_argument(
+        "--iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_true",
+        default=None,
+        help=(
+            "Enable Iceberg table format for level3/level4 writes (overrides env "
+            "ELT_PIPELINE_ICEBERG_ENABLED). When set, writes go to the configured Iceberg "
+            "catalog instead of plain parquet files and atomic staging-swap is bypassed "
+            "for Iceberg-managed commits."
+        ),
+    )
+    run_parser.add_argument(
+        "--iceberg-catalog-name",
+        default=None,
+        help="Override env ELT_PIPELINE_ICEBERG_CATALOG_NAME (default: iceberg).",
+    )
+    run_parser.add_argument(
+        "--iceberg-catalog-type",
+        default=None,
+        choices=["hadoop", "jdbc"],
+        help="Override env ELT_PIPELINE_ICEBERG_CATALOG_TYPE (default: hadoop).",
+    )
+    run_parser.add_argument(
+        "--iceberg-catalog-uri",
+        default=None,
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_CATALOG_URI. Required when "
+            "--iceberg-catalog-type=jdbc (JDBC connection string)."
+        ),
+    )
+    run_parser.add_argument(
+        "--iceberg-warehouse-dir",
+        default=None,
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR. If omitted and Iceberg is "
+            "enabled, automatically falls back to <warehouse-root>/iceberg."
+        ),
     )
 
     publish_parser = subparsers.add_parser(
@@ -663,8 +886,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.sql_command == "run":
+                _validate_iceberg_catalog_binding(args)
                 sql_spark = build_spark_session(
-                    app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}"
+                    **_resolve_iceberg_session_kwargs(
+                        args=args,
+                        app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}",
+                    )
                 )
                 if args.validate_only or args.explain:
                     try:
@@ -770,6 +997,7 @@ def main(argv: list[str] | None = None) -> int:
                             else None
                         ),
                     },
+                    "serving_endpoint": _build_serving_endpoint(args),
                 }
                 print(json.dumps(payload, indent=2))
                 return 0

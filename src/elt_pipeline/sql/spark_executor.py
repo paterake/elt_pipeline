@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from pyspark.errors import PySparkException
@@ -28,6 +29,40 @@ from elt_pipeline.sql.models import (
     SqlQueryPlanStep,
     SqlValidationResult,
 )
+
+_ICEBERG_ENABLED_ENV_VAR = "ELT_PIPELINE_ICEBERG_ENABLED"
+_ICEBERG_CATALOG_NAME_ENV_VAR = "ELT_PIPELINE_ICEBERG_CATALOG_NAME"
+_DEFAULT_ICEBERG_CATALOG_NAME = "iceberg"
+
+
+def _is_iceberg_enabled(spark: SparkSession) -> bool:
+    env_enabled = os.environ.get(_ICEBERG_ENABLED_ENV_VAR, "false").lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    )
+    if not env_enabled:
+        return False
+    try:
+        conf_val = spark.conf.get("spark.sql.extensions", "")
+    except Exception:  # noqa: BLE001 - conf retrieval failure means non-Iceberg
+        return False
+    return "IcebergSparkSessionExtensions" in conf_val
+
+
+def _iceberg_catalog_name() -> str:
+    return (
+        os.environ.get(_ICEBERG_CATALOG_NAME_ENV_VAR, "").strip()
+        or _DEFAULT_ICEBERG_CATALOG_NAME
+    )
+
+
+def _iceberg_table_fq(
+    *, stage: SqlModelStage, domain: str, name: str
+) -> str:
+    catalog = _iceberg_catalog_name()
+    return f"{catalog}.{stage.value}.{domain}.{name}"
 
 
 class SparkSqlModelExecutor:
@@ -142,6 +177,7 @@ class SparkSqlModelExecutor:
             )
             dataframe.createOrReplaceTempView(source_ref.logical_name)
 
+        use_iceberg = _is_iceberg_enabled(self.spark)
         for dependency_id in model.depends_on:
             dependency = models_by_id.get(dependency_id)
             if dependency is None:
@@ -153,10 +189,18 @@ class SparkSqlModelExecutor:
                     ),
                     context={"model_id": model.model_id, "dependency_id": dependency_id},
                 )
-            dependency_path = self._table_path(
-                stage=dependency.stage, table_name=dependency.target_table_name
-            )
-            dataframe = self.spark.read.parquet(dependency_path)
+            if use_iceberg:
+                dep_fq = _iceberg_table_fq(
+                    stage=dependency.stage,
+                    domain=dependency.domain,
+                    name=dependency.target_table_name,
+                )
+                dataframe = self.spark.table(dep_fq)
+            else:
+                dependency_path = self._table_path(
+                    stage=dependency.stage, table_name=dependency.target_table_name
+                )
+                dataframe = self.spark.read.parquet(dependency_path)
             dataframe.createOrReplaceTempView(dependency.target_table_name)
 
     def _register_plan_sources(self, *, model: CompiledSqlModel) -> None:
@@ -175,8 +219,17 @@ class SparkSqlModelExecutor:
     def _execute_model(self, *, model: CompiledSqlModel) -> int:
         select_sql = model.compiled_sql.rstrip().rstrip(";")
         dataframe = self.spark.sql(select_sql)
-        target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
+        use_iceberg = _is_iceberg_enabled(self.spark)
         effective_partition_columns = self._effective_partition_columns(model=model)
+
+        if use_iceberg:
+            return self._execute_iceberg_write(
+                model=model,
+                dataframe=dataframe,
+                effective_partition_columns=effective_partition_columns,
+            )
+
+        target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
 
         if model.load_mode == SqlLoadMode.append:
             writer = dataframe.write.mode("append")
@@ -286,6 +339,124 @@ class SparkSqlModelExecutor:
         best_effort_delete_staging(staging_path, scheme)
         return row_count
 
+    def _execute_iceberg_write(
+        self,
+        *,
+        model: CompiledSqlModel,
+        dataframe: DataFrame,
+        effective_partition_columns: list[str],
+    ) -> int:
+        catalog = _iceberg_catalog_name()
+        fq_table = _iceberg_table_fq(
+            stage=model.stage, domain=model.domain, name=model.target_table_name
+        )
+        namespace = f"{catalog}.{model.stage.value}.{model.domain}"
+        try:
+            self.spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {namespace}")
+        except PySparkException as exc:
+            raise build_sql_runtime_error(
+                message=(
+                    f"Failed to create Iceberg namespace {namespace!r} "
+                    f"for model {model.model_id!r}"
+                ),
+                code=SqlRuntimeErrorCode.execution_failed,
+                retryable=False,
+                context={
+                    "model_id": model.model_id,
+                    "namespace": namespace,
+                    "underlying_error": str(exc),
+                },
+            ) from exc
+
+        if model.load_mode == SqlLoadMode.partition_overwrite:
+            self._validate_partition_requirements(model=model)
+            try:
+                (
+                    dataframe
+                    .writeTo(fq_table)
+                    .using("iceberg")
+                    .option("mergeSchema", "true")
+                    .partitionedBy(*effective_partition_columns)
+                    .overwritePartitions()
+                )
+            except PySparkException as exc:
+                raise build_sql_runtime_error(
+                    message=(
+                        f"Iceberg partition_overwrite failed for model {model.model_id!r}"
+                    ),
+                    code=SqlRuntimeErrorCode.execution_failed,
+                    retryable=True,
+                    context={
+                        "model_id": model.model_id,
+                        "target_table": fq_table,
+                        "partition_values": self.partition_values,
+                        "underlying_error": str(exc),
+                    },
+                ) from exc
+            return self.spark.table(fq_table).count()
+
+        if model.load_mode == SqlLoadMode.append:
+            try:
+                writer = (
+                    dataframe.writeTo(fq_table)
+                    .using("iceberg")
+                    .option("mergeSchema", "true")
+                )
+                if effective_partition_columns:
+                    writer = writer.partitionedBy(*effective_partition_columns)
+                writer.append()
+            except PySparkException as exc:
+                # First-run append to a non-existent table: fall back to createOrReplace
+                # so the target bootstraps cleanly.
+                try:
+                    writer = (
+                        dataframe.writeTo(fq_table)
+                        .using("iceberg")
+                        .option("mergeSchema", "true")
+                    )
+                    if effective_partition_columns:
+                        writer = writer.partitionedBy(*effective_partition_columns)
+                    writer.create()
+                except PySparkException as create_exc:
+                    raise build_sql_runtime_error(
+                        message=(
+                            f"Iceberg append failed for model {model.model_id!r}"
+                        ),
+                        code=SqlRuntimeErrorCode.execution_failed,
+                        retryable=True,
+                        context={
+                            "model_id": model.model_id,
+                            "target_table": fq_table,
+                            "underlying_error": str(create_exc),
+                        },
+                    ) from create_exc
+            return self.spark.table(fq_table).count()
+
+        try:
+            writer = (
+                dataframe.writeTo(fq_table)
+                .using("iceberg")
+                .option("mergeSchema", "true")
+            )
+            if effective_partition_columns:
+                writer = writer.partitionedBy(*effective_partition_columns)
+            writer.createOrReplace()
+        except PySparkException as exc:
+            raise build_sql_runtime_error(
+                message=(
+                    f"Iceberg full_refresh createOrReplace failed "
+                    f"for model {model.model_id!r}"
+                ),
+                code=SqlRuntimeErrorCode.execution_failed,
+                retryable=True,
+                context={
+                    "model_id": model.model_id,
+                    "target_table": fq_table,
+                    "underlying_error": str(exc),
+                },
+            ) from exc
+        return self.spark.table(fq_table).count()
+
     def _validate_model(
         self,
         *,
@@ -315,8 +486,18 @@ class SparkSqlModelExecutor:
             )
 
         if quality.unique_columns or quality.not_null_columns:
-            target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
-            target_df = self.spark.read.parquet(target_path)
+            if _is_iceberg_enabled(self.spark):
+                fq_table = _iceberg_table_fq(
+                    stage=model.stage,
+                    domain=model.domain,
+                    name=model.target_table_name,
+                )
+                target_df = self.spark.table(fq_table)
+            else:
+                target_path = self._table_path(
+                    stage=model.stage, table_name=model.target_table_name
+                )
+                target_df = self.spark.read.parquet(target_path)
 
             for column in quality.unique_columns:
                 duplicate_count = (
