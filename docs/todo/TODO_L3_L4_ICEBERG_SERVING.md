@@ -367,6 +367,72 @@ Scope: Static cross-module regression audit of the 2026-08-18 bug-fix + gap-clos
 2. **Gate I5 end-to-end parity run:** Confirm exit code 0, `parity_report_compare.json` all models green.
 3. **Publish Iceberg read proof:** sql run --iceberg-enabled → publish run --iceberg-enabled end-to-end.
 
+## Summary of 2026-08-15 session (testing-gap audit + 18 new regression tests)
+
+Environment: macOS sandbox, Python 3.13.14 (uv venv), PySpark 4.1.2 installed, **NO JVM on PATH** (identical environment to all prior sessions — Spark data-plane / Trino / JDBC probes remain workstation-pending).
+
+Scope: Static audit of the 2026-08-19 "code-complete" backlog for **test-coverage gaps**. All prior sessions confirmed the *code* for every gate exists and is lint-clean; this session asked: *does every implemented feature have a regression test?* Two large uncovered areas were found and closed:
+  - (A) **Gate I5 parity tooling:** the `parity_check.py` module had 0 pytest coverage of any pure-logic function. `compare_parity_reports()` (match/mismatch semantics), `_warehouse_path_for_stage()` (the P-1 no-domain-layout bugfix), `write_parity_report()` / `load_parity_report()` (JSON sort_keys / indent / roundtrip) were all only-ever manually-probed in a REPL.
+  - (B) **Gate I3 audit persistence:** the 2026-08-19 serving-endpoint-in-AuditRecord gap closure had 0 tests. `_build_audit_context()` serialization of `serving_endpoint` → `json.dumps(sort_keys=True)`, the backward-compat `None` → key-omitted contract, and the function-signature `serving_endpoint: … | None = None` on both `run_sql_models_locally()` and `run_publish_definitions_locally()` were entirely untested. Same for `_build_serving_endpoint()` disabled → `None` behavior and enabled → 4-engine shape beyond the four `TestServingEndpointShape` cases in catalog config.
+
+### Gaps Found and Closed: 18 new pytest tests in `tests/test_iceberg_parity_and_audit.py`
+
+**Gap A — parity_check coverage (7 tests across 3 classes):**
+
+1. `TestParityPathLayout` (3 tests):
+   - `test_warehouse_path_no_domain_segment_p1_fix`: asserts `_warehouse_path_for_stage("/tmp/wh", level3, "orders")` = `/tmp/wh/level3/orders` exactly — *no `/domain/` segment injected* (P-1 fix regression lock).
+   - `test_warehouse_path_stage_values_all_consistent`: level3 + level4 both produce the `warehouse_root/{stage.value}/{table_name}` shape.
+   - `test_warehouse_path_matches_spark_executor_table_path`: *source-code audit* via `inspect.getsource(SparkSqlModelExecutor._table_path)` — asserts the source contains `join_paths` + `stage.value` + `table_name` and does NOT contain the token `domain`. Defends against any future re-introduction of a `/domain/` segment on the write side that would re-break parity read path (parity P-1 + spark_executor physical layout = single convention).
+
+2. `TestCompareParityReports` (5 tests):
+   - `test_match_with_column_reorder_tolerance`: 2-model left/right match with column list reordered → `parity=True, match_count=2` (the column-reorder invariant the TODO file claims).
+   - `test_mismatch_detects_row_count_md5_and_missing_models`: left-vs-right deliberately differs on row_count + md5 + adds a right-only model → `parity=False`, `mismatch_count=1` with per-field `row_count_match=False / md5_match=False / columns_match=True`, `missing_left=["m3"]`. All 3 detection dimensions exercised in one assertion block.
+   - `test_mismatch_detects_column_order_only_does_not_flag`: exact match except `["z","a","m"]` vs `["a","m","z"]` → `parity=True`.
+   - `test_missing_both_sides_reports_correctly`: `missing_left` + `missing_right` populate correctly (distinct models on each side, zero common).
+   - `test_empty_inputs_parity_true`: edge case `[]` vs `[]` → `parity=True, total_models=0`.
+
+3. `TestParityJsonRoundtrip` (2 tests):
+   - `test_write_load_roundtrip_preserves_parity`: 2-model list → `write_parity_report()` → disk → `load_parity_report()` → `compare_parity_reports()` → `parity=True`. Also asserts the serialized text starts with `{\n  "models"` (indent=2 human-readable format for `jq`/`diff` tooling).
+   - `test_write_uses_sort_keys_for_diffability`: parses one model's dict keys *in the order they appear in the JSON text* (Python 3.7+ `json.loads` preserves insertion order from the text), asserts the order equals `sorted(keys)` — proving `sort_keys=True` is actually being honored at each per-model dict level, not just claimed. Guards against a future accidental drop of `sort_keys` that would break `diff`-ability of consecutive parity reports.
+
+**Gap B — serving_endpoint audit persistence coverage (8 tests across 4 classes):**
+
+4. `TestSqlAuditContextServingEndpoint` (3 tests):
+   - `test_key_omitted_when_serving_endpoint_none_backward_compat`: builds a real `RunContext`, calls `_build_audit_context(serving_endpoint=None)`, asserts `"serving_endpoint"` NOT IN the returned context dict. Preserves backward-compat: callers that don't pass the kwarg (15 test call sites + external integrators) get pre-fix behavior exactly, no empty-string pollution.
+   - `test_key_present_and_serialized_json_sort_keys`: builds endpoint dict, serializes via context builder, asserts string-typed value, JSON-decodes, checks field values all present, then the critical assertion: context value must *byte-equal* `json.dumps(endpoint, sort_keys=True)` — not just "deserializes equal", *exactly the same string format* as the `partition_values` / `extra_values` / `include_dependencies` sibling entries (single JSON-decoding path for audit consumers).
+   - `test_partition_values_and_serving_endpoint_use_same_convention`: builds both `partition_values` dict AND `serving_endpoint` dict, reads back both via `json.loads(ctx[...])`, confirms both round-trip — guarantees the convention is uniform across context entries, not a one-off for serving_endpoint.
+
+5. `TestBuildServingEndpointDisabled` (1 test):
+   - `test_returns_none_when_iceberg_disabled`: `SimpleNamespace(iceberg_enabled=False)` + clean env via `patch.dict` → `_build_serving_endpoint()` returns `None` exactly (not an empty dict, not a partial object). Without this, the CLI's `if _iceberg_effective_enabled(args) is None: return None` short-circuit path could silently regress and nobody would notice until audit JSONs grew spurious keys.
+
+6. `TestBuildServingEndpointEnabledShape` (2 parametrized tests):
+   - `test_shape_matches_test_serving_endpoint_shape_suite[hadoop]` and `[glue]`: double-checks the parameter shapes beyond the 4 existing `TestServingEndpointShape` tests by asserting all 8 specific fields (`table_format`, `catalog_name`, `catalog_type`, `catalog_type_note`, `warehouse_dir`, `engines.{trino|spark_thrift|athena|duckdb}`) + `trino.jdbc_url`, `trino.driver_class == "io.trino.jdbc.TrinoDriver"`, `trino.sample_query` are present for two catalog types that *don't* require URI validation. Coverage for `iceberg_glue_region → glue_region_provided` bool exercised.
+
+7. `TestPublishServingEndpointKwarg` (2 tests):
+   - `test_run_publish_definitions_has_serving_endpoint_default_none`: `inspect.signature()` introspection on `run_publish_definitions_locally`. Asserts the parameter exists AND `default is None` — not just "present in args".
+   - `test_run_sql_models_locally_has_serving_endpoint_default_none`: same signature introspection for `run_sql_models_locally`. Without these tests, a future refactor that refactors the function signatures to make the kwarg mandatory would silently break all 15 existing test integrator call sites; now the signature contract is regression-locked.
+
+### Regression Test Baseline (2026-08-15 session vs 2026-08-19 + 2026-today vs today)
+
+| Baseline metric | 2026-08-19 | Today (post gap-closure) | Status |
+|---|---|---|---|
+| `tests/test_iceberg_catalog_config.py` | 23/23 PASS | 23/23 PASS | ✅ No regressions |
+| `tests/test_iceberg_parity_and_audit.py` (NEW) | (did not exist) | **18/18 PASS** | ✅ Gap closed |
+| Combined Iceberg-only test total | 23 | **41 PASS** | ✅ +18 net new coverage |
+| Non-JVM suite (7-file subset) | 104 PASS | **122 PASS** (41 Iceberg + 81 other = 122) | ✅ No regressions (+18 accounted for) |
+| JVM-dependent errors | 19 (JAVA_GATEWAY_EXITED only) | 19 (same class only) | ✅ Zero new logical failures |
+| `ruff check src/` entire tree | 0 errors | 0 errors | ✅ |
+| `ruff check` new test file + `src/` | (no new file) | **0 errors** (ruff --fix auto-sorted imports) | ✅ |
+| VS Code diagnostics | Empty | Empty | ✅ |
+| Gate I5 parity logic coverage | 0 tests → TODO-verbal only | **7 tests** (path layout + compare semantics + JSON) | ✅ Gap closed |
+| Gate I3 audit persistence coverage | 0 tests → verbal-claim only | **8 tests** (context serialization + disabled-none + shape + sig-introspect) | ✅ Gap closed |
+
+### Remaining Workstation Proof Items (unchanged; require JDK 17+ — outside sandbox)
+
+1. **Gate I3 Trino SELECT proof:** `bash ops/trino_serving/run_trino.sh bootstrap start && bash ops/trino_serving/run_trino.sh cli -- --execute "SELECT * FROM iceberg.level3.sales.base_orders LIMIT 10"` — confirm L3 + L4 tables queryable via JDBC. Updates DoD checkbox line 190.
+2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
+3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm: (a) publish emits `namespace=iceberg` in 3 lineage `DatasetRef` inputs; (b) Level5 export CSV/JSONL/TSV written; (c) zero `AnalysisException: Path does not exist`; (d) `artifacts.audit_path` JSON for both SQL and Publish stages contains the `serving_endpoint` top-level key under `context.serving_endpoint` (workstation end-to-end of the audit persistence this session now has a pure-logic regression test for).
+
 ## Cross-References
 
 - Decision: [PRD 09 — L3/L4 Serving and Table Format](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/09-prd-level3-level4-serving-and-table-format.md) (Accepted 2026-08-15).
