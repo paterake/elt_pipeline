@@ -106,7 +106,21 @@ level3/level4  ──(Iceberg tables)──►  Catalog binding            Servi
 
 Two open contracts make this work for *any* tool: the **Iceberg REST Catalog spec** (metadata) and **ANSI SQL over JDBC/ODBC** (access). The serving-engine binding is selected per environment in config — `trino` (portable default) · `athena` (AWS) · `spark_thrift` · `duckdb` — none hard-wired.
 
-`level5` publish/export (single-file CSV/TSV/JSONL delivery artifacts) is **unchanged** — it remains the "nice to have" derived-delivery path and is orthogonal to this serving layer.
+### Serving role by level (altitude)
+
+One table format (Iceberg) spans every SQL-consumable layer for consistency — but the *role* of each level differs, and the platform must not over-build the thin layers or under-serve the real ones:
+
+| Level | Role | Table format | Catalog | Served to BI? |
+|---|---|---|---|---|
+| `level1` | Raw immutable landing | none (raw payloads) | no | no |
+| `level2` | **Thin queryable materialisation of L1** — normalised, source-aligned. Catalogued so it *can* be queried for lineage/debugging; **not** the consumer workhorse. | Iceberg | yes | exploration only |
+| `level3` | Canonical model (silver) — **real consumer SQL surface** | Iceberg | yes | **yes** |
+| `level4` | Consumer marts (gold) — **real consumer SQL/BI surface** | Iceberg | yes | **yes** |
+| `level5` | **Static canned delivery files** (CSV/TSV/JSONL) | none | **no** | **no** |
+
+Iceberg at L2 is chosen for **platform consistency and custom-code deletion** (one format L2–L4; retires the L2 glob + `mergeSchema` hack), **not** because L2 consumers need snapshots/time-travel. The real consumer work is L3 and beyond.
+
+`level5` publish/export is a **pre-rendered static delivery path**: single-file CSV/TSV/JSONL artifacts with a checksum. It has **no catalog, no table format, and no BI serving** — a BI tool never connects to L5. It renders *from* the served L3/L4 layers upstream and remains orthogonal to this serving layer (a "nice to have" derived-delivery output).
 
 ## Impact and Migration
 
@@ -114,12 +128,12 @@ Two open contracts make this work for *any* tool: the **Iceberg REST Catalog spe
 - **Staging-swap:** [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the Track B same-path-overwrite handling become **obsolete** for L3/L4 (Iceberg commits are atomic and read-consistent). Removal is in scope once parity is verified. This also dissolves the Spark 4.x same-path overwrite DAG hazard by construction.
 - **Catalog config:** a new catalog binding enters the config contract (`elt_pipeline_cfg`) — env-scoped, defaulting to a local filesystem/JDBC catalog so local-first dev keeps working with no cloud account.
 - **PRD 03** (SQL L2→L3→L4) and **PRD 08** (storage dispatch) need follow-up revisions to reference the table-format materialization and catalog dispatch.
-- **L2:** out of scope. L2 stays source-aligned relational Parquet; only the SQL-modelled L3/L4 gain table-format serving.
+- **L2:** **target-state in scope, delivered as a second phase.** L2 is defined as the first SQL-consumable layer, and adopting Iceberg there additionally retires the bespoke L2 discovery glob + `mergeSchema` hack in [sql/level2_source.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/level2_source.py) (parity Finding 5) — replacing driver-side `path_rglob("**/table=…/run_id=*")` enumeration with a catalog table lookup and native schema evolution. Sequencing: L3/L4 first (closes the BI-serving gap, lower blast radius), L2 second (uniform table format across all SQL-consumable layers, tracked in `TODO_L2_ICEBERG_LAKE.md`). **L1 remains raw** immutable landing — no table format. The catalog thus spans L2–L4; Trino/serving exposes L3/L4 as the governed BI surface and L2 for power-user/lineage exploration.
 
 ## Open Questions
 
-- **OQ-1 (catalog choice per environment):** Hadoop/filesystem vs JDBC catalog for local; Glue vs REST catalog for cloud. Recommendation: JDBC (portable, testable) local; Glue cloud — both behind one dispatch seam.
-- **OQ-2 (default query engine for BI validation):** Athena (managed, Iceberg-native) is the fastest path to prove Quicksight/Tableau/Qlik connectivity. Confirm the primary BI target to pick the reference engine.
+- **OQ-1 (catalog binding) — RESOLVED 2026-08-15:** the catalog is a **configurable binding on the Iceberg REST Catalog spec**, env-dispatched like storage scheme (PRD 08). Defaults: **Hadoop/filesystem catalog** local (zero infra, keeps local-first dev working with no cloud account); **JDBC** as the portable cross-env option; **Glue** as the AWS binding; a **REST catalog server** (Polaris/Nessie/Lakekeeper) supported for teams that want a shared standalone catalog. No catalog implementation is hard-wired.
+- **OQ-2 (serving engine / BI target) — RESOLVED 2026-08-15:** the platform stays **BI-tool-agnostic** (Requirement 6). It does **not** select a BI tool. The **serving engine is a configurable binding** exposing ANSI SQL over JDBC/ODBC — `trino` (portable reference) · `athena` (AWS) · `spark_thrift` · `duckdb`. **Trino is the reference binding for connectivity validation** because it is the vendor-neutral engine and Athena is managed Trino/Presto — proving Trino+JDBC demonstrates that any JDBC/ODBC BI tool (Quicksight, Qlik, Tableau, Power BI, Superset) can connect. Reasoning: Mercell used Quicksight and Camelot used Qlik; hard-wiring either repeats the bespoke coupling this platform exists to avoid.
 - **OQ-3 (staging-swap removal timing):** delete on L3/L4 Iceberg parity sign-off, or keep behind a flag for one soak cycle (mirroring the normalize cutover's C2→C3 pattern).
 - **OQ-4 (migration of existing L3/L4 Parquet):** re-materialize from L2 via existing SQL models (clean, preferred) vs. in-place register. Re-materialize is simpler and audit-clean.
 
