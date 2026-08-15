@@ -227,3 +227,14 @@ __marimo__/
 #   controlled example inputs (source_init.sql, sample data, configs) stay tracked under
 #   examples/. Real runs pass explicit paths.
 /.ignore/
+#   Spike / preflight ad-hoc output (warehouses, metastore DBs, logs) plus local tool caches
+#   (Trino distribution, Ivy jar cache, JDBC driver downloads) MUST live outside the source
+#   tree in the repo-run results directory per project convention:
+#     $HOME/Documents/__data/repo_run/results/elt_pipeline/
+#       ├── .cache/      (Trino dist, Ivy jar cache, downloaded JDBC drivers)
+#       └── .artifacts/  (Iceberg warehouse, H2 metastore DB, Trino logs/data)
+#   These three dirs are kept gitignored as defense-in-depth if someone ever accidentally drops
+#   them here during debugging — they MUST NOT be committed.
+/.artifacts/
+/.cache/
+/repo-run/
