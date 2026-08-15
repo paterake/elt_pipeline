@@ -8,10 +8,9 @@ from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import lit
-from pyspark.sql.types import LongType, StringType, StructField, StructType
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
-from elt_pipeline.normalize.models import Level2TableManifest, NormalizedTable
+from elt_pipeline.normalize.models import Level2TableManifest
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.path_utils import (
     join_paths,
@@ -28,14 +27,6 @@ _SAFE_PATH_FRAGMENT = re.compile(r"[^A-Za-z0-9._-]+")
 _NO_ENV_IN_PATH_MESSAGE = (
     "Generated path contains 'environment=' segment; per P5 decision, environment is "
     "handled exclusively by which root path is pointed at, never as an in-path segment."
-)
-
-_EMPTY_TABLE_SCHEMA = StructType(
-    [
-        StructField("_row_id", StringType(), nullable=False),
-        StructField("_parent_row_id", StringType(), nullable=True),
-        StructField("_array_index", LongType(), nullable=True),
-    ]
 )
 
 
@@ -66,14 +57,6 @@ def _write_json_file(path: str, payload: Any) -> None:
         atomic=True,
     )
     path_replace(temp_path, path)
-
-
-def _rows_to_dataframe(spark: SparkSession, rows: list[dict[str, Any]]) -> DataFrame:
-    if not rows:
-        return spark.createDataFrame([], schema=_EMPTY_TABLE_SCHEMA)
-    json_lines = [json.dumps(row, sort_keys=True, default=str) for row in rows]
-    rdd = spark.sparkContext.parallelize(json_lines)
-    return spark.read.json(rdd)
 
 
 def _summarize_parquet_dir(data_dir: str) -> tuple[int, int]:
@@ -137,29 +120,6 @@ class SparkLevel2Writer:
         self.layout = LocalLevel2Layout(root_path)
         self.spark = spark
 
-    def write_table(
-        self,
-        *,
-        run_context: RunContext,
-        manifest: Level1ArtifactManifest,
-        mapping_version: str,
-        table: NormalizedTable,
-        partition: dict[str, str],
-        normalize_completed_at: datetime | None = None,
-    ) -> Level2TableManifest:
-        dataframe = _rows_to_dataframe(self.spark, table.rows)
-        record_count = len(table.rows)
-        return self._write_dataframe_common(
-            run_context=run_context,
-            manifest=manifest,
-            mapping_version=mapping_version,
-            table_name=table.physical_name,
-            dataframe=dataframe,
-            partition=partition,
-            record_count_override=record_count,
-            normalize_completed_at=normalize_completed_at,
-        )
-
     def write_dataframe(
         self,
         *,
@@ -170,29 +130,6 @@ class SparkLevel2Writer:
         dataframe: DataFrame,
         partition: dict[str, str],
         normalize_completed_at: datetime | None = None,
-    ) -> Level2TableManifest:
-        return self._write_dataframe_common(
-            run_context=run_context,
-            manifest=manifest,
-            mapping_version=mapping_version,
-            table_name=table_name,
-            dataframe=dataframe,
-            partition=partition,
-            record_count_override=None,
-            normalize_completed_at=normalize_completed_at,
-        )
-
-    def _write_dataframe_common(
-        self,
-        *,
-        run_context: RunContext,
-        manifest: Level1ArtifactManifest,
-        mapping_version: str,
-        table_name: str,
-        dataframe: DataFrame,
-        partition: dict[str, str],
-        record_count_override: int | None,
-        normalize_completed_at: datetime | None,
     ) -> Level2TableManifest:
         completed_at = normalize_completed_at or datetime.now(tz=UTC)
         data_dir = self.layout.table_run_dir(
@@ -221,13 +158,10 @@ class SparkLevel2Writer:
                 context={"path": data_dir},
             ) from exc
 
-        if record_count_override is not None:
-            record_count = record_count_override
-        else:
-            try:
-                record_count = self.spark.read.parquet(data_dir).count()
-            except Exception:
-                record_count = 0
+        try:
+            record_count = self.spark.read.parquet(data_dir).count()
+        except Exception:
+            record_count = 0
 
         file_count, total_file_size_bytes = _summarize_parquet_dir(data_dir)
 

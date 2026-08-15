@@ -134,26 +134,23 @@ Notes:
 ## Normalize Engine Selection (Python Driver vs. Spark-Native Relationalization)
 
 The L1 → L2 normalize stage ships a **dual-engine gate** behind the programmatic
-`normalize_engine` parameter (values `"python"` or `"spark"`; default `"python"`
-during the transition per OD-3). Both engines produce byte-identical L2
-manifests, `mapping_version` hashes, table physical names, column layouts, and
-on-disk `level2/` directory layout — they differ only in where the per-row
-relationalization work executes.
+`normalize_engine` parameter and the CLI `--normalize-engine` flag (values
+`"python"` or `"spark"`; **default `"spark"`** since the Gate 5 cutover). Both
+engines produce byte-identical L2 manifests, `mapping_version` hashes, table
+physical names, column layouts, and on-disk `level2/` directory layout — they
+differ only in where the per-row relationalization work executes.
 
 | Engine | Relationalizer location | When to use |
 |---|---|---|
-| `normalize_engine = "python"` (default) | Pure-Python driver walk over every dict/list/row value. Spark writes the finished list[dict] rows to parquet. | Default during transition. Matches prior behaviour exactly. Use for small/medium payloads (< few hundred MB per landed artifact) or when triaging an edge payload the Spark planner has not yet reproduced. |
-| `normalize_engine = "spark"` | Spark-native `StructType` metadata walk on the driver **produces a `NormalizationPlan`**; `posexplode_outer` + struct-flatten + `uuid()` FK plumbing executes on Spark executors. Driver holds only schema + plan metadata (KBs), not data rows. | Recommended for large or deeply nested payloads. Eliminates the driver-memory ceiling described in the Known Limitations section below. `mapping_version`, table-name policy, and column naming are produced from the same shared `_policy.py` code as the legacy engine so L3 path lookups remain stable. |
+| `normalize_engine = "spark"` (**default**) | Spark-native `StructType` metadata walk on the driver **produces a `NormalizationPlan`**; `posexplode_outer` + struct-flatten + `uuid()` FK plumbing executes on Spark executors. Driver holds only schema + plan metadata (KBs), not data rows. | **Production default.** Recommended for all payload sizes. Eliminates the driver-memory ceiling described in the Known Limitations section below. `mapping_version`, table-name policy, and column naming are produced from the same shared `_policy.py` code as the legacy engine so L3 path lookups remain stable. |
+| `normalize_engine = "python"` (escape hatch) | Pure-Python driver walk over every dict/list/row value. Spark writes the finished list[dict] rows to parquet. | Reach for this **only** when triaging an edge payload the Spark planner has not yet reproduced. The Python engine is scheduled for removal (Gate C3) following an agreed soak window on Spark-default. |
 
-**Programmatic access today:** the dual-engine switch is exposed via the
+**Programmatic access:** the dual-engine switch is exposed via the
 `normalize_engine=` keyword of `normalize_level1_to_local_level2(...)` in
 [normalize/pipeline.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/pipeline.py#L106-L117).
-Callers building a runtime wrapper that prefers the Spark-native engine can
-pass `normalize_engine="spark"` when invoking the pipeline function. The CLI
-retains `"python"` as its implicit default during the Gate 5 transition window;
-a future maintenance release will expose `--normalize-engine` CLI flag +
-config-level selector once Gate 5 row-level parity is signed off on a JVM 17+
-workstation.
+**CLI access:** `normalize run --normalize-engine spark|python` (default:
+`spark`). Row-level parity (Contract C1) was signed off on Temurin 17.0.20 +
+PySpark 4.1.2, unblocking the default flip.
 
 **Parity guarantee (Contracts C1–C3, Gate 2 verified):**
 - `mapping_version` 16-hex SHA-256 prefix is byte-identical for the same

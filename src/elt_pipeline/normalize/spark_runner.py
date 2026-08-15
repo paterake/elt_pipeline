@@ -40,6 +40,8 @@ class SparkRelationalizer:
         projections: list[Column] = []
         for physical_name, field_accessor in planned.scalar_accessors:
             projections.append(col(field_accessor).alias(physical_name))
+        for explosion in planned.child_arrays:
+            projections.append(col(explosion.array_accessor))
         if not projections:
             projections.append(lit(None).cast("string").alias("_empty_marker"))
         df = raw_df.select(*projections)
@@ -68,6 +70,9 @@ class SparkRelationalizer:
                 projections.append(col("item").alias(physical_name))
             else:
                 projections.append(col(f"item.{field_accessor}").alias(physical_name))
+        for explosion in child_planned.child_arrays:
+            projections.append(col(f"item.{explosion.array_accessor}").alias(explosion.array_accessor))
         df = exploded.select(*projections)
+        df = df.where(col("_array_index").isNotNull())
         df = df.withColumn("_row_id", expr("uuid()"))
         return df

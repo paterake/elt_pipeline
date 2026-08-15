@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
 
@@ -21,7 +21,6 @@ from elt_pipeline.normalize.level2_storage import SparkLevel2Writer
 from elt_pipeline.normalize.models import Level2WriteSummary, MappingCatalog
 from elt_pipeline.normalize.partitioning import PartitionStrategy
 from elt_pipeline.normalize.planner import NormalizationPlan, NormalizationPlanner
-from elt_pipeline.normalize.runner import NormalizationRunner
 from elt_pipeline.normalize.spark_runner import SparkRelationalizer
 from elt_pipeline.normalize.storage import LocalMappingCatalogStore
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
@@ -30,8 +29,6 @@ from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.path_utils import path_relative_to
 from elt_pipeline.shared.runtime import RunContext, StageName
-
-NormalizeEngine = Literal["python", "spark"]
 
 
 def _load_payload(payload: Any) -> Any:
@@ -84,25 +81,6 @@ def _read_raw_dataframe(
     return spark.read.json(rdd)
 
 
-def _run_spark_normalize(
-    *,
-    spark: SparkSession,
-    manifest: Level1ArtifactManifest,
-    payload: Any,
-    planner: NormalizationPlanner,
-    relationalizer: SparkRelationalizer,
-) -> tuple[NormalizationPlan, MappingCatalog, str, dict[str, DataFrame]]:
-    raw_df = _read_raw_dataframe(spark=spark, manifest=manifest, payload=payload)
-    plan = planner.plan_from_schema(
-        source_name=manifest.source_name,
-        entity_name=manifest.entity_name,
-        schema=raw_df.schema,
-    )
-    mapping_catalog, mapping_version = plan.build_mapping_catalog()
-    dataframes = relationalizer.execute(raw_df=raw_df, plan=plan)
-    return plan, mapping_catalog, mapping_version, dataframes
-
-
 def normalize_level1_to_local_level2(
     *,
     root_path: str,
@@ -111,21 +89,13 @@ def normalize_level1_to_local_level2(
     payload: Any,
     spark: SparkSession,
     partition_strategy: PartitionStrategy | None = None,
-    normalization_runner: NormalizationRunner | None = None,
     quality_hook: QualityHookAdapter | None = None,
-    normalize_engine: NormalizeEngine = "python",
 ) -> Level2WriteSummary:
     if run_context.stage != StageName.normalize:
         raise ValueError(
             "normalize_level1_to_local_level2 requires a normalize stage RunContext"
         )
 
-    if normalize_engine not in ("python", "spark"):
-        raise ValueError(
-            f"normalize_engine must be 'python' or 'spark', got: {normalize_engine!r}"
-        )
-
-    runner = normalization_runner or NormalizationRunner()
     partition_strategy = partition_strategy or PartitionStrategy()
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
@@ -155,7 +125,6 @@ def normalize_level1_to_local_level2(
             details={
                 "source_name": manifest.source_name,
                 "entity_name": manifest.entity_name,
-                "normalize_engine": normalize_engine,
             },
         ),
     )
@@ -183,77 +152,45 @@ def normalize_level1_to_local_level2(
     error_summary: dict[str, str] | None = None
 
     try:
-        if normalize_engine == "python":
-            normalized = runner.normalize_level1(
-                manifest=manifest, payload=_load_payload(payload)
-            )
-            mapping_version = normalized.mapping_version
-            mapping_catalog = normalized.mapping_catalog
-            mapping_catalog_path = mapping_store.write_catalog(mapping_catalog)
-            artifact_store.append_log_event(
+        planner = NormalizationPlanner()
+        relationalizer = SparkRelationalizer()
+        raw_df = _read_raw_dataframe(spark=spark, manifest=manifest, payload=payload)
+        plan: NormalizationPlan = planner.plan_from_schema(
+            source_name=manifest.source_name,
+            entity_name=manifest.entity_name,
+            schema=raw_df.schema,
+        )
+        mapping_catalog: MappingCatalog
+        mapping_catalog, mapping_version = plan.build_mapping_catalog()
+        dataframes: dict[str, DataFrame] = relationalizer.execute(raw_df=raw_df, plan=plan)
+        mapping_catalog_path = mapping_store.write_catalog(mapping_catalog)
+        artifact_store.append_log_event(
+            run_context=run_context,
+            environment=environment,
+            log_event=build_log_event(
                 run_context=run_context,
-                environment=environment,
-                log_event=build_log_event(
-                    run_context=run_context,
-                    severity="INFO",
-                    component="normalize",
-                    event_type="mapping_catalog_written",
-                    message="Mapping catalog persisted",
-                    details={
-                        "mapping_version": mapping_version,
-                        "path": path_relative_to(mapping_catalog_path, root_path),
-                        "engine": "python",
-                    },
-                ),
-            )
-            partition = partition_strategy.resolve(manifest=manifest)
-            for table in normalized.tables:
-                table_manifest = level2_writer.write_table(
-                    run_context=run_context,
-                    manifest=manifest,
-                    mapping_version=mapping_version,
-                    table=table,
-                    partition=partition,
-                )
-                table_manifests.append(table_manifest)
-                artifact_store.append_log_event(
-                    run_context=run_context,
-                    environment=environment,
-                    log_event=build_log_event(
-                        run_context=run_context,
-                        severity="INFO",
-                        component="normalize",
-                        event_type="table_written",
-                        message="Level2 table written",
-                        details={
-                            "table_name": table_manifest.table_name,
-                            "record_count": table_manifest.record_count,
-                            "data_path": table_manifest.data_path,
-                            "engine": "python",
-                        },
-                    ),
-                )
-        else:
-            planner = NormalizationPlanner(
-                max_identifier_length=runner.max_identifier_length,
-                separator=runner.separator,
-                value_column_name=runner.value_column_name,
-            )
-            relationalizer = SparkRelationalizer()
-            (
-                plan,
-                mapping_catalog,
-                mapping_version,
-                dataframes,
-            ) = _run_spark_normalize(
-                spark=spark,
+                severity="INFO",
+                component="normalize",
+                event_type="mapping_catalog_written",
+                message="Mapping catalog persisted",
+                details={
+                    "mapping_version": mapping_version,
+                    "path": path_relative_to(mapping_catalog_path, root_path),
+                },
+            ),
+        )
+        partition = partition_strategy.resolve(manifest=manifest)
+        for planned_table in plan.tables:
+            df = dataframes[planned_table.physical_table_name]
+            table_manifest = level2_writer.write_dataframe(
+                run_context=run_context,
                 manifest=manifest,
-                payload=payload,
-                planner=planner,
-                relationalizer=relationalizer,
+                mapping_version=mapping_version,
+                table_name=planned_table.physical_table_name,
+                dataframe=df,
+                partition=partition,
             )
-            _ = plan
-            mapping_catalog_path = mapping_store.write_catalog(mapping_catalog)
+            table_manifests.append(table_manifest)
             artifact_store.append_log_event(
                 run_context=run_context,
                 environment=environment,
@@ -261,44 +198,15 @@ def normalize_level1_to_local_level2(
                     run_context=run_context,
                     severity="INFO",
                     component="normalize",
-                    event_type="mapping_catalog_written",
-                    message="Mapping catalog persisted",
+                    event_type="table_written",
+                    message="Level2 table written",
                     details={
-                        "mapping_version": mapping_version,
-                        "path": path_relative_to(mapping_catalog_path, root_path),
-                        "engine": "spark",
+                        "table_name": table_manifest.table_name,
+                        "record_count": table_manifest.record_count,
+                        "data_path": table_manifest.data_path,
                     },
                 ),
             )
-            partition = partition_strategy.resolve(manifest=manifest)
-            for planned_table in plan.tables:
-                df = dataframes[planned_table.physical_table_name]
-                table_manifest = level2_writer.write_dataframe(
-                    run_context=run_context,
-                    manifest=manifest,
-                    mapping_version=mapping_version,
-                    table_name=planned_table.physical_table_name,
-                    dataframe=df,
-                    partition=partition,
-                )
-                table_manifests.append(table_manifest)
-                artifact_store.append_log_event(
-                    run_context=run_context,
-                    environment=environment,
-                    log_event=build_log_event(
-                        run_context=run_context,
-                        severity="INFO",
-                        component="normalize",
-                        event_type="table_written",
-                        message="Level2 table written",
-                        details={
-                            "table_name": table_manifest.table_name,
-                            "record_count": table_manifest.record_count,
-                            "data_path": table_manifest.data_path,
-                            "engine": "spark",
-                        },
-                    ),
-                )
 
         quality_summary = quality_adapter.evaluate(
             run_context=run_context,
@@ -379,7 +287,6 @@ def normalize_level1_to_local_level2(
             extra={
                 "tables_written": files_written,
                 "mapping_version": mapping_version or "unknown",
-                "normalize_engine": normalize_engine,
             },
         )
         if quality_summary is not None:
@@ -416,7 +323,6 @@ def normalize_level1_to_local_level2(
                 "quality_backend_type": (
                     quality_summary.backend_type if quality_summary else ""
                 ),
-                "normalize_engine": normalize_engine,
             },
         )
         rerun_of_run_id = run_context.attributes.get("rerun_of_run_id")
@@ -469,7 +375,7 @@ def normalize_level1_to_local_level2(
                 component="normalize",
                 event_type="normalize_complete",
                 message="Normalization run completed",
-                details={"status": status, "engine": normalize_engine},
+                details={"status": status},
             ),
         )
 
