@@ -16,6 +16,9 @@ _ICEBERG_WAREHOUSE_ENV_VAR = "ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR"
 _ICEBERG_CATALOG_TYPE_ENV_VAR = "ELT_PIPELINE_ICEBERG_CATALOG_TYPE"
 _DEFAULT_ICEBERG_CATALOG_TYPE = "hadoop"
 _ICEBERG_CATALOG_URI_ENV_VAR = "ELT_PIPELINE_ICEBERG_CATALOG_URI"
+_ICEBERG_REST_TOKEN_ENV_VAR = "ELT_PIPELINE_ICEBERG_REST_TOKEN"
+_ICEBERG_REST_WAREHOUSE_ENV_VAR = "ELT_PIPELINE_ICEBERG_REST_WAREHOUSE"
+_ICEBERG_GLUE_REGION_ENV_VAR = "ELT_PIPELINE_ICEBERG_GLUE_REGION"
 _IVY_HOME_ENV_VAR = "ELT_PIPELINE_IVY_HOME"
 _DEFAULT_IVY_HOME_RELPATH = ".cache/ivy2"
 
@@ -47,6 +50,9 @@ def build_spark_session(
     iceberg_catalog_name: str | None = None,
     iceberg_catalog_type: str | None = None,
     iceberg_catalog_uri: str | None = None,
+    iceberg_rest_token: str | None = None,
+    iceberg_rest_warehouse: str | None = None,
+    iceberg_glue_region: str | None = None,
 ) -> SparkSession:
     resolved_master = master or os.environ.get(_MASTER_ENV_VAR) or _DEFAULT_MASTER
 
@@ -92,6 +98,9 @@ def build_spark_session(
             iceberg_warehouse_dir
             or os.environ.get(_ICEBERG_WAREHOUSE_ENV_VAR)
         )
+        rest_token = iceberg_rest_token or os.environ.get(_ICEBERG_REST_TOKEN_ENV_VAR)
+        rest_warehouse = iceberg_rest_warehouse or os.environ.get(_ICEBERG_REST_WAREHOUSE_ENV_VAR)
+        glue_region = iceberg_glue_region or os.environ.get(_ICEBERG_GLUE_REGION_ENV_VAR)
 
         spark_catalog_class = "org.apache.iceberg.spark.SparkSessionCatalog"
         leaf_catalog_class = "org.apache.iceberg.spark.SparkCatalog"
@@ -192,10 +201,94 @@ def build_spark_session(
                     f"spark.sql.catalog.{catalog_name}.warehouse",
                     resolved_warehouse,
                 )
+        elif catalog_type == "rest":
+            if not catalog_uri:
+                raise ValueError(
+                    f"iceberg_catalog_type=rest requires iceberg_catalog_uri"
+                    f" (env var {_ICEBERG_CATALOG_URI_ENV_VAR})"
+                )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog",
+                spark_catalog_class,
+            )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog.type",
+                "rest",
+            )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog.uri",
+                catalog_uri,
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}",
+                leaf_catalog_class,
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}.type",
+                "rest",
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}.uri",
+                catalog_uri,
+            )
+            if rest_token:
+                builder = builder.config(
+                    "spark.sql.catalog.spark_catalog.token",
+                    rest_token,
+                )
+                builder = builder.config(
+                    f"spark.sql.catalog.{catalog_name}.token",
+                    rest_token,
+                )
+            rest_wh = rest_warehouse or resolved_warehouse
+            if rest_wh:
+                builder = builder.config(
+                    "spark.sql.catalog.spark_catalog.warehouse",
+                    rest_wh,
+                )
+                builder = builder.config(
+                    f"spark.sql.catalog.{catalog_name}.warehouse",
+                    rest_wh,
+                )
+        elif catalog_type == "glue":
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog",
+                spark_catalog_class,
+            )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog.type",
+                "glue",
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}",
+                leaf_catalog_class,
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}.type",
+                "glue",
+            )
+            if glue_region:
+                builder = builder.config(
+                    "spark.sql.catalog.spark_catalog.glue.region",
+                    glue_region,
+                )
+                builder = builder.config(
+                    f"spark.sql.catalog.{catalog_name}.glue.region",
+                    glue_region,
+                )
+            if resolved_warehouse:
+                builder = builder.config(
+                    "spark.sql.catalog.spark_catalog.warehouse",
+                    resolved_warehouse,
+                )
+                builder = builder.config(
+                    f"spark.sql.catalog.{catalog_name}.warehouse",
+                    resolved_warehouse,
+                )
         else:
             raise ValueError(
                 f"Unsupported {_ICEBERG_CATALOG_TYPE_ENV_VAR}={catalog_type}."
-                f" Supported: hadoop, jdbc"
+                f" Supported: hadoop, jdbc, rest, glue"
             )
 
         builder = builder.config(

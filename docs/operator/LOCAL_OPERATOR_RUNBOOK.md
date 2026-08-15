@@ -161,11 +161,28 @@ PySpark 4.1.2, unblocking the default flip.
 - Level2TableManifest `data_path` / `manifest_path` relative-layout semantics
   are preserved byte-identical.
 
-## SQL Overwrite Protocol (Mercell/Camelot Staging-Swap)
+## SQL Overwrite Protocol (Mercell/Camelot Staging-Swap, plus Iceberg-native path)
 
 SQL model materialization for `load_mode: full_refresh` and
-`load_mode: partition_overwrite` now follows the **Mercell/Camelot staging-swap
-write protocol** to eliminate the Spark 4.x same-path overwrite DAG hazard.
+`load_mode: partition_overwrite` has two write paths, selected at
+`sql run` time:
+
+- **Plain-parquet (default):** the **Mercell/Camelot staging-swap write protocol**
+  described below is used to eliminate the Spark 4.x same-path overwrite DAG hazard.
+- **`--iceberg-enabled`:** the swap layer is **bypassed entirely**; Spark writes
+  directly against the target Iceberg table through Iceberg's snapshot-isolated
+  atomic commit semantics. `full_refresh` → `createOrReplace`,
+  `partition_overwrite` → `overwritePartitions(dynamic)`, `append` → `append`.
+  Self-querying rebuilds work by construction because the snapshot at commit time
+  is pinned for the read, then the new commit replaces it atomically. Gate I4's
+  regression test `test_iceberg_same_path_rebuild_reads_via_self_query` in
+  `tests/test_sql_iceberg_write.py` verifies this is hazard-free.
+
+The staging-swap path remains authoritative for the legacy plain-parquet route
+and is documented in full below. Iceberg-managed L3/L4 tables simply do not
+run through it.
+
+**Plain-parquet staging-swap (legacy path):**
 This hazard occurs whenever a SQL model reads from the canonical table path and
 writes back into it (a "self-querying rebuild" such as a canonical table that
 unions prior rows with new rows): Spark's plain-parquet `SaveMode.Overwrite`
@@ -246,6 +263,272 @@ Notes:
 
 - Do not combine `--rerun-run-id` with `--stage`, `--domain`, `--model`, `--include-deps`, date filters, partitions, or vars.
 - Use `--validate-only` or `--explain` first if you want to confirm the plan before writing tables.
+
+## Iceberg Table-Format + Serving Layer (L3/L4, Gates I1–I4)
+
+Level-3 and Level-4 SQL models can be materialized as **Apache Iceberg tables**
+behind the same `sql run` abstraction. This is the recommended path for any
+deployment that needs BI-tool connectivity via Trino / Athena / DuckDB,
+snapshot time-travel, or atomic in-place schema evolution.
+
+### Enable Iceberg
+
+Pass `--iceberg-enabled` on the CLI or set the environment variable
+`ELT_PIPELINE_ICEBERG_ENABLED=1`. When enabled:
+
+- Spark writes go through `SparkCatalog` + `SparkSessionCatalog` registered under
+  the configured catalog name (default: `iceberg`).
+- L3/L4 writes bypass the Mercell/Camelot staging-swap layer — Iceberg's own
+  snapshot-isolated atomic commits are used instead (see "SQL Overwrite Protocol"
+  above).
+- The audit JSON / `serving_endpoint` block reports the catalog type, warehouse
+  path, JDBC-ready Trino endpoint, and a sample BI query.
+
+Minimal example against the local-demo package with the zero-infra
+`hadoop` (filesystem) catalog:
+
+```bash
+uv run elt-pipeline sql run examples/sql/local_demo \
+  --iceberg-enabled \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse
+```
+
+### Pluggable catalog types (Gate I2 dispatch)
+
+| Type       | Catalog flag / env                 | When to use                                 |
+|------------|------------------------------------|---------------------------------------------|
+| `hadoop`   | `--iceberg-catalog-type hadoop`    | Local zero-infra default; filesystem-based metastore persisted under `iceberg-warehouse-dir`. |
+| `jdbc`     | `--iceberg-catalog-type jdbc --iceberg-catalog-url <jdbc-url>` | Portable shared metastore (H2 file, Postgres, Derby, etc.). URI required. |
+| `rest`     | `--iceberg-catalog-type rest --iceberg-catalog-uri <http-uri>` | Polaris / Nessie / Lakekeeper / Tabular / any REST Iceberg catalog. URI required. Optional `--iceberg-rest-token` + `--iceberg-rest-warehouse`. |
+| `glue`     | `--iceberg-catalog-type glue`      | AWS Glue Data Catalog shared-metastore path. Optional `--iceberg-glue-region`; credentials follow standard AWS SDK credential chain. |
+
+Equivalent environment variables (CLI args take precedence):
+
+```bash
+export ELT_PIPELINE_ICEBERG_ENABLED=1
+export ELT_PIPELINE_ICEBERG_CATALOG_NAME=iceberg
+export ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop          # hadoop | jdbc | rest | glue
+export ELT_PIPELINE_ICEBERG_CATALOG_URI=                 # required for jdbc + rest
+export ELT_PIPELINE_ICEBERG_REST_TOKEN=                  # optional, rest auth
+export ELT_PIPELINE_ICEBERG_REST_WAREHOUSE=              # optional, rest multi-warehouse
+export ELT_PIPELINE_ICEBERG_GLUE_REGION=                 # optional, glue region
+export ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR=.ignore/warehouse/iceberg
+```
+
+CLI shorthand:
+
+```bash
+  --iceberg-enabled \
+  --iceberg-catalog-name iceberg \
+  --iceberg-catalog-type <hadoop|jdbc|rest|glue> \
+  --iceberg-catalog-uri "http://nessie:19120/api/v1" \
+  --iceberg-rest-token <token> \
+  --iceberg-rest-warehouse <warehouse-id> \
+  --iceberg-glue-region us-east-1 \
+  --iceberg-warehouse-dir .ignore/warehouse/iceberg
+```
+
+### Serving-endpoint output (BI connectivity proof)
+
+Every `sql run` with Iceberg enabled writes a `serving_endpoint` block to the
+stage audit (`runs/stage=sql/<run_id>/stage_audit.json`). Example shape:
+
+```json
+{
+  "serving_endpoint": {
+    "catalog_name": "iceberg",
+    "catalog_type": "jdbc",
+    "catalog_type_note": "JDBC-backed Iceberg catalog (H2/Postgres/HMS). Requires --iceberg-catalog-uri.",
+    "warehouse_dir": ".ignore/warehouse/iceberg",
+    "catalog_uri_provided": true,
+    "glue_region_provided": false,
+    "engines": {
+      "trino": {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "jdbc": "jdbc:trino://127.0.0.1:8080/iceberg",
+        "cli_connect_cmd": "ops/trino_serving/run_trino.sh cli -- --catalog iceberg",
+        "sample_query": "SELECT * FROM iceberg.level3.<domain>.<table_name> LIMIT 10",
+        "trino_iceberg_catalog_note": "Trino 468 Iceberg connector sets fs.hadoop.enabled=true for local file:// warehouse dirs so the Hadoop filesystem client resolves relative/path-based tables correctly."
+      }
+    }
+  }
+}
+```
+
+The block uses the same `--trino-host` / `--trino-port` CLI args (or their env
+equivalents) to pin the Trino endpoint address that the operator intends to
+expose to BI tools.
+
+## Trino Reference Serving Engine (Gate I3)
+
+The repository ships a zero-config Trino 468 bootstrap + launch script at
+[ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh)
+that reads the exact same `ELT_PIPELINE_ICEBERG_*` environment the pipeline
+itself uses. This lets you materialize a table with `sql run --iceberg-enabled`
+and immediately query it from the same warehouse path with Trino.
+
+### Common commands
+
+```bash
+# Bootstrap (once, idempotent) + configure + start Trino
+ops/trino_serving/run_trino.sh start
+
+# What configuration am I running?
+ops/trino_serving/run_trino.sh env
+
+# Status + JDBC endpoint string
+ops/trino_serving/run_trino.sh status
+
+# Stop / restart
+ops/trino_serving/run_trino.sh stop
+ops/trino_serving/run_trino.sh restart
+
+# (Re)write catalog/*.properties only — useful when you change env vars
+ops/trino_serving/run_trino.sh write-configs
+```
+
+### Interactive Trino CLI against the Iceberg catalog
+
+```bash
+# Interactively:
+ops/trino_serving/run_trino.sh cli
+
+# One-shot queries:
+ops/trino_serving/run_trino.sh cli -- \
+  --execute "SHOW NAMESPACES FROM iceberg"
+ops/trino_serving/run_trino.sh cli -- \
+  --execute "SELECT * FROM iceberg.level3.ecomm.orders LIMIT 10"
+```
+
+### JDBC / BI-tool connection string
+
+Point your BI tool at the JDBC URL shown by `status` and `env`:
+
+```
+jdbc:trino://127.0.0.1:8080/iceberg?user=elt_pipeline
+```
+
+- Driver class: `io.trino.jdbc.TrinoDriver` (Trino JDBC driver `io.trino:trino-jdbc`,
+  version 468 recommended).
+- Default catalog: `iceberg`.
+- No authentication for the local reference deployment; front with an OAuth2 /
+  HTTPS proxy in production.
+
+Sample BI query template (use any table produced by your `sql run`):
+
+```sql
+SELECT * FROM iceberg.level3.<domain>.<table_name> LIMIT 10;
+```
+
+### Local file:// scheme + fs.hadoop.enabled
+
+Trino 468's Iceberg connector disables the Hadoop filesystem class path by
+default for the `file://` scheme; the script explicitly sets
+`fs.hadoop.enabled=true` on every `hadoop` and `jdbc` catalog properties block
+so local filesystem warehouses resolve correctly. If you write your own catalog
+properties file independently, you **must** mirror that line otherwise Trino
+will not see tables under `file:///...`.
+
+### Catalog-type coverage in the script
+
+The Trino script dispatches to 4 catalog property writers mirroring the
+pipeline's Gate I2 dispatch: `hadoop`, `jdbc`, `rest`, `glue`. Env overrides:
+
+```bash
+# hadoop (default) — requires no extra env beyond warehouse dir
+ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop ops/trino_serving/run_trino.sh start
+
+# jdbc — H2/Postgres/etc. URI required
+ELT_PIPELINE_ICEBERG_CATALOG_TYPE=jdbc \
+ELT_PIPELINE_ICEBERG_CATALOG_URI="jdbc:postgresql://pg:5432/iceberg?user=x&password=y" \
+  ops/trino_serving/run_trino.sh start
+
+# rest — Polaris / Nessie / Lakekeeper / Tabular
+ELT_PIPELINE_ICEBERG_CATALOG_TYPE=rest \
+ELT_PIPELINE_ICEBERG_CATALOG_URI="http://polaris:8181/api/v1" \
+ELT_PIPELINE_ICEBERG_REST_TOKEN="<polaris-token>" \
+ELT_PIPELINE_ICEBERG_REST_WAREHOUSE="analytics_warehouse" \
+  ops/trino_serving/run_trino.sh start
+
+# glue — AWS Glue Data Catalog (region defaults to SDK chain)
+AWS_PROFILE=my-profile \
+ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue \
+ELT_PIPELINE_ICEBERG_GLUE_REGION=us-east-1 \
+ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR="s3://my-lakehouse/warehouse/iceberg" \
+  ops/trino_serving/run_trino.sh start
+```
+
+## AWS Athena Binding (Gate I3, shared-access deployment path)
+
+Athena v3's built-in Iceberg support reads the exact same S3 warehouse + Glue
+Data Catalog metadata Spark writes when you use
+`ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue` against an `s3://` warehouse dir. The
+shared-access pattern is:
+
+1. Both the Spark pipeline and Athena point at the **same** Glue Data Catalog
+   namespace (account + region).
+2. Both read/write the **same** `s3://.../warehouse/iceberg` warehouse prefix
+   (bucket must be in the same region as Athena workgroup and Glue registry).
+3. Spark (pipeline) is the **writer**; Athena is the **reader** for BI tools.
+4. IAM: Spark execution role needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`,
+   `s3:ListBucket` on the warehouse bucket/prefix, plus
+   `glue:CreateDatabase`, `glue:GetDatabase`, `glue:CreateTable`,
+   `glue:GetTable`, `glue:GetTables`, `glue:UpdateTable` on the relevant Glue
+   ARNs. Athena workgroup role only needs `s3:GetObject` / `s3:ListBucket` on
+   the warehouse bucket plus the `glue:Get*` set.
+
+### Pipeline write (Spark + Glue + S3)
+
+```bash
+export ELT_PIPELINE_ICEBERG_ENABLED=1
+export ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue
+export ELT_PIPELINE_ICEBERG_GLUE_REGION=us-east-1
+export ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR="s3://my-lakehouse/warehouse/iceberg"
+
+AWS_PROFILE=elt-pipeline-writer \
+  uv run elt-pipeline sql run examples/sql/local_demo \
+    --root-path "s3://my-lakehouse/runtime" \
+    --warehouse-root "s3://my-lakehouse/warehouse"
+```
+
+### Equivalent Athena workgroup connection
+
+Create / reuse an Athena v3 workgroup in the same region with
+**Query result location** set to a spill bucket of your choice, and set
+**Data catalog** = `AwsDataCatalog` (Glue-backed). Tables written by the
+pipeline appear under the warehouse-dir databases as native Iceberg tables in
+Glue — `DESCRIBE FORMATTED <db>.<table>` in Athena shows `Table type: ICEBERG`.
+
+JDBC-style connection string equivalent for the Athena JDBC/ODBC driver or
+the Athena SDK `StartQueryExecution` API:
+
+```
+# Athena SDK (boto3 reference)
+athena = boto3.client("athena", region_name="us-east-1")
+athena.start_query_execution(
+    QueryString="SELECT * FROM level3_ecomm.orders LIMIT 10",
+    QueryExecutionContext={
+        "Database": "level3_ecomm",          # mirrors Glue db name
+        "Catalog": "AwsDataCatalog",
+    },
+    ResultConfiguration={
+        "OutputLocation": "s3://my-athena-results/spill/",
+    },
+    WorkGroup="primary",
+)
+```
+
+Equivalent BI-tool connection using the Simba Athena JDBC driver:
+
+```
+jdbc:awsathena://athena.us-east-1.amazonaws.com:443;
+  Schema=level3_ecomm;
+  AwsRegion=us-east-1;
+  S3OutputLocation=s3://my-athena-results/spill/;
+  AwsCredentialsProviderClass=com.simba.athena.amazonaws.auth.DefaultAWSCredentialsProviderChain
+```
 
 ## Targeted Publish Reruns
 

@@ -161,12 +161,12 @@ def _validate_iceberg_catalog_binding(args: Any) -> None:
     catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
         "ELT_PIPELINE_ICEBERG_CATALOG_URI", ""
     )
-    if catalog_type == "jdbc" and not catalog_uri:
+    if catalog_type in {"jdbc", "rest"} and not catalog_uri:
         raise build_sql_runtime_error(
             code=SqlRuntimeErrorCode.config_invalid,
             message=(
-                "Iceberg catalog binding requires --iceberg-catalog-uri (or env "
-                "ELT_PIPELINE_ICEBERG_CATALOG_URI) when --iceberg-catalog-type=jdbc."
+                f"Iceberg catalog binding requires --iceberg-catalog-uri (or env "
+                f"ELT_PIPELINE_ICEBERG_CATALOG_URI) when --iceberg-catalog-type={catalog_type}."
             ),
             retryable=False,
             context={
@@ -174,11 +174,11 @@ def _validate_iceberg_catalog_binding(args: Any) -> None:
                 "provided_uri": bool(catalog_uri),
             },
         )
-    if catalog_type not in {"hadoop", "jdbc"}:
+    if catalog_type not in {"hadoop", "jdbc", "rest", "glue"}:
         raise build_sql_runtime_error(
             code=SqlRuntimeErrorCode.config_invalid,
             message=(
-                "Unsupported Iceberg catalog binding type. Supported: hadoop, jdbc."
+                "Unsupported Iceberg catalog binding type. Supported: hadoop, jdbc, rest, glue."
             ),
             retryable=False,
             context={"requested_catalog_type": catalog_type},
@@ -213,14 +213,25 @@ def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
     trino_host = (
         _os.environ.get("ELT_PIPELINE_TRINO_HOST", "").strip() or "127.0.0.1"
     )
+    glue_region = getattr(args, "iceberg_glue_region", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_GLUE_REGION"
+    )
     jdbc = (
         f"jdbc:trino://{trino_host}:{trino_port}/{catalog_name}"
     )
+    catalog_notes = {
+        "hadoop": "Filesystem-based catalog; local-first, zero-infra dev binding. Warehouse dir is the local filesystem root.",
+        "jdbc": "JDBC-backed catalog (H2, Postgres, etc). Requires --iceberg-catalog-uri (JDBC connection string).",
+        "rest": "REST catalog server (Polaris, Nessie, Lakekeeper, Tabular). Requires --iceberg-catalog-uri (REST endpoint). Token via ELT_PIPELINE_ICEBERG_REST_TOKEN.",
+        "glue": "AWS Glue Data Catalog (AWS-managed binding). Region via --iceberg-glue-region or ELT_PIPELINE_ICEBERG_GLUE_REGION; credentials from standard AWS SDK chain.",
+    }
     return {
         "table_format": "iceberg",
         "catalog_name": catalog_name,
         "catalog_type": catalog_type,
+        "catalog_type_note": catalog_notes.get(catalog_type, ""),
         "catalog_uri_provided": bool(catalog_uri),
+        "glue_region_provided": bool(glue_region),
         "warehouse_dir": warehouse_dir or "",
         "engines": {
             "trino": {
@@ -229,6 +240,14 @@ def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
                 "jdbc_url": jdbc,
                 "driver_class": "io.trino.jdbc.TrinoDriver",
                 "script_path": "ops/trino_serving/run_trino.sh",
+                "sample_query": (
+                    f"SELECT * FROM {catalog_name}.level3.<domain>.<table_name> LIMIT 10"
+                ),
+                "trino_iceberg_catalog_note": (
+                    "Trino 468 Iceberg connector: set fs.hadoop.enabled=true in the catalog "
+                    "properties when using file:// scheme (local warehouse). See "
+                    "docs/operator/LOCAL_OPERATOR_RUNBOOK.md and ops/trino_serving/run_trino.sh."
+                ),
             },
             "spark_thrift": {
                 "note": "Use spark.sql.catalog." + catalog_name + " with Spark Thrift server sharing the warehouse_dir.",
@@ -266,6 +285,15 @@ def _resolve_iceberg_session_kwargs(
     warehouse_dir = getattr(args, "iceberg_warehouse_dir", None) or _os.environ.get(
         "ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR"
     )
+    rest_token = getattr(args, "iceberg_rest_token", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_REST_TOKEN"
+    )
+    rest_warehouse = getattr(args, "iceberg_rest_warehouse", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_REST_WAREHOUSE"
+    )
+    glue_region = getattr(args, "iceberg_glue_region", None) or _os.environ.get(
+        "ELT_PIPELINE_ICEBERG_GLUE_REGION"
+    )
     if not warehouse_dir and enabled:
         warehouse_root = getattr(args, "warehouse_root", None)
         if warehouse_root:
@@ -280,6 +308,12 @@ def _resolve_iceberg_session_kwargs(
         kwargs["iceberg_catalog_uri"] = catalog_uri
     if warehouse_dir:
         kwargs["iceberg_warehouse_dir"] = warehouse_dir
+    if rest_token:
+        kwargs["iceberg_rest_token"] = rest_token
+    if rest_warehouse:
+        kwargs["iceberg_rest_warehouse"] = rest_warehouse
+    if glue_region:
+        kwargs["iceberg_glue_region"] = glue_region
     return kwargs
 
 
@@ -477,15 +511,48 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--iceberg-catalog-type",
         default=None,
-        choices=["hadoop", "jdbc"],
-        help="Override env ELT_PIPELINE_ICEBERG_CATALOG_TYPE (default: hadoop).",
+        choices=["hadoop", "jdbc", "rest", "glue"],
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_CATALOG_TYPE (default: hadoop). "
+            "hadoop=filesystem (local zero-infra); jdbc=H2/Postgres-backed; "
+            "rest=Polaris/Nessie/Lakekeeper/Tabular (requires URI); "
+            "glue=AWS Glue Data Catalog (requires region or default SDK region)."
+        ),
     )
     run_parser.add_argument(
         "--iceberg-catalog-uri",
         default=None,
         help=(
             "Override env ELT_PIPELINE_ICEBERG_CATALOG_URI. Required when "
-            "--iceberg-catalog-type=jdbc (JDBC connection string)."
+            "--iceberg-catalog-type=jdbc (JDBC connection string) or "
+            "--iceberg-catalog-type=rest (REST server endpoint, e.g. http://localhost:8181/api/v1)."
+        ),
+    )
+    run_parser.add_argument(
+        "--iceberg-rest-token",
+        default=None,
+        dest="iceberg_rest_token",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_REST_TOKEN. Bearer / API token for "
+            "--iceberg-catalog-type=rest (Polaris/Nessie/Lakekeeper/Tabular auth)."
+        ),
+    )
+    run_parser.add_argument(
+        "--iceberg-rest-warehouse",
+        default=None,
+        dest="iceberg_rest_warehouse",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_REST_WAREHOUSE. Warehouse name/ID for "
+            "--iceberg-catalog-type=rest when the REST server hosts multiple warehouses."
+        ),
+    )
+    run_parser.add_argument(
+        "--iceberg-glue-region",
+        default=None,
+        dest="iceberg_glue_region",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_GLUE_REGION. AWS region for "
+            "--iceberg-catalog-type=glue (falls back to standard AWS SDK region chain)."
         ),
     )
     run_parser.add_argument(

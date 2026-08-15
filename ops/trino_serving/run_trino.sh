@@ -22,8 +22,12 @@
 #   ELT_PIPELINE_TRINO_VERSION         Default 468 (matches Gate-0 spike).
 #   ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR Iceberg warehouse dir (default:
 #                                      $repo_run_parent/warehouse/iceberg).
-#   ELT_PIPELINE_ICEBERG_CATALOG_TYPE  hadoop | jdbc, default hadoop.
-#   ELT_PIPELINE_ICEBERG_CATALOG_URI   Required when type=jdbc (H2 file / PG etc).
+#   ELT_PIPELINE_ICEBERG_CATALOG_TYPE  hadoop | jdbc | rest | glue, default hadoop.
+#   ELT_PIPELINE_ICEBERG_CATALOG_URI   Required when type=jdbc (H2 file / PG etc)
+#                                      or type=rest (Polaris/Nessie/Lakekeeper/Tabular).
+#   ELT_PIPELINE_ICEBERG_REST_TOKEN    Bearer/API token for type=rest.
+#   ELT_PIPELINE_ICEBERG_REST_WAREHOUSE Warehouse name/ID for multi-tenant REST.
+#   ELT_PIPELINE_ICEBERG_GLUE_REGION   AWS region for type=glue.
 #   ELT_PIPELINE_ICEBERG_CATALOG_NAME  Exposed catalog name, default iceberg.
 #   TRINO_SERVER_TGZ                   Path to a cached trino-server-*.tar.gz.
 #   TRINO_DOWNLOAD_URL                 Override for bootstrap download.
@@ -31,6 +35,13 @@
 # Examples:
 #   ops/trino_serving/run_trino.sh start
 #   ops/trino_serving/run_trino.sh cli -- --catalog iceberg --execute 'SHOW NAMESPACES'
+#   ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue \
+#     ELT_PIPELINE_ICEBERG_GLUE_REGION=us-east-1 \
+#     ops/trino_serving/run_trino.sh start
+#   ELT_PIPELINE_ICEBERG_CATALOG_TYPE=rest \
+#     ELT_PIPELINE_ICEBERG_CATALOG_URI=http://localhost:8181/api/v1 \
+#     ELT_PIPELINE_ICEBERG_REST_TOKEN=my-token \
+#     ops/trino_serving/run_trino.sh start
 #   ops/trino_serving/run_trino.sh stop
 #
 set -euo pipefail
@@ -59,6 +70,9 @@ ICEBERG_CATALOG_NAME="${ELT_PIPELINE_ICEBERG_CATALOG_NAME:-iceberg}"
 ICEBERG_CATALOG_TYPE="${ELT_PIPELINE_ICEBERG_CATALOG_TYPE:-hadoop}"
 ICEBERG_WAREHOUSE_DIR="${ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR:-${REPO_RUN_ELT}/warehouse/iceberg}"
 ICEBERG_CATALOG_URI="${ELT_PIPELINE_ICEBERG_CATALOG_URI:-}"
+ICEBERG_REST_TOKEN="${ELT_PIPELINE_ICEBERG_REST_TOKEN:-}"
+ICEBERG_REST_WAREHOUSE="${ELT_PIPELINE_ICEBERG_REST_WAREHOUSE:-}"
+ICEBERG_GLUE_REGION="${ELT_PIPELINE_ICEBERG_GLUE_REGION:-}"
 
 mkdir -p \
   "${TRINO_CACHE_DIR}" \
@@ -163,6 +177,7 @@ EOF
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
 iceberg.catalog.type=hadoop
 iceberg.warehouse=${ICEBERG_WAREHOUSE_DIR}
+fs.hadoop.enabled=true
 EOF
       ;;
     jdbc)
@@ -174,7 +189,45 @@ EOF
 iceberg.catalog.type=jdbc
 iceberg.jdbc-catalog.connection-url=${ICEBERG_CATALOG_URI}
 iceberg.warehouse=${ICEBERG_WAREHOUSE_DIR}
+fs.hadoop.enabled=true
 EOF
+      jdbc_driver="${ELT_PIPELINE_ICEBERG_JDBC_DRIVER:-}"
+      if [[ -n "${jdbc_driver}" ]]; then
+        echo "iceberg.jdbc-catalog.driver-class=${jdbc_driver}" >> \
+          "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
+      fi
+      ;;
+    rest)
+      if [[ -z "${ICEBERG_CATALOG_URI}" ]]; then
+        echo "ERROR: ELT_PIPELINE_ICEBERG_CATALOG_URI is required when type=rest." >&2
+        exit 3
+      fi
+      cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
+iceberg.catalog.type=rest
+iceberg.rest-catalog.uri=${ICEBERG_CATALOG_URI}
+EOF
+      if [[ -n "${ICEBERG_REST_TOKEN}" ]]; then
+        echo "iceberg.rest-catalog.token=${ICEBERG_REST_TOKEN}" >> \
+          "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
+      fi
+      rest_wh="${ICEBERG_REST_WAREHOUSE:-${ICEBERG_WAREHOUSE_DIR}}"
+      if [[ -n "${rest_wh}" ]]; then
+        echo "iceberg.warehouse=${rest_wh}" >> \
+          "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
+      fi
+      ;;
+    glue)
+      cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
+iceberg.catalog.type=glue
+EOF
+      if [[ -n "${ICEBERG_GLUE_REGION}" ]]; then
+        echo "iceberg.glue.region=${ICEBERG_GLUE_REGION}" >> \
+          "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
+      fi
+      if [[ -n "${ICEBERG_WAREHOUSE_DIR}" ]]; then
+        echo "iceberg.warehouse=${ICEBERG_WAREHOUSE_DIR}" >> \
+          "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
+      fi
       ;;
     *)
       echo "ERROR: unsupported ELT_PIPELINE_ICEBERG_CATALOG_TYPE=${ICEBERG_CATALOG_TYPE}" >&2
@@ -236,6 +289,17 @@ case "${action}" in
     echo "iceberg_warehouse: ${ICEBERG_WAREHOUSE_DIR}"
     echo "catalog_name: ${ICEBERG_CATALOG_NAME}"
     echo "catalog_type: ${ICEBERG_CATALOG_TYPE}"
+    case "${ICEBERG_CATALOG_TYPE}" in
+      jdbc)  echo "jdbc_catalog_uri: ${ICEBERG_CATALOG_URI}" ;;
+      rest)
+        echo "rest_catalog_uri: ${ICEBERG_CATALOG_URI}"
+        echo "rest_warehouse: ${ICEBERG_REST_WAREHOUSE:-<default>}"
+        echo "rest_token_provided: $([[ -n "${ICEBERG_REST_TOKEN}" ]] && echo yes || echo no)"
+        ;;
+      glue)
+        echo "glue_region: ${ICEBERG_GLUE_REGION:-<AWS SDK default>}"
+        ;;
+    esac
     exit ${rc}
     ;;
   cli)
@@ -262,6 +326,9 @@ ICEBERG_CATALOG_NAME=${ICEBERG_CATALOG_NAME}
 ICEBERG_CATALOG_TYPE=${ICEBERG_CATALOG_TYPE}
 ICEBERG_WAREHOUSE_DIR=${ICEBERG_WAREHOUSE_DIR}
 ICEBERG_CATALOG_URI=${ICEBERG_CATALOG_URI}
+ICEBERG_REST_TOKEN_PROVIDED=$([[ -n "${ICEBERG_REST_TOKEN}" ]] && echo yes || echo no)
+ICEBERG_REST_WAREHOUSE=${ICEBERG_REST_WAREHOUSE:-}
+ICEBERG_GLUE_REGION=${ICEBERG_GLUE_REGION:-}
 jdbc_endpoint=jdbc:trino://${TRINO_HOST}:${TRINO_PORT}/${ICEBERG_CATALOG_NAME}
 athena_aws_binding_doc=docs/operator/LOCAL_OPERATOR_RUNBOOK.md
 EOF

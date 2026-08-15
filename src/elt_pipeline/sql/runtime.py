@@ -33,7 +33,7 @@ from elt_pipeline.sql.models import (
     SqlRunArtifacts,
     SqlStageRunResult,
 )
-from elt_pipeline.sql.spark_executor import SparkSqlModelExecutor
+from elt_pipeline.sql.spark_executor import SparkSqlModelExecutor, _is_iceberg_enabled
 
 
 def run_sql_models_locally(
@@ -116,6 +116,9 @@ def run_sql_models_locally(
         ),
     )
 
+    output_namespace = (
+        "iceberg" if _is_iceberg_enabled(spark) else "spark_parquet"
+    )
     try:
         executor = SparkSqlModelExecutor(
             spark=spark,
@@ -135,6 +138,7 @@ def run_sql_models_locally(
                 warehouse_root=warehouse_root,
                 environment=environment,
                 run_context=run_context,
+                output_namespace=output_namespace,
             ),
         )
         quality_summary = quality_adapter.evaluate(
@@ -145,6 +149,7 @@ def run_sql_models_locally(
                 environment=environment,
                 warehouse_root=warehouse_root,
                 execution_result=execution_result,
+                materialization_type=output_namespace,
             ),
         )
         if quality_summary is not None:
@@ -271,7 +276,7 @@ def run_sql_models_locally(
                 ],
                 outputs=[
                     DatasetRef(
-                        namespace="spark_parquet",
+                        namespace=output_namespace,
                         name=record.target_table_name,
                         facets={
                             "model_id": record.model_id,
@@ -312,6 +317,7 @@ def _build_observer(
     warehouse_root: str,
     environment: str,
     run_context: RunContext,
+    output_namespace: str,
 ) -> Callable[[CompiledSqlModel, SqlExecutionRecord], None]:
     def _observe(model: CompiledSqlModel, record: SqlExecutionRecord) -> None:
         artifacts.log_path = artifact_store.append_log_event(
@@ -340,7 +346,7 @@ def _build_observer(
                 job_name=run_context.job_name,
                 inputs=[
                     DatasetRef(
-                        namespace="spark_parquet",
+                        namespace=output_namespace,
                         name=compiled_by_id[dependency_id].target_table_name,
                         facets={"model_id": dependency_id},
                     )
@@ -354,7 +360,7 @@ def _build_observer(
                 ],
                 outputs=[
                     DatasetRef(
-                        namespace="spark_parquet",
+                        namespace=output_namespace,
                         name=record.target_table_name,
                         facets={
                             "model_id": model.model_id,
@@ -438,6 +444,7 @@ def _build_quality_request(
     environment: str,
     warehouse_root: str,
     execution_result: SqlExecutionResult,
+    materialization_type: str,
 ) -> QualityHookRequest:
     return QualityHookRequest(
         run_id=run_context.run_id,
@@ -448,7 +455,7 @@ def _build_quality_request(
             QualityDatasetRef(
                 dataset_id=record.model_id,
                 dataset_name=record.target_table_name,
-                materialization_type="spark_parquet",
+                materialization_type=materialization_type,
                 target_name=record.target_table_name,
                 output_path=join_paths(
                     warehouse_root, record.stage.value, record.target_table_name
