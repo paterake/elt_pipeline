@@ -99,14 +99,50 @@ python3 -m http.server 8000 --directory examples/data/rest_api
 
 ### Driver out-of-memory during `normalize run` or `publish run`
 
-- These stages have single-process memory ceilings by design (see `LOCAL_OPERATOR_RUNBOOK.md`
-  "Known Limitations"): `normalize` flattens each nested payload in the driver process, and
-  `publish` collects the full result set to the driver to write one file.
-- Reduce per-artifact payload size at ingest so `normalize` processes smaller units, or narrow
-  the `publish` selection/window so fewer rows are collected.
-- Raising driver memory (`ELT_PIPELINE_SPARK_MASTER` with a suitable local config, or Spark
-  driver-memory settings) helps only up to the single-node limit; genuinely large workloads
-  need the deferred distributed-relationalization / streamed-export work, not a config tweak.
+- `publish run` still collects the full result set to the driver to write one file
+  per publish definition; narrow the publish selection/window so fewer rows are
+  collected.
+- `normalize run` driver OOM depends on which engine is in use:
+  - **`normalize_engine = "python"` (current CLI default):** the relationalizer
+    flattens each nested payload in the driver process. Reduce per-artifact
+    payload size at ingest so normalize processes smaller units.
+  - **`normalize_engine = "spark"` (native-Spark alternative):** relationalizer
+    work is offloaded to Spark executors; driver holds only schema + plan
+    metadata (KB-scale). Switching to the Spark engine is the recommended fix
+    for normalize driver OOM on large or deeply nested payloads. See
+    `LOCAL_OPERATOR_RUNBOOK.md` → **Normalize Engine Selection** for the
+    programmatic access pattern.
+- Raising driver memory (Spark driver-memory settings, or `ELT_PIPELINE_SPARK_MASTER`
+  with a suitable local config) helps only up to the single-node limit; genuinely
+  large workloads need the `"spark"` normalize engine or ingest-side payload
+  splitting, not a config tweak.
+
+### SQL overwrite staging-swap failures
+
+When a SQL model runs under `full_refresh` or `partition_overwrite`, the
+execution now follows the **Mercell/Camelot staging-swap protocol** (see
+`LOCAL_OPERATOR_RUNBOOK.md` → **SQL Overwrite Protocol**). Three new runtime
+error codes can appear in the SQL audit `errors.jsonl` or in CLI output:
+
+| Error code | Root cause | Operator action |
+|---|---|---|
+| `staging_scheme_unsupported` | The `--warehouse-root` uses a scheme outside the supported set `{file, local_unschemed, s3}`. The swap layer has no known-atomic semantics for any other scheme (e.g. `s3a`, `hdfs`, `gs`, `abfss`). | Point the warehouse root at a supported scheme; or switch the model to `load_mode: append` (which bypasses the swap layer). For new scheme support, open a PRD review against `_StorageScheme` in `shared/path_utils.py`. |
+| `staging_write_failed` | The `writer.parquet(staging_path)` call returned but the resulting staging parquet could not be read back for the mandatory `validate_stage` step. Typically indicates a partial/corrupt staging write or executor loss during the write job. | The error context records `staging_path`; inspect that path for 0-byte or missing part files. The swap layer best-effort deletes staging on this failure, but on S3 the delete batch can silently miss keys — manually remove the staging run directory before retrying. No canonical `target_path` state was touched by this run. |
+| `atomic_swap_failed` | The scheme-dispatched swap step (`rename` on POSIX, `CopyObject` → `DeleteObjects` on S3) raised mid-operation. On POSIX this leaves either all-old or all-new state (rename is atomic on a single FS). On S3 this can leave a mix of old target keys already deleted + new keys already copied — the error context preserves **both** `staging_path` and `target_path` for recovery. | Inspect `target_path` partition directories for partial state. If the S3 copy batch completed but the old-key delete batch failed, readers already see the new post-swap data under `target_path`; the failed delete batch only leaks old orphan part files, which are invisible to consumers with a predicate on `_row_id`/business date. Re-run the model; a second overwrite will overwrite the partial state cleanly. On S3, verify the EMR execution role has `s3:DeleteObject`, `s3:PutObject`, and `s3:ListBucket` scoped to **both** the runtime root **and** the warehouse root buckets — a missing `DeleteObject` grant on the warehouse root is the single most common root cause of `atomic_swap_failed` in the S3 path. |
+
+### `level3/level4` tables are unchanged after a successful SQL run
+
+- Check whether the model uses `load_mode: partition_overwrite` combined with a
+  narrow `--start-date` / `--end-date` window that did not touch the partition
+  you are inspecting. Dynamic partition overwrite (preserved through the
+  staging-swap layer) only replaces partitions present in the incoming
+  DataFrame; other partitions survive untouched. Replay a wider ingest_date
+  window using the Late-Arriving Data Recovery procedure in the runbook.
+- Confirm the SQL audit row's `load_mode` and `row_count` match expectations.
+  `row_count = 0` means the model wrote an empty incoming DataFrame — the
+  swap step then replaces (for `full_refresh`) or deletes-only-touched-partitions
+  (for `partition_overwrite`) with empty content, which can appear as "tables
+  unchanged" if you were looking for old data.
 
 ## Useful Inspection Commands
 

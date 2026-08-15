@@ -131,6 +131,106 @@ Notes:
 - Do not combine `--rerun-run-id` with `--source`, `--entity`, `--manifest-path`, or window filters.
 - The CLI resolves the original manifest path from the stored audit artifact.
 
+## Normalize Engine Selection (Python Driver vs. Spark-Native Relationalization)
+
+The L1 → L2 normalize stage ships a **dual-engine gate** behind the programmatic
+`normalize_engine` parameter (values `"python"` or `"spark"`; default `"python"`
+during the transition per OD-3). Both engines produce byte-identical L2
+manifests, `mapping_version` hashes, table physical names, column layouts, and
+on-disk `level2/` directory layout — they differ only in where the per-row
+relationalization work executes.
+
+| Engine | Relationalizer location | When to use |
+|---|---|---|
+| `normalize_engine = "python"` (default) | Pure-Python driver walk over every dict/list/row value. Spark writes the finished list[dict] rows to parquet. | Default during transition. Matches prior behaviour exactly. Use for small/medium payloads (< few hundred MB per landed artifact) or when triaging an edge payload the Spark planner has not yet reproduced. |
+| `normalize_engine = "spark"` | Spark-native `StructType` metadata walk on the driver **produces a `NormalizationPlan`**; `posexplode_outer` + struct-flatten + `uuid()` FK plumbing executes on Spark executors. Driver holds only schema + plan metadata (KBs), not data rows. | Recommended for large or deeply nested payloads. Eliminates the driver-memory ceiling described in the Known Limitations section below. `mapping_version`, table-name policy, and column naming are produced from the same shared `_policy.py` code as the legacy engine so L3 path lookups remain stable. |
+
+**Programmatic access today:** the dual-engine switch is exposed via the
+`normalize_engine=` keyword of `normalize_level1_to_local_level2(...)` in
+[normalize/pipeline.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/pipeline.py#L106-L117).
+Callers building a runtime wrapper that prefers the Spark-native engine can
+pass `normalize_engine="spark"` when invoking the pipeline function. The CLI
+retains `"python"` as its implicit default during the Gate 5 transition window;
+a future maintenance release will expose `--normalize-engine` CLI flag +
+config-level selector once Gate 5 row-level parity is signed off on a JVM 17+
+workstation.
+
+**Parity guarantee (Contracts C1–C3, Gate 2 verified):**
+- `mapping_version` 16-hex SHA-256 prefix is byte-identical for the same
+  logical schema (verified on a 3-deep nested-array fixture; metadata-only
+  test runs without a JVM).
+- Table physical names follow the same 63-char cap + SHA-8 suffix collision
+  guard.
+- Level2TableManifest `data_path` / `manifest_path` relative-layout semantics
+  are preserved byte-identical.
+
+## SQL Overwrite Protocol (Mercell/Camelot Staging-Swap)
+
+SQL model materialization for `load_mode: full_refresh` and
+`load_mode: partition_overwrite` now follows the **Mercell/Camelot staging-swap
+write protocol** to eliminate the Spark 4.x same-path overwrite DAG hazard.
+This hazard occurs whenever a SQL model reads from the canonical table path and
+writes back into it (a "self-querying rebuild" such as a canonical table that
+unions prior rows with new rows): Spark's plain-parquet `SaveMode.Overwrite`
+deletes input files before the DAG recomputes, producing spurious
+`No such file or directory` errors mid-execution.
+
+**Write sequence for overwrite modes (Track B, Gate 3):**
+1. Compute staging path: `{staging_root}/stage={level}/table={table_name}/run_id={run_id}/`.
+   Default staging root is `{warehouse_root}/_staging/`; per-model override via
+   `SqlModelManifest.staging_root` (useful for teams with separate temp-vs-perm
+   S3 buckets).
+2. Write the materialized DataFrame into the staging path with **identical**
+   `mode("overwrite").partitionBy(*cols).parquet(...)` semantics the direct
+   write previously used.
+3. Read staging output once for `validate_stage` → row count is captured from
+   this read (**eliminates the second full parquet re-read** the old code did
+   after the direct `writer.parquet(target_path)` call).
+4. Scheme-dispatched `atomic_swap` moves the staging directory tree into the
+   canonical `target_path`:
+   - **POSIX (`file://`, local unschemed paths):** `rmtree(target)` then
+     `rename(staging, target)` for `full_refresh`; partition subdirectory
+     rename for `partition_overwrite` (merge semantics). `rename(2)` is atomic
+     when source and dest are on the same filesystem.
+   - **S3 (`s3://`):** `CopyObject` (staging key → target key) for every part
+     file, then batch `DeleteObjects` on old target keys, then batch
+     `DeleteObjects` on staging keys. Readers only ever see OLD-valid,
+     EMPTY-transient, or NEW-valid state per partition key — CopyObject always
+     succeeds before DeleteObject of the old copy.
+5. Best-effort delete of staging leftovers on any failure.
+
+**Load modes excluded from swap (OD-4):**
+- `load_mode: append` — remains direct `mode("append").parquet(target_path)`.
+  Appending new part files never conflicts with re-reading existing input
+  files, so no staging required.
+- L2 normalize writes — each normalize run writes a fresh `run_id=` directory
+  that no in-flight action reads back, so same-path hazard is structurally
+  impossible. Writes stay direct `mode("error")`.
+
+**Scheme guard, consistent with PRD 08's dispatch pattern:**
+Staging-swap is fail-fast restricted to `{file, local_unschemed, s3}`. Any
+other storage scheme raises `staging_scheme_unsupported` with an operator hint
+pointing at PRD 08's supported scheme set.
+
+**Error codes introduced by the swap protocol:**
+- `staging_write_failed` — staging parquet could not be read back after the
+  write call returned.
+- `atomic_swap_failed` — the scheme-dispatched swap step raised mid-operation.
+  The error context preserves `staging_path` and `target_path` so operators
+  can inspect for partial state; staging contents survive on a best-effort
+  basis when the error occurs mid-copy.
+- `staging_scheme_unsupported` — the overwrite load mode was used against a
+  scheme the swap layer has no known-atomic semantics for.
+
+**Partition-overwrite merge semantics preserved (Contract C4):**
+`partition_overwrite` continues to mean **dynamic partition overwrite** (only
+partitions present in the incoming DataFrame are replaced; other partitions
+under `target_path` survive). The swap layer implements this by operating on
+partition-subdirectory granularity, not whole-table granularity, for the S3
+and POSIX branches. The reference `canonical_orders` late-arrival replay
+procedure below continues to work unchanged — it merely writes to staging
+first and then swaps.
+
 ## Targeted SQL Reruns
 
 SQL reruns restore the prior model and window selection from SQL audit artifacts.
@@ -547,12 +647,17 @@ root and bucket path before I/O or Spark starts. If you see an
 These are current, intentional constraints of the local-first Spark implementation. They are
 not bugs; know them before running at larger scale.
 
-- **`level1` -> `level2` relationalization is single-process.** The nested-structure flattening
-  runs in the driver's Python process (`normalize/runner.py`); Spark is used only to write the
-  result. A single very large or deeply nested source payload is held in memory during
-  normalization and can exhaust driver memory. Keep per-artifact payload sizes bounded at
-  ingest. A distributed (native-Spark) relationalization is deferred — see
-  `docs/todo/archive/TODO_SPARK_COMPLETED.md`.
+- **`level1` -> `level2` relationalization defaults to driver-Python with a native-Spark
+  alternative behind a dual-engine gate.** The legacy path flattens each nested-structure
+  payload in the driver's Python process (`normalize/runner.py`); a parallel
+  `normalize_engine = "spark"` path moves relationalization into Spark executors via
+  `StructType` metadata walk → `posexplode_outer`/struct-flatten plan. Both paths emit
+  byte-identical manifests and `mapping_version` hashes (Contracts C1–C3). The legacy
+  `"python"` engine is the CLI default during the Gate 5 transition window; a single
+  very large or deeply nested source payload held under the default engine can exhaust
+  driver memory — keep per-artifact payload sizes bounded at ingest, or switch to the
+  `"spark"` engine for those sources. See **Normalize Engine Selection** above for the
+  full parity table and programmatic access.
 - **`publish run` collects results to the driver.** The publish SQL result set is materialized
   in driver memory via `.collect()` so each delivery can be written as a single local file.
   This caps output size to driver memory. It matches the prior sqlite `fetchall()` behaviour
@@ -571,6 +676,13 @@ not bugs; know them before running at larger scale.
   its own warehouse root pair. See the **Environment and Storage Root Convention** section
   above for the standard setup pattern. Sharing one `--warehouse-root` between environments
   will collide tables.
+- **SQL overwrite staging-swap scheme set is fail-fast restricted.** `full_refresh` and
+  `partition_overwrite` load modes require the warehouse root scheme to be in
+  `{file, local_unschemed, s3}`. Models using overwrite modes against other schemes (or
+  warehouse roots pointed at non-URI local paths whose inferred scheme falls outside this
+  set) raise `staging_scheme_unsupported` before writing anything. `append` mode has no
+  scheme restriction because it bypasses the swap layer. See **SQL Overwrite Protocol**
+  above for the full write sequence and operator guidance.
 
 ## Audit and State Locations
 

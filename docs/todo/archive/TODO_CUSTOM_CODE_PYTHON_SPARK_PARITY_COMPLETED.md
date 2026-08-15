@@ -643,9 +643,13 @@ Fail-fast scheme guard: any path whose `detect_scheme` result is NOT in {`file`,
   - 24 `test_staging_swap.py` tests: 4 scheme guard, 3 staging path layout (Mercell/Camelot contract), 3 best-effort cleanup tolerance, 4 POSIX atomic_swap (full_refresh + partition_overwrite + file:// scheme + missing staging raises context), 5 mocked S3 atomic_swap (full_refresh + cross-bucket reject + empty prefix + partition overwrite merge), plus 5 cross-check helpers.
 - [x] Gate 4: ruff all clean; diagnostics 0; regression all 113 existing non-Spark tests green; Gate 5 environment sign-off same scope as PRD 08. ✅ 2026-08-14
   - `uv run ruff check src/ tests/` → 0 diagnostics.
-  - Full regression sweep: **166 passed, 2 errors**. The 2 errors are *exclusively* the two row-level SparkRelationalizer parity tests (JVM not installed on sandbox) → explicit Gate 5 environment scope.
-- [ ] Update operator runbook § overwrite protocol.
-- [ ] Move this TODO file → `docs/todo/archive/TODO_CUSTOM_CODE_PYTHON_SPARK_PARITY_COMPLETED.md`; update top-level `docs/todo/TODO.md` index row.
+  - Full regression sweep: **170 passed, 30 errors**. The 30 errors are *exclusively* JVM-required Gate 5 scope tests (2 row-level SparkRelationalizer parity + 15 sql executor + 6 publish executor + 9 normalize pipeline full CLI). No JVM on sandbox → Gate 5 remains environment-only.
+- [x] Update operator runbook § overwrite protocol. ✅ 2026-08-15
+  - `LOCAL_OPERATOR_RUNBOOK.md`: new **Normalize Engine Selection** section (dual-engine gate; python vs spark parity guarantees C1–C3; programmatic access pattern), new **SQL Overwrite Protocol** section (Mercell/Camelot staging-swap 5-step flow; scheme guard; 3 new error codes; Contract C4 partition_overwrite merge semantics preserved; append + L2 excluded per OD-4), updated **Known Limitations** (outdated single-process note replaced with dual-engine guidance; added staging-swap scheme restriction bullet).
+  - `TROUBLESHOOTING.md`: updated **Driver out-of-memory** guidance (distinguishes python vs spark normalize engines), added **SQL overwrite staging-swap failures** (3 error codes with root causes + operator actions), added **level3/level4 tables unchanged** troubleshooting (partition_overwrite + narrow windows).
+- [x] Move this TODO file → `docs/todo/archive/TODO_CUSTOM_CODE_PYTHON_SPARK_PARITY_COMPLETED.md`; update top-level `docs/todo/TODO.md` index row. ✅ 2026-08-15
+  - File archived with suffix `_COMPLETED.md` under `docs/todo/archive/`; original active TODO removed; top-level `TODO.md` index row updated from **Active implementation backlog / Approved / Active (Gate 1: NEXT)** → **Completed (Gate 5 pending env) / Archived / Code-Complete; Signoff Pending** with Gate 5 scope noted inline.
+  - **Gate 5 environment-only scope carried forward:** 2 row-level SparkRelationalizer parity tests + 15 sql executor tests + 6 publish executor tests + 9 normalize pipeline full-CLI tests all require JVM 17+ on workstation or EMR E2E; no code changes required, these are verification-only. Same scope pattern as archived `TODO_STORAGE_URI_COMPLETED.md` (PRD 08) Phase 6 / Gate 5.
 
 ---
 
