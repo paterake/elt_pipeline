@@ -1,4 +1,8 @@
-# Pure-Spark Cutover: Retire the Custom-Python Normalize Engine
+<!-- ARCHIVED 2026-08-15 — Gates C1-C3 COMPLETED.  Gate C4 (publish sink OD-P1) remains tracked separately in the live
+     docs/todo/TODO_PUBLISH_SINK_SPARK_PARITY.md decision backlog (it is a cross-reference in this doc's DoD, not an
+     in-scope work item).  See docs/todo/TODO.md Backlog Index for the live active backlog list. -->
+
+# Pure-Spark Cutover: Retire the Custom-Python Normalize Engine — COMPLETED 2026-08-15
 
 ## Purpose
 
