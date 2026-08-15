@@ -3,10 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-
-from elt_pipeline.ingest.models import Level1ArtifactManifest
-from elt_pipeline.normalize.planner import NormalizationPlanner
-
 from pyspark.sql import SparkSession
 from pyspark.sql.types import (
     ArrayType,
@@ -18,6 +14,8 @@ from pyspark.sql.types import (
     StructType,
 )
 
+from elt_pipeline.ingest.models import Level1ArtifactManifest
+from elt_pipeline.normalize.planner import NormalizationPlanner
 from elt_pipeline.normalize.spark_runner import SparkRelationalizer
 
 

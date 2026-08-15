@@ -337,29 +337,35 @@ stage audit (`runs/stage=sql/<run_id>/stage_audit.json`). Example shape:
 ```json
 {
   "serving_endpoint": {
+    "table_format": "iceberg",
     "catalog_name": "iceberg",
     "catalog_type": "jdbc",
-    "catalog_type_note": "JDBC-backed Iceberg catalog (H2/Postgres/HMS). Requires --iceberg-catalog-uri.",
-    "warehouse_dir": ".ignore/warehouse/iceberg",
+    "catalog_type_note": "JDBC-backed catalog (H2, Postgres, etc). Requires --iceberg-catalog-uri (JDBC connection string).",
     "catalog_uri_provided": true,
     "glue_region_provided": false,
+    "warehouse_dir": ".ignore/warehouse/iceberg",
     "engines": {
       "trino": {
         "host": "127.0.0.1",
-        "port": 8080,
-        "jdbc": "jdbc:trino://127.0.0.1:8080/iceberg",
-        "cli_connect_cmd": "ops/trino_serving/run_trino.sh cli -- --catalog iceberg",
+        "port": "8080",
+        "jdbc_url": "jdbc:trino://127.0.0.1:8080/iceberg",
+        "driver_class": "io.trino.jdbc.TrinoDriver",
+        "script_path": "ops/trino_serving/run_trino.sh",
         "sample_query": "SELECT * FROM iceberg.level3.<domain>.<table_name> LIMIT 10",
-        "trino_iceberg_catalog_note": "Trino 468 Iceberg connector sets fs.hadoop.enabled=true for local file:// warehouse dirs so the Hadoop filesystem client resolves relative/path-based tables correctly."
-      }
+        "trino_iceberg_catalog_note": "Trino 468 Iceberg connector: set fs.hadoop.enabled=true in the catalog properties when using file:// scheme (local warehouse). See docs/operator/LOCAL_OPERATOR_RUNBOOK.md and ops/trino_serving/run_trino.sh."
+      },
+      "spark_thrift": { "note": "..." },
+      "athena": { "binding_doc": "...", "note": "..." },
+      "duckdb": { "note": "..." }
     }
   }
 }
 ```
 
-The block uses the same `--trino-host` / `--trino-port` CLI args (or their env
-equivalents) to pin the Trino endpoint address that the operator intends to
-expose to BI tools.
+The block pins the Trino endpoint address through the
+`ELT_PIPELINE_TRINO_HOST` and `ELT_PIPELINE_TRINO_PORT` environment variables
+(defaults: `127.0.0.1` and `8080`) that the operator intends to expose to BI
+tools.
 
 ## Trino Reference Serving Engine (Gate I3)
 

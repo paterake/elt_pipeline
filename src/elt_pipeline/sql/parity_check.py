@@ -11,14 +11,15 @@ from pyspark.sql.functions import (
     col,
     collect_list,
     lit,
-    md5 as spark_md5,
     sort_array,
     struct,
+)
+from pyspark.sql.functions import (
+    md5 as spark_md5,
 )
 
 from elt_pipeline.sql.models import CompiledSqlModel, SqlModelStage
 from elt_pipeline.sql.spark_executor import (
-    _iceberg_catalog_name,
     _iceberg_table_fq,
     _is_iceberg_enabled,
 )

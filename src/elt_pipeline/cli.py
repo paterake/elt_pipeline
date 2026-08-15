@@ -220,10 +220,24 @@ def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
         f"jdbc:trino://{trino_host}:{trino_port}/{catalog_name}"
     )
     catalog_notes = {
-        "hadoop": "Filesystem-based catalog; local-first, zero-infra dev binding. Warehouse dir is the local filesystem root.",
-        "jdbc": "JDBC-backed catalog (H2, Postgres, etc). Requires --iceberg-catalog-uri (JDBC connection string).",
-        "rest": "REST catalog server (Polaris, Nessie, Lakekeeper, Tabular). Requires --iceberg-catalog-uri (REST endpoint). Token via ELT_PIPELINE_ICEBERG_REST_TOKEN.",
-        "glue": "AWS Glue Data Catalog (AWS-managed binding). Region via --iceberg-glue-region or ELT_PIPELINE_ICEBERG_GLUE_REGION; credentials from standard AWS SDK chain.",
+        "hadoop": (
+            "Filesystem-based catalog; local-first, zero-infra dev binding. "
+            "Warehouse dir is the local filesystem root."
+        ),
+        "jdbc": (
+            "JDBC-backed catalog (H2, Postgres, etc). "
+            "Requires --iceberg-catalog-uri (JDBC connection string)."
+        ),
+        "rest": (
+            "REST catalog server (Polaris, Nessie, Lakekeeper, Tabular). "
+            "Requires --iceberg-catalog-uri (REST endpoint). "
+            "Token via ELT_PIPELINE_ICEBERG_REST_TOKEN."
+        ),
+        "glue": (
+            "AWS Glue Data Catalog (AWS-managed binding). "
+            "Region via --iceberg-glue-region or ELT_PIPELINE_ICEBERG_GLUE_REGION; "
+            "credentials from standard AWS SDK chain."
+        ),
     }
     return {
         "table_format": "iceberg",
@@ -250,14 +264,24 @@ def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
                 ),
             },
             "spark_thrift": {
-                "note": "Use spark.sql.catalog." + catalog_name + " with Spark Thrift server sharing the warehouse_dir.",
+                "note": (
+                    "Use spark.sql.catalog." + catalog_name + " with Spark Thrift "
+                    "server sharing the warehouse_dir."
+                ),
             },
             "athena": {
-                "binding_doc": "docs/operator/LOCAL_OPERATOR_RUNBOOK.md (AWS Athena binding)",
-                "note": "Managed Trino-compatible engine; register catalog + point warehouse_dir at same S3 prefix.",
+                "binding_doc": (
+                    "docs/operator/LOCAL_OPERATOR_RUNBOOK.md (AWS Athena binding)"
+                ),
+                "note": (
+                    "Managed Trino-compatible engine; register catalog + "
+                    "point warehouse_dir at same S3 prefix."
+                ),
             },
             "duckdb": {
-                "note": "Attach via iceberg extension and the same catalog/warehouse_dir.",
+                "note": (
+                    "Attach via iceberg extension and the same catalog/warehouse_dir."
+                ),
             },
         },
     }

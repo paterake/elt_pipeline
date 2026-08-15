@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pyspark.sql import SparkSession
 
+from elt_pipeline.spark.session import build_spark_session
 from elt_pipeline.sql.models import (
     CompiledSqlModel,
     SqlLoadMode,
@@ -18,7 +19,6 @@ from elt_pipeline.sql.spark_executor import (
     _iceberg_catalog_name,
     _iceberg_table_fq,
 )
-from elt_pipeline.spark.session import build_spark_session
 
 
 class DecimalLike:

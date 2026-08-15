@@ -2,17 +2,20 @@
 
 ## Document Status
 
-- Status: Draft v2 (pathing revision: default partitions, decouple partitionBy/load_mode, late-arrival flow)
+- Status: Draft v3 (Iceberg + catalog/serving dispatch cutover. Adds Apache Iceberg 1.11 table-format for L3/L4 materialization, 4-way pluggable catalog binding, configurable BI-tool-agnostic serving engine, and parity-preserving dual-path write behind a single enablement seam.)
 - Product area: `elt_pipeline`
 - Stages: `level2` -> `level3`, `level3` -> `level4`
 - Proposed implementation language: Python
 - Proposed packaging and environment management: `uv`
+- Companion PRDs: [08-storage-dispatch](08-prd-storage-root-uri-io-dispatch.md), [TODO_L3_L4_ICEBERG_SERVING.md](../todo/TODO_L3_L4_ICEBERG_SERVING.md)
 
 ## Background
 
 The founding principles for the platform are defined in [00-prd-platform-principles.md](00-prd-platform-principles.md).
 
 The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
+
+The storage root and scheme dispatch (local / s3:// / gcs:// / abfss://) for file-level IO is defined in [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md). The L3/L4 Iceberg cutover mirrors that single-seam, env-dispatched pattern for both catalog type and serving engine.
 
 The existing platforms use SQL-driven transformation to promote source-aligned datasets into business-conformed models and then into consumer-facing or reporting-ready datasets. The discovered `legacy stack A` implementation shows several durable ideas worth preserving:
 
@@ -24,14 +27,21 @@ The existing platforms use SQL-driven transformation to promote source-aligned d
 
 The new `elt_pipeline` should retain these strengths while simplifying configuration, reducing operational coupling, and aligning the transformation model to a Python-first runtime.
 
+As of Draft v3, L3 and L4 materialization supports a dual-path write seam behind a single `--iceberg-enabled` flag:
+
+- Legacy path (default): plain Apache Parquet files on the configured storage scheme, with a bespoke staging-swap atomic-write protocol for `full_refresh` and `partition_overwrite`.
+- Iceberg path (opt-in): Apache Iceberg 1.11 table-format materializations with atomic commits, snapshot isolation, and 4-way pluggable catalog binding (`hadoop` / `jdbc` / `rest` / `glue`) plus a configurable BI-tool-agnostic serving engine (Trino reference, Athena / Spark Thrift / DuckDB alternatives).
+
+Parity between the two paths is attested via row-count + sorted-row-hash MD5 comparison for every L3/L4 model produced by the `local_demo` package; once parity and soak confidence hold, the staging-swap legacy path can be retired for L3/L4 (see the backlog [TODO_L3_L4_ICEBERG_SERVING.md](../todo/TODO_L3_L4_ICEBERG_SERVING.md)).
+
 ## Problem Statement
 
 The current SQL transformation approach spans multiple repositories, storage conventions, and runtime assumptions. Over years of growth, this created several problems:
 
 - model logic is difficult to reason about end-to-end,
 - dependencies and execution order are not expressed as a unified product contract,
-- environment and catalog concerns leak into SQL runtime behavior,
-- promotion from structured source tables to conformed and consumer layers is powerful but operationally complex.
+- environment and catalog concerns leak into SQL runtime behavior — the Draft v3 cutover addresses this by centralizing catalog and table-format binding behind a single pluggable seam (4 catalog types, 4 serving engines, env-dispatched, CLI-overridable),
+- promotion from structured source tables to conformed and consumer layers is powerful but operationally complex — atomic Iceberg commits remove the bespoke staging-swap protocol for L3/L4, eliminating the same-path rebuild read-your-writes hazard inherent to `SaveMode.Overwrite` on plain parquet.
 
 The new platform needs a clear SQL transformation product that defines what each stage owns, how models are configured and executed, and how lineage, quality, and backfills work.
 
@@ -43,7 +53,10 @@ Build a configuration-driven SQL transformation framework in Python that:
 - turns conformed `level3` models into consumer-facing `level4` datasets,
 - supports deterministic dependency ordering,
 - handles incremental and full-refresh patterns,
-- and exposes strong lineage, validation, and operational control.
+- exposes strong lineage, validation, and operational control,
+- materializes L3/L4 as both plain Parquet (legacy) and Apache Iceberg 1.11 table-format (opt-in),
+- registers Iceberg tables in a pluggable 4-way catalog binding (`hadoop` / `jdbc` / `rest` / `glue`) dispatched by the same single-seam pattern as storage scheme,
+- and exposes L3/L4 to BI tools via a configurable 4-way serving engine seam (Trino 468 reference, Athena / Spark Thrift / DuckDB alternatives).
 
 ## Stage Definitions
 
@@ -111,6 +124,65 @@ All path segments above SHALL correspond 1:1 to actual Spark `partitionBy` colum
 - Partition columns in the path MUST also exist as real data columns produced by the SQL model's SELECT (Spark requirement for metastore registration, filtering, and joins).
 - Spark dynamic partition overwrite (`spark.sql.sources.partitionOverwriteMode=dynamic`) is enabled at session level and is the mechanism that makes partition-scoped overwrites correct.
 - The base table path for `_table_path` remains `<warehouse_root>/level3/<table_name>` or `<warehouse_root>/level4/<table_name>`; `partitionBy()` adds the `<key>=<value>/` segments beneath it automatically.
+
+### Dual-Mode: Filesystem Path Grammar vs. Iceberg Catalog FQ Names
+
+The filesystem path grammar above applies to the legacy plain-Parquet path (default, staging-swap atomic writes). When `--iceberg-enabled` is flipped on (either flag or env var `ELT_PIPELINE_ICEBERG_ENABLED=true`), L3/L4 materialize as Apache Iceberg tables and the primary consumer-facing identifier shifts from filesystem paths to fully-qualified (FQ) Iceberg catalog table names of the form:
+
+```
+{catalog_name}.{stage}.{domain}.{table_name}
+```
+
+- `{catalog_name}` — the registered Spark/Iceberg catalog name (default `iceberg`, overridable via `--iceberg-catalog-name` or `ELT_PIPELINE_ICEBERG_CATALOG_NAME`).
+- `{stage}` — `level3` or `level4` (corresponds 1:1 with the stage enums).
+- `{domain}` — business domain namespace (e.g., `orders`, `customers`), from the SQL package layout.
+- `{table_name}` — model target table name (from manifest `target.table_name`).
+
+Iceberg namespace paths of the form `{catalog_name}.{stage}.{domain}` are created automatically on first write. Physical partition columns configured on the model (`target.partition_columns`) are preserved in the Iceberg table spec. The directory layout under the warehouse dir becomes an Iceberg-managed implementation detail (manifest files, metadata JSON, snapshot history) rather than the consumer-facing identifier.
+
+### Load Mode Mapping (Legacy Path vs. Iceberg)
+
+The three SQL `load_mode` values map to underlying write primitives identically in spirit, but Iceberg provides atomic commits natively:
+
+| `load_mode`            | Legacy path (staging-swap)                          | Iceberg path (native)                               |
+|------------------------|------------------------------------------------------|-----------------------------------------------------|
+| `full_refresh`         | write → staging dir → `atomic_swap(mode=full_refresh)` | `DataFrame.writeTo(...).createOrReplace()`          |
+| `partition_overwrite`  | write → staging → `atomic_swap(mode=partition_overwrite)` (dynamic, self-query hazard) | `DataFrame.writeTo(...).overwritePartitions()` (snapshot-isolated, no hazard) |
+| `append`               | `mode(append).parquet(target_path)` (non-atomic)     | `DataFrame.writeTo(...).append()` (atomic commit;   first-run falls back to `create()`) |
+
+Same-path rebuilds (a SQL model that reads from its own canonical target while rewriting it) work correctly under Iceberg snapshot isolation; the legacy staging-swap path requires operator caution to avoid the `SaveMode.Overwrite`-deletes-files-before-read hazard (see Gate I4 regression test `test_iceberg_same_path_rebuild_reads_via_self_query` in the suite).
+
+## Table Format, Catalog Dispatch & Serving Layer (Draft v3 Cutover)
+
+### Scope
+
+The L3/L4 Iceberg cutover (see [TODO_L3_L4_ICEBERG_SERVING.md](../todo/TODO_L3_L4_ICEBERG_SERVING.md)) adds a single config-dispatched seam that covers two concerns:
+
+1. **Catalog binding (where tables are registered)**. Four pluggable catalog types mirror PRD 08's scheme dispatch (one seam, env-dispatched, CLI args override env vars, fail-fast prereq validation before JVM):
+
+   | Catalog type | Key env / CLI                                             | Use case                                                          |
+   |--------------|-----------------------------------------------------------|-------------------------------------------------------------------|
+   | `hadoop`     | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop` (default)      | Local-first zero-infra dev. No URI. Warehouse dir = FS root.      |
+   | `jdbc`       | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=jdbc` + URI            | H2 (dev) / Postgres (on-prem). Requires JDBC URI.                 |
+   | `rest`       | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=rest` + URI + token    | Polaris / Nessie / Lakekeeper / Tabular. REST endpoint + token.   |
+   | `glue`       | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue` + region         | AWS Glue Data Catalog. Region via env or CLI; standard AWS SDK cred chain. |
+
+   `--iceberg-enabled` flips the whole subsystem on. Validation (`_validate_iceberg_catalog_binding` in the CLI) rejects unknown types and requires URIs for `jdbc` / `rest` types *before* the SparkSession is created, giving fast, pre-JVM failure.
+
+2. **Serving engine (how BI tools connect)**. Four pluggable serving bindings, each dispatched from the same Iceberg catalog + warehouse dir:
+
+   - **Trino 468** (portable reference). Zero-config bootstrap + launch script at `ops/trino_serving/run_trino.sh`; mirrors the same 4-way catalog-type dispatch and writes the exact catalog properties the Trino Iceberg connector needs (including `fs.hadoop.enabled=true` for local `file://` warehouse dirs — required by Trino 468). Exposes `jdbc:trino://{host}:{port}/{catalog_name}` with driver class `io.trino.jdbc.TrinoDriver` for BI tools.
+   - **AWS Athena** (managed). Register a Glue/Iceberg catalog pointing at the same warehouse S3 prefix. JDBC via Athena SDK. Full runbook in [LOCAL_OPERATOR_RUNBOOK.md § Athena Binding](../operator/LOCAL_OPERATOR_RUNBOOK.md).
+   - **Spark Thrift**. Reuse the same `spark.sql.catalog.{catalog_name}` config; host + warehouse dir shared with the pipeline session.
+   - **DuckDB**. Attach via the DuckDB Iceberg extension pointing at the same catalog + warehouse dir.
+
+   The pipeline writes a `serving_endpoint` dict into every SQL stage audit JSON, encoding host/port/JDBC URL/sample query for each active binding so downstream operators and BI tools can auto-discover the active endpoint.
+
+### Anti-Scope (for this cutover)
+
+- L1/L2 Iceberg lake cutover — tracked separately under the L2 Iceberg lake Phase 2 backlog (blocked on Phase 1 L3/L4 proof).
+- Breaking changes to the filesystem path grammar of the legacy plain-Parquet path; it remains default and fully compatible.
+- Catalog binding as YAML manifest entries (`elt_pipeline_cfg`) — currently env/CLI dispatched per Gate I2; a YAML-based config-contract entry remains an optional follow-up.
 
 ## Goals
 
@@ -538,7 +610,7 @@ Each `level4` model must document:
 ## Open Questions
 
 - Should model metadata live inline with SQL files or in adjacent manifest files?
-- What is the target execution engine for SQL in the new platform?
+- **Resolved (Draft v3): What is the target execution engine for SQL in the new platform?** — **Apache Spark 4.1** (Spark SQL / DataFrames) with **Apache Iceberg 1.11** table-format support for L3/L4. Spark is the sole SQL execution engine (pure-Spark cutover complete; the `--normalize-engine spark|python` flag from early drafts is retired). The Spark runtime registers Iceberg `SparkSessionCatalog` as the default `spark_catalog` and an additional named Iceberg `SparkCatalog` (default `iceberg`). Table-level writes use Iceberg native `writeTo()` operations mapped from the three SQL `load_mode` values (see the Load Mode Mapping table above).
 - How should cross-domain shared dimensions be owned and versioned?
 - Which quality checks are mandatory for every model versus optional by domain?
 - What is the promotion process for breaking schema changes in `level4`?

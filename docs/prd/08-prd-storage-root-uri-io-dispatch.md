@@ -2,9 +2,9 @@
 
 ## Document Status
 
-- **Status:** Approved v1
+- **Status:** Approved v1.1 (L3/L4 Iceberg cutover clarifications: catalog dispatch and serving engine dispatch now explicitly mirror the single-seam scheme-dispatch pattern in this PRD. Catalog binding + BI-engine serving for L3/L4 no longer anti-scoped; they track under [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md) and the [Iceberg backlog](../todo/TODO_L3_L4_ICEBERG_SERVING.md) and follow this PRD's exact architectural pattern.)
 - **Product area:** `elt_pipeline` / cross-stage (ingest → level1 → level2 → sql → publish)
-- **Scope:** Platform-wide storage contract and I/O dispatch for stage root paths, object paths, and bucket paths
+- **Scope:** Platform-wide storage contract and I/O dispatch for stage root paths, object paths, bucket paths, and (as of v1.1) the mirrored catalog + serving-engine dispatch seams for L3/L4.
 - **Design precedence:** This PRD codifies the conventions already used in `mercell` and `camelot` repositories. It is a **correction** to the earlier local-POSIX-only implementation in `elt_pipeline`, which incorrectly assumed `pathlib.Path` for all path operations.
 
 ## Purpose
@@ -98,13 +98,15 @@ Never silently reinterpret. Never coerce `s3a://` to `s3://` automatically. If a
 ### P5: Level-to-Level Handoffs Always Carry Full Absolute URI
 Where a prior stage writes an output file reference to a manifest (L1 manifest → L2 reader; L2 table catalog → L3 SQL source; L4 dataset path → publish read), the reference must be the **full absolute URI including scheme and root prefix**. The consumer must not be forced to "re-prefix" it relative to a root. Matching the Mercell/Camelot pattern.
 
+For L3/L4 SQL-to-SQL and SQL-to-publish handoffs in Iceberg mode (see [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md)), handoffs MAY also use Iceberg fully-qualified catalog table names of the form `{catalog_name}.{stage}.{domain}.{table_name}` as an alternative to the file URI. The dual-path rule applies: file URI handoffs remain the default for the plain-parquet legacy path; Iceberg FQ names are the handoff form when `--iceberg-enabled` is on. Downstream readers dispatch on the presence of the `spark_catalog` / named Iceberg catalog in the Spark session (treating an identifier matching the `{a}.{b}.{c}.{d}` 4-part form as a catalog table lookup, and anything else as a URI path string).
+
 This does not mean the L1 manifest `data_path` is always a global URI. The existing `relative_to` behavior can remain for file POSIX cases **if and only if** the manifest also records the `storage_root` it was produced under, such that re-reading from another context reconstructs the full URI. Implementation can choose between (a) absolute URIs always, or (b) (relative_path, root_uri) tuple in the manifest. Either is acceptable as long as level-to-level reading does not require external context or user-supplied configuration to locate the bytes.
 
 ## Anti-Scope (Deliberately NOT in this PRD)
 
 - **Support for schemes beyond `s3://` and POSIX local.** GCS, Azure Blob, HDFS native URI, ADLS Gen2, and any others are out of scope. The hard stop on unsupported schemes preserves correctness without artificially expanding scope. (They can be added later with a tiny 2-line change to the scheme check, following exactly the same pattern.)
 - **A plugin/registry system for new schemes.** Not needed. Add a branch in the dispatcher when/if required. Simplicity over extensibility.
-- **Catalog, metastore, or table-format changes.** Delta Lake, Iceberg, Hive Metastore, AWS Glue catalog integration are out of scope and tracked under separate future PRDs. This PRD changes only the path-representation + I/O dispatch layer.
+- **Catalog, metastore, or table-format changes (as implementation work) are NOT in this PRD.** Delta Lake, Iceberg, Hive Metastore, and AWS Glue catalog integration for L3/L4 are tracked under the [L3/L4 Iceberg backlog](../todo/TODO_L3_L4_ICEBERG_SERVING.md) and [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md). HOWEVER: this PRD is the architectural pattern that catalog dispatch and serving-engine dispatch mirror. Both use a single seam (catalog type `hadoop`/`jdbc`/`rest`/`glue`, serving engine `trino`/`athena`/`spark_thrift`/`duckdb`) dispatched by env vars, overridden by CLI args, with fail-fast prereq validation before expensive JVM or network operations — exactly the same as scheme dispatch here. Any future catalog or serving-engine change MUST adhere to this single-seam pattern rather than adding bespoke environment switches or hard-coded catalog choices.
 - **Changes to SQL model semantics, partition conventions, lineage column rules, load modes, or quality/lineage backend behavior.** All of those remain as approved and are unaffected by this PRD. They operate on dataframes once Spark has read them; this PRD is only about locating the bytes that feed into Spark and writing out the non-parquet metadata/audit artifacts.
 - **Mount products.** Mountpoint-S3, s3fs-fuse, HDFS NFS gateway, EMRFS-at-local-path, or any other FUSE-style POSIX-over-object-storage product are explicitly **not required** for this PRD to pass. The user's declared operating model is "no mounts, pure URI flags."
 - **`elt_pipeline_cfg` centralized config service.** Still out of scope / separate future PRD. This PRD works the same way as today with per-pipeline YAML files passed as CLI args or as `s3://…` URIs to `load_pipeline_config`.

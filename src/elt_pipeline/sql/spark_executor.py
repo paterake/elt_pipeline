@@ -405,7 +405,7 @@ class SparkSqlModelExecutor:
                 if effective_partition_columns:
                     writer = writer.partitionedBy(*effective_partition_columns)
                 writer.append()
-            except PySparkException as exc:
+            except PySparkException:
                 # First-run append to a non-existent table: fall back to createOrReplace
                 # so the target bootstraps cleanly.
                 try:
