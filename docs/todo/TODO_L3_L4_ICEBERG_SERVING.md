@@ -23,6 +23,14 @@ This is the change that turns a correct ELT engine into a usable governed data p
 
 Rationale (OQ-2): Trino is the tool-agnostic engine and Athena is managed Trino/Presto — proving Trino+JDBC demonstrates any JDBC/ODBC BI tool connects. Local-first proof needs no cloud.
 
+## Preflight — do this FIRST (thin vertical spike)
+
+Before any gated work, prove the (brand-new) stack integrates end-to-end on **one** table. Spark 4.1 Iceberg support is recent, so validate before committing to five gates.
+
+- **Pinned dependency (verified 2026-08-15):** `org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.11.0`. Iceberg **1.11.0** is the first release with Spark 4.1 support; jar is Scala **2.13** (matches Spark 4.x / PySpark 4.1.2). Wire into the session builder in [spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py) (packages + Iceberg SQL extensions + a local Hadoop catalog).
+- **Spike:** write ONE L3 table → Iceberg (local Hadoop catalog) → read back in Spark → `SELECT` from it via a locally-run **Trino** with the Iceberg connector. Green = proceed to Gate I1. Snag = surface the 4.1 edge now, not five gates deep.
+- **Known 4.1 rough edge to watch:** Iceberg has at least one open Spark-4.1 incompatibility ([Create View, apache/iceberg#15238](https://github.com/apache/iceberg/issues/15238)). Confirm the operations this platform actually uses (table create, append, overwrite, partition overwrite, `MERGE`) work; the platform does not depend on Iceberg views. Bonus: Spark 4.1 + Iceberg 1.11 provides **MERGE INTO with automatic schema evolution** — the native capability Phase 2 uses to retire the L2 `mergeSchema` hack.
+
 ## Gated Plan
 
 ### Gate I1 — Iceberg write path at L3/L4 (behind the existing abstraction)
