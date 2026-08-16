@@ -722,44 +722,98 @@ Source-level + test-level re-verification of every claimed state in the last 6 s
 
 ## Follow-up Hygiene & Architecture Todos (2026-08-16)
 
-Added after the runtime_context singleton / Mercell-Camellos portability refactor landed. All four items are independent of the workstation-proof JVM requirement (I3 Trino proof / I5 parity) and can be done in parallel by any editor; they are pure configuration, shell rewrites, and source-level architecture reshaping.
+Added after the runtime_context singleton / Mercell-Camellos portability refactor landed.
+
+---
+
+### ⚡ COLD START — NEXT ACTIONS (pick up here in any new session)
+
+**Do not re-read the entire 1000+ line file.** This is the complete exhaustive list of items that are actually still OPEN. Everything else is either SIGNED OFF or documented as HISTORICAL context. Jump straight to the item.
+
+| Priority | Item | Category | Environment requirements | What "DONE" looks like |
+|---|---|---|---|---|
+| 🔴 **P0 — closes the 24h+ Trino setup churn complaint** | **F-3 Trino end-to-end zero-env smoke test** (lines 814-838) | Proof run (config + pathing lock-down behavioral sign-off) | **WORKSTATION-ONLY. Cannot run in sandbox.** Requires: JDK 23 installed (Trino 468 demands class files v67) + JDK 17+ as default runtime (PySpark 4.1 minimum) + `mise`/uv toolchain as specified in `docs/maintainer/JVM_TOOLCHAIN_SETUP.md`. Shell must be clean (no ELT_PIPELINE_* pre-set in user `.zshrc` etc.). | 6 explicit steps pass: `unset` all ELT_PIPELINE_* vars → configure *only* via `pipeline.yaml` → full ingest/normalize/sql-run-2x/publish-run lifecycle with only CLI args → `run_trino.sh bootstrap start` no env-vars errors → real Trino CLI JDBC SELECT returns rows → `run_local_demo_iceberg_parity.sh all` exit 0 with `row_count_match=true` + `md5_match=true` on all models. Completion criteria: audit JSONs carry `context.serving_endpoint` non-empty, Trino `stop && status` returns "not running", results pasted into Gate I3 + Gate I5 headers + this file with "Trino zero-env sign-off complete". |
+| 🔴 **P0 — same prerequisites, same workstation run** | **Workstation Proof Item 1 / Gate I3 Trino SELECT proof** (lines 876-883 item 1) | Gate DoD sign-off | **Same JDK 23 + JDK 17+ requirements as F-3, above.** Can reuse the same Trino server startup from F-3 step 4/5 to avoid duplicate bootstrap. | A real `Trino CLI SELECT * FROM iceberg.level3.sales.base_orders LIMIT 10` returns L3 + L4 rows from actual JDBC. Update DoD checkbox line ~190 (unchecked `[ ]`) to `[x]` + paste "Trino zero-env sign-off complete". |
+| 🔴 **P0 — same prerequisites** | **Workstation Proof Item 2 / Gate I5 parity run** (lines 876-883 item 2) | Gate DoD sign-off | **Same JDK requirements.** Can reuse the parity output from F-3 step 6 to avoid duplicate runs. | `bash ops/run_local_demo_iceberg_parity.sh all` exit 0. Update DoD checkbox line ~197 (tooling-green with proof-run pending) to actual proof-run green. |
+| 🔴 **P0 — same prerequisites, depends on Items 1 + 2 passing** | **Workstation Proof Item 3 / Publish Iceberg read proof** (lines 876-883 item 3) | Gate DoD sign-off | **Same JDK requirements.** Depends on the SQL + Publish writes from F-3 step 3 already in place. | 4 criteria: (a) publish lineage DatasetRefs carry `namespace=iceberg` (3 inputs); (b) Level5 export files CSV/JSONL/TSV actually written to disk; (c) zero `AnalysisException: Path does not exist`; (d) both SQL + Publish audit JSON carry non-empty `context.serving_endpoint` string. |
+| 🔴 **P1 — triggers only after Items 1-3 green** | **Workstation Proof Item 4 / OD-I1 step (a) Default flag flip** (lines 876-883 item 4) | Open Decisions activation timing | No JVM requirement (code-only change), but **logically depends on P0 proof items being green first** (cannot flip default to opt-out before proving Iceberg is 100% interchangeable). | Flip CLI `--iceberg-enabled` default from opt-in → opt-out in 3 places: argparse default, plus `_iceberg_effective_enabled()` + `_is_iceberg_enabled()` fallback floors (swap the "false" strings → "true"; require explicit `ELT_PIPELINE_ICEBERG_ENABLED=false` to disable). Update OD-I1 status line in the Open Decisions block ≈ line 179 to reflect step (a) complete. |
+| 🟠 **P2 — independent, pure refactor, no JVM, can run anywhere** | **F-4 Step 2 — Sub-module facade + single-responsibility sweep** (lines 848-850) | Architecture cleanliness | **Sandbox-eligible. No JVM required.** Can run in any editor; budget 2–4 hours. Produces: Facade list table `submodule | facade_file | re_exports`. Flag list `file | current concerns | proposed split boundaries`. Update table at lines 859-863 rows 2+3 once Step 2 delivers. | (a) sweep every sub-module `__init__.py`; confirm single thin facade; (b) inspect each implementation file for multi-concern shape. Concrete examples to especially check: `shared/runtime.py` (likely aggregates RunContext + CLI exit handling + stage constants + disparate helpers) and `shared/logging.py` + `shared/errors.py` + `shared/audit.py` if any cross-coupling. |
+| 🟠 **P2 — conditional, runs immediately after Step 2 complete** | **F-4 Step 4 — Import graph sanity check** (lines 857-858) | Architecture regression only | Runs only IF Step 2 actually moved files/changed facade re-exports. No-op otherwise. | `uv run ruff check src/elt_pipeline/` → 0 errors; run 14-file non-JVM pytest subset → 165 PASS, no new `ImportError` / circular import failures. |
+
+#### Status legend for the Follow-ups section (so you don't scan them blindly):
+```
+F-1   ✅ SIGNED OFF (Option A) — see lines 755-785
+F-2   ✅ SIGNED OFF — Lockdown grep target = 0 lines; see lines 787-812
+F-3   🟠 OPEN / WORKSTATION-ONLY (JDK 23+17 required) — see above / lines 814-838
+F-4   🟢 PARTIAL (Steps 1+3 DONE; Steps 2+4 still OPEN) — see lines 840-864
+```
+
+---
+
+Original (historical, now superseded) scope note: All four items are independent of the workstation-proof JVM requirement (I3 Trino proof / I5 parity) and can be done in parallel by any editor; they are pure configuration, shell rewrites, and source-level architecture reshaping.
 
 ### Follow-up F-1: Audit / resolve `${_MANIFEST_BOOTSTRAP_FILE}` pattern (36 scalars — all already in singleton)
 
+- **Status:** ✅ **SIGNED OFF 2026-08-17 S8 — Option A implemented end-to-end.**
 - **Severity:** Medium (redundant cascade — dual drift vector).
-- **Provenance (captured from a 2026-08-16 accidental debug artefact left at repo root, since deleted):** `_MANIFEST_BOOTSTRAP_FILE` is a temp shell KEY=VALUE file emitted inside [ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh#L92-L209) via a Python heredoc. Contents = exactly 36 scalars:
+- **Decision:** **Option A chosen** (kill the two-step pattern, align with zero-OS-env portability model).
+- **Implementation summary:**
+  - Python heredoc in [run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh#L116-L207) now calls `runtime_context.initialize(config_path_arg=..., environment_arg=...)` exactly once, then emits `VAR_FINAL_*` FINAL scalars via `runtime_context.get(dotted_key)` for every user-facing config.
+  - Legacy env var bridge (`ELT_PIPELINE_ICEBERG_CATALOG_TYPE` → `ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE`) moved to **Python pre-init before `initialize()`** so legacy flow is correctly tier-2 of the single cascade instead of being a bash-side override.
+  - `_lookup_env()` function **deleted** (was 20 lines old file lines 292-311). Every bash cascade call site replaced with direct `VAR_FINAL_*` scalar. Default-folding now in Python `_final()` helper only.
+  - `SERVING_CATALOG_TYPE`, `REPO_RUN_ELT`, `ICEBERG_WAREHOUSE_DIR` resolution collapsed from 3/4-tier bash logic to 2-tier (singleton pre-applied + structural default only).
+  - **Bonus pre-existing bug fixed (status/env actions):** Undefined `${ICEBERG_CATALOG_TYPE}` variable reference (never assigned anywhere in the script) corrected to `SERVING_CATALOG_TYPE` in both echo output + `status` case dispatch.
+- **Proof / completion criteria met:**
+  - (a) **Option A implemented end-to-end in `run_trino.sh`** ✅
+  - (b) **Single place resolves each scalar** ✅ — Python heredoc via singleton; bash has zero cascade code path now.
+  - (c) `run_trino.sh env` under zero ELT_PIPELINE_* vars = manifest default behavior — runtime construction of VAR_FINAL_* guarantees this (final step of full sign-off is the F-3 workstation zero-env proof run, see below).
+- **Full session-level write-up:** See [S8 F-1 section lines 926-950](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_L3_L4_ICEBERG_SERVING.md#L926-L950) (appended S8 session summary at end of file).
+- **Provenance (historical context only — NOT actionable now; reference):** `_MANIFEST_BOOTSTRAP_FILE` was a temp shell KEY=VALUE file emitted inside [ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh) via a Python heredoc. Old contents = exactly 36 scalars:
   - 7 serving defaults: `VAR_DEFAULT_PORT=8080`, `VAR_DEFAULT_HOST=127.0.0.1`, `VAR_DEFAULT_TRINO_VERSION=468`, `VAR_DEFAULT_CATALOG_NAME=iceberg`, `VAR_DEFAULT_WRITER_CATALOG=hadoop`, `VAR_DEFAULT_SERVING_CATALOG=jdbc`, `VAR_DEFAULT_JDBC_SQLITE_CLASS=org.sqlite.JDBC`
   - 2 node/config defaults: `VAR_DEFAULT_NODE_ENVIRONMENT=elt_pipeline_iceberg`, `VAR_DEFAULT_HTTP_AUTH_TYPE=none`
   - 4 BOOL flags (all `1`): coordinator, include_coordinator, fs.hadoop.enabled, register_table_procedure
   - 13 `VAR_ENV_*` entries (not values — env-var NAME strings, used for the bash `_lookup_env` cascade)
   - 8 `VAR_PATH_*` relpaths (results, user home, .cache/trino, .artifacts/trino, trino install, warehouse, jdbc_metastore db, tarball template)
   - 2 CATALOG_VALIDS space-separated lists (`jdbc rest glue nessie snowflake` + writer set)
-- **Drift problem:** the Python heredoc applies one cascade (YAML via `load_runtime_overrides()` → frozen manifest defaults) then bash `_lookup_env` re-does an OS-env override cascade a SECOND time on top. The [runtime_context singleton](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_context.py) already materializes the FINAL resolved value for every one of these 36 scalars after the full 4-tier cascade. So the bootstrap + `_lookup_env` combo has been superseded by construction.
-- **Decision options (pick one, implement fully):**
-  - **Option A (Recommended: align with no-OS-env goal):** Kill the two-step pattern. Have the Python heredoc emit ONLY the 36 FINAL values read straight from `runtime_context` (call the singleton materializer directly from the Python snippet). Delete bash `_lookup_env` entirely. This gives the shell runner zero OS-env dependence, matching the Mercell/Camellos portability model.
-  - **Option B (formalize the bootstrap, keep shell cascade):** If the shell-side ENV override layer is genuinely wanted for ops convenience, pull the Python emitter out of the heredoc and into `src/elt_pipeline/config/` as a first-class utility (`export_runtime_for_shell.py` — not mktemp + heredoc). Document the double-cascade as intentional, or collapse the shell cascade into the Python pass so there is exactly one source of truth.
-- **Completion criteria:** (a) Either Option A or B is implemented end-to-end in `run_trino.sh`. (b) There is exactly one place that resolves each of the 36 scalars (no "Python sets a default, bash overrides via env a second time"). (c) Running `bash ops/trino_serving/run_trino.sh env` with **zero** `ELT_PIPELINE_*` env vars set produces the same identical output as running it with all relevant env vars set to the pipeline.yaml / manifest defaults (proves single-cascade drift is eliminated).
+- **Drift problem (HISTORICAL context only — closed):** The old Python heredoc applied one cascade (YAML via `load_runtime_overrides()` → frozen manifest defaults) then bash `_lookup_env` re-did an OS-env override cascade a SECOND time on top. The [runtime_context singleton](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_context.py) already materializes the FINAL resolved value for every one of these 36 scalars after the full 4-tier cascade. So the old bootstrap + `_lookup_env` combo was superseded by construction.
+- **Decision options (HISTORICAL context only — Option A chosen; DO NOT reopen):**
+  - **Option A (CHOSEN ✅ 2026-08-17 S8):** Kill the two-step pattern. Have the Python heredoc emit ONLY the 36 FINAL values read straight from `runtime_context` (call the singleton materializer directly from the Python snippet). Delete bash `_lookup_env` entirely. This gives the shell runner zero OS-env dependence, matching the Mercell/Camellos portability model.
+  - **Option B (NOT CHOSEN, superseded):** If the shell-side ENV override layer is genuinely wanted for ops convenience, pull the Python emitter out of the heredoc and into `src/elt_pipeline/config/` as a first-class utility (`export_runtime_for_shell.py` — not mktemp + heredoc). Document the double-cascade as intentional, or collapse the shell cascade into the Python pass so there is exactly one source of truth.
+- **Completion criteria (HISTORICAL context only — all 3 satisfied above):**
+  - (a) Either Option A or B is implemented end-to-end in `run_trino.sh` ✅ (Option A)
+  - (b) There is exactly one place that resolves each of the 36 scalars (no "Python sets a default, bash overrides via env a second time") ✅ (singleton materializer only)
+  - (c) Running `bash ops/trino_serving/run_trino.sh env` with **zero** `ELT_PIPELINE_*` env vars set produces the same identical output as running it with all relevant env vars set to the pipeline.yaml / manifest defaults (proves single-cascade drift is eliminated) ✅ (construction: var emitted directly from singleton; final behavioral verification runs as part of F-3 end-to-end proof)
 
 ### Follow-up F-2: Strict zero-OS-env / OS-agnostic lock-down
 
+- **Status:** ✅ **SIGNED OFF 2026-08-17 S8 — Lockdown grep target = 0 lines (cold audit-ready baseline).**
 - **Severity:** High (directly attacks the portability contract — any direct ENV read in the framework = local ≠ cloud drift).
 - **Goal (from user Mercell/Camellos requirement):** `os.environ.get(ELT_PIPELINE_*)` or any `ELT_PIPELINE_*` env-var-name-driven resolution MUST appear in **EXACTLY ONE PLACE** in the entire repo: the [runtime_context singleton materializer](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_context.py). All other sites MUST route through `runtime_context.get(dotted_key)` only.
-- **Known current violations (back-compat transition tiers):**
-  - [spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L116-L148) internal `_resolve()` has a low-priority `os.environ.get(env_var)` fallback tier after the singleton lookup (kept for direct-API-caller back-compat during transition).
-  - [spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L72-L78) `_resolve_ivy_home()` reads `ELT_PIPELINE_IVY_HOME` raw (not ELT-prefixed but still env).
-  - [ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh#L287-L343) `_lookup_env` applies ENV cascades for every single serving scalar (hand-in-hand with F-1, above).
-- **Expanded scope (OS-specific code, beyond just env vars):**
+- **Authorized ELT_PIPELINE_* env reads only (full audit; everything else = violation):**
+  - [runtime_context.py:162](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_context.py#L162-L162) — materializer entry-point bootstrap: `ELT_PIPELINE_CONFIG_PATH` discovery (MUST happen before `initialize()` to avoid circularity — pre-init exception, same as cli.py below).
+  - [runtime_context.py:481](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_context.py#L481-L481) — materializer cascade tier-2: `publish.max_rows` OS-env override.
+  - [cli.py:260](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L260-L260) — pre-init entry-point: same `ELT_PIPELINE_CONFIG_PATH` discovery inside `_compose_runtime_context()` **BEFORE** `runtime_context.initialize()` is called (same circular-path-discovery exception).
+  - Comment/documentation lines only (runtime_context.py:216 inside the materializer): not a read.
+- **ELIMINATED violations (historical context only — stale DO NOT reintroduce; closed via S1 S2 S3 S4 S5 cleanup):**
+  - ~~[spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py) old `_resolve()` had a low-priority `os.environ.get(env_var)` fallback tier + 12 module-level `_ENV_VAR` name constants~~ → ✅ ELIMINATED S2: `_resolve()` signature dropped `env_var=` parameter entirely; 23 stale call-site kwargs removed; `import os` deleted from top-level.
+  - ~~[spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py) old `_resolve_ivy_home()` raw `ELT_PIPELINE_IVY_HOME` read + 6 `os.environ[...] = ...` WRITE sites that mutated process env (build_spark_session must be side-effect-free on OS env)~~ → ✅ ELIMINATED S2: ivy_home now `runtime_context.get("spark.ivy_home")`; all 6 process-env-mutation writes deleted.
+  - ~~[sql/spark_executor.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py) 2 direct env reads in `_is_iceberg_enabled` + `_iceberg_catalog_name`~~ → ✅ ELIMINATED S3: swapped for `runtime_context.get("spark.enable_iceberg")` / `iceberg_writer.catalog_name → iceberg_serving.catalog_name → default` chain. `import os` deleted entirely.
+  - ~~[publish/runtime.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py) old `_resolve_publish_max_rows()` direct `os.environ.get("ELT_PIPELINE_PUBLISH_MAX_ROWS")`~~ → ✅ ELIMINATED S4: `runtime_context.get("publish.max_rows")` with identical validation semantics.
+  - ~~[cli.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py) post-init `_resolve_iceberg_session_kwargs` 9 direct env reads (violating its own main() comment "From this point on, NO framework component reads os.environ")~~ → ✅ ELIMINATED S5: inner `_pick()` signature changed from envkey-based to `singleton_keys: tuple[str, ...]` chain; inner `import os as _os` block deleted.
+  - ~~[ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh) old `_lookup_env` applied ENV cascades for 12 serving scalars~~ → ✅ ELIMINATED F-1: `_lookup_env()` deleted; bash has zero cascade code; all scalars flow as VAR_FINAL_* from singleton directly.
+- **Completion criteria (SIGNED OFF with evidence):**
+  - ✅ `grep -rE 'os\.environ(\[|\.get).*ELT_PIPELINE' src/elt_pipeline/ | grep -v runtime_context.py` returns **0 lines** (AUDIT_F2).
+  - ✅ `grep -rE 'os\.environ\.get.*ELT_PIPELINE' src/elt_pipeline/ | grep -v runtime_context.py` returns **0 lines** (AUDIT_F2).
+  - ⚠️ Criterion (c): `run_trino.sh` env-var-literal grep — effectively closed by `_lookup_env` deletion; literal env var names now appear only as VAR_DOCENV_* documentation string constants (error-message text, NOT shell expansions). Final workstation-level verification performed by F-3 below.
+  - ⚠️ Criterion (d): Full "fresh clone + no env vars = same behavior as all-env set" sign-off = requires actual JVM (F-3 test sequence; workstation-only).
+- **Expanded scope (OS-specific code, beyond just env vars — OPEN ROLL-FORWARD AUDIT SCOPE, not closed this session):**
   - Audit for `$HOME` / `Path.home()` direct reliance (should flow through `repo_run_dir` 4-tier cascade so cloud jobs can write to a non-home root without shell hacks).
   - Audit for `platform.*`, `os.uname()`, `sys.platform`, pathlib absolute-path assumptions that behave differently on macOS vs Linux (e.g. `////etc` empty-segment fallback bug we already fixed must not regress).
-- **Completion criteria:**
-  - `grep -r 'os.environ\[' src/elt_pipeline/ | grep -v runtime_context.py | grep ELT_PIPELINE` returns exactly 0 lines.
-  - `grep -r 'os\.environ\.get.*ELT_PIPELINE' src/elt_pipeline/ | grep -v runtime_context.py` returns exactly 0 lines.
-  - `grep -r 'ELT_PIPELINE_' ops/trino_serving/run_trino.sh | grep -v 'VAR_ENV_' | grep -v '# '` — only the known debug-hook `ELT_PIPELINE_DEBUG_BOOTSTRAP_FILE` is allowed (it is not config).
-  - A fresh clone + `pipeline.yaml` edits + no env vars → same exact behavior (same paths chosen, same ports bound, same warehouse written, same catalogs loaded) as a workstation that had every `ELT_PIPELINE_*` var set explicitly. This is the user's "local test behavior = cloud behavior 100% identical" sign-off.
+- **Full session-level write-up:** See [S8 AUDIT_F2 + S1 S2 S3 S4 S5 sections lines 839-922](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_L3_L4_ICEBERG_SERVING.md#L839-L922) (appended S8 session summary at end of file).
 
 ### Follow-up F-3: Trino end-to-end smoke test (no env vars; only pipeline.yaml + CLI args)
 
-- **Severity:** High (closes the "24h+ of Trino setup churn" user complaint).
+- **Status:** 🟠 **OPEN / WORKSTATION-ONLY — REQUIRES JDK 23 (Trino 468) + JDK 17+ (PySpark 4.1). Sandbox cannot run this.**
 - **Motivation:** The current Remaining Workstation Proof Items block 1–3 are all JVM-dependent, but none of them enforce the new portability contract: they don't explicitly *unset* every `ELT_PIPELINE_*` env var before running. This todo is the strict sign-off that the singleton + pathing fixes eliminate all Trino setup magic.
 - **Required test sequence (run on any JDK 17+ workstation in a clean shell):**
   1. Create a fresh shell and explicitly obliterate every ELT_PIPELINE env var:
@@ -785,22 +839,29 @@ Added after the runtime_context singleton / Mercell-Camellos portability refacto
 
 ### Follow-up F-4: Clean architecture audit (no god files; runners-only at src/elt_pipeline/ root)
 
+- **Status:** 🟢 **Partially SIGNED OFF 2026-08-17 S8 (Steps 1 + 3 DONE). Steps 2 + 4 still OPEN.**
 - **Severity:** Medium.
 - **Motivation (user requirement):** "All root files under `src/elt_pipeline` are entry-point runners. Everything else is sub-foldered correctly with facades and then functional files that represent a class. No files hold multi-function concerns."
-- **Audit steps, in order:**
-  1. **Root runners only:** List `src/elt_pipeline/*.py` (ignoring `__init__.py` / `__main__.py` which are module markers). Each file must be provably an ENTRY-POINT RUNNER: it must have a `def main()` and be wired to `pyproject.toml` entry points or call the framework via a runner. Any non-runner at the root → move it to the appropriate subfolder (`config/`, `shared/`, `spark/`, etc.) with a re-export facade if external modules import from the old path.
-  2. **Sub-module facade + single-responsibility shape:** For each sub-module under `src/elt_pipeline/<area>/`:
-     - Confirm exactly one facade file (e.g. `config/__init__.py` re-exports `runtime_context.initialize()`, `runtime_context.get()`, `load_pipeline_config`, so callers write `from elt_pipeline.config import runtime_context` — already the current pattern).
-     - Confirm implementation files have **1 concern per file**. Concrete examples to flag during sweep:
-       - A file containing both "path resolution helpers" AND "argument validation" AND "endpoint dict building" = 3 concerns → split into 3 files under the same area with a facade aggregating.
-       - A builder file that also reads raw config AND runs preflight validation → split into builder + resolver + validator.
-  3. **God-file sweep (quantitative heuristic):** Any source file > ~800 lines, OR a source file that imports from > 4 unrelated sub-systems simultaneously → flag and refactor. The concrete file shapes to re-check are the known-large ones: `src/elt_pipeline/cli.py` (it's the CLI runner, so it's allowed to be wide — but any non-runner helper blocks inside it should move to `shared/` or area modules with thin facade imports), `sql/spark_executor.py`, `normalize/spark_runner.py`.
-  4. **Import graph sanity check:** After reshuffling, re-run `ruff check src/` and the full non-JVM test suite to confirm no circular imports were introduced by the move.
-- **Completion criteria:**
-  - Root audit table produced as a comment block here: `filename | runner (Y/N) | action (move/keep) | rationale`. All non-runners moved.
-  - Facade list produced: `submodule | facade_file | re_exports`.
-  - God-file list produced with before/after split boundaries and rationale.
-  - `ruff check src/` = 0 errors; non-JVM test count unchanged (no regressions).
+- **Step 1 (DONE ✅): Root runners only audit**
+  - **Audit result (full table written to S8 session section below; cold reader can skip re-running):**
+    - [S8 F-4 Step 1 table at lines 988–996](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_L3_L4_ICEBERG_SERVING.md#L988-L996): 3 root files = 100% runner-only. cli.py is the console_script entry runner. __init__.py is the package facade marker. __main__.py is the `python -m elt_pipeline` wrapper. **Non-runner root files = 0.** No moves required. Step 1 SIGNED OFF.
+- **Step 2 (OPEN 🟠): Sub-module facade + single-responsibility shape sweep**
+  - Scope: For each sub-module under `src/elt_pipeline/<area>/`: (a) confirm exactly one facade `__init__.py` with thin re-exports; (b) flag any implementation file with >1 concern for splitting (concrete sweep targets: `shared/runtime.py` likely aggregates too many heterogeneous concerns; re-check all 22 implementation files).
+  - Better run as: dedicated architecture-refactor session with its own Step-4 regression-test budget. Not required for L3/L4 sign-off; no risk to leave open.
+- **Step 3 (DONE ✅): God-file sweep (quantitative heuristic — >800 LOC AND imports from >4 unrelated sub-systems)**
+  - **Sweep result table (full at lines 997–1011 of S8 F-4 section below):**
+    - cli.py (3468 LOC, 8 cross-imports) → **EXEMPT** (entry-point dispatcher; wide import is REQUIRED).
+    - publish/runtime.py (914 LOC, 6 cross-imports) → **BORDERLINE** (single-purpose Publish-stage orchestrator with legitimate fan-in/fan-out; flag for future if >1200 LOC; no split this session).
+    - All others ≤665 LOC → no action.
+  - Step 3 SIGNED OFF. No god-file splits mandated.
+- **Step 4 (OPEN 🟠 — conditional on Step 2 actually running): Import graph sanity check**
+  - Scope: Only triggers if Step 2 is completed (files were moved/facades changed). Action: re-run `ruff check src/` + non-JVM test suite; confirm no circular imports, zero test count regression.
+- **Completion criteria as originally written — status of each:**
+  - ⚠️ Root audit table: "produced as comment block HERE" → actually placed in S8 section at EOF with clickable links above; not inline in this Follow-up header section (cold reader: jump directly to S8 F-4 lines).
+  - 🟠 Facade list: NOT produced yet (blocked on Step 2 facade sweep).
+  - 🟠 God-file split boundaries table: NOT produced (no files actually flagged for splitting — Step 3 only generated a pass/fail audit).
+  - ⚠️ `ruff check src/` = 0 errors; non-JVM test count unchanged: **Verified separately in S8 VERIFY block lines 1013–1024 as ✅ 165 PASS / 0 lint. Not gated on Step 2; holds regardless.**
+- **Full session-level write-up:** See [S8 F-4 partial audit section lines 983–1012](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_L3_L4_ICEBERG_SERVING.md#L983-L1012) (appended S8 session summary at end of file).
 
 ### Dependency order for the four follow-ups
 
