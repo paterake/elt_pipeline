@@ -585,6 +585,75 @@ Scope: Full end-to-end static baseline verification of the entire L3/L4 Iceberg 
 3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm: (a) publish emits `namespace=iceberg` in 3 lineage `DatasetRef` inputs; (b) Level5 export CSV/JSONL/TSV written; (c) zero `AnalysisException: Path does not exist`; (d) `artifacts.audit_path` JSON for both SQL and Publish stages contains `context.serving_endpoint` with correct non-empty JSON-string value (end-to-end audit-persistence verification).
 4. **OD-I1 step (a): Default flag flip** — after items 1-3 are green on a workstation, the OD-I1 delete sequence activates: flip Iceberg default from opt-in → opt-out in CLI argparse + env-default in `_iceberg_effective_enabled()` and `_is_iceberg_enabled()` (e.g., swap the `"false"` default to `"true"` and require explicit `ELT_PIPELINE_ICEBERG_ENABLED=false` to disable); mark this step complete in the OD-I1 status line of the Open Decisions block above.
 
+## Summary of 2026-08-15 session (Iceberg v2 API conformance cleanup + baseline verification)
+
+Environment: macOS sandbox, Python 3.13.14 (uv venv), PySpark 4.1.2 installed, **NO JVM on PATH** (identical environment to all prior sessions — Spark data-plane / Trino / JDBC probes remain workstation-pending).
+
+Scope: Two deliverables — (A) independent verification of the full backlog's claimed current state (fresh test run + lint + source-level static audit for every claimed fix); (B) v2-API conformance cleanup triggered by a user question: is `df.write.format("iceberg").mode(…).save(…)` (old v1) vs `df.writeTo(fq).append()` (modern v2) what we do? Audit found we were using v2 `writeTo()` everywhere (correct, not old v1) but we had an unnecessary `.using("iceberg")` on two existing-table write sites — trimmed to match official Iceberg 1.11 canonical examples exactly.
+
+### (A) Full Baseline Verification — All Claimed Fixes Confirmed Intact
+
+48/48 Iceberg-specific tests PASS (test_iceberg_catalog_config.py 23 + test_iceberg_parity_and_audit.py 25). Broader non-JVM suite 105/105 PASS (config_loader, path_utils, merge_sql_generator, quality_adapter, lineage_adapter, staging_swap). Combined non-JVM = **153/153 PASS**, **0 lint errors across entire `src/` + 3 iceberg test files**, VS Code diagnostics **empty**.
+
+Source-level static audit results (all re-verified independently of prior-session claims):
+
+**Gate I1 (Iceberg write path):** GREEN. `_execute_model()` early-return at [spark_executor.py lines 225-230](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py#L225-L230) bypasses legacy staging-swap block when `use_iceberg=True`. `_execute_iceberg_write()` [lines 342-458](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py#L342-L458) correctly maps 3 load modes: `full_refresh → createOrReplace()`, `partition_overwrite → overwritePartitions()`, `append → append() + create() fallback`. `_effective_partition_columns` passed verbatim to `.partitionedBy(*cols)`. `_is_iceberg_enabled()` belt+suspenders check = env var AND `spark.sql.extensions contains IcebergSparkSessionExtensions` [lines 38-51](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py#L38-L51).
+
+**Gate I2 (Pluggable catalog):** GREEN. 4-way dispatch hadoop/jdbc/rest/glue in `build_spark_session()`. `SparkSessionCatalog` bound as `spark_catalog` + `SparkCatalog` as named catalog **for all 4 types**. `spark.sql.defaultCatalog = spark_catalog` explicitly set [session.py line 295](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L295) — CRITICAL for Spark 4.1 MERGE rewrite rules (per project-memory finding). 23/23 config tests PASS.
+
+**Gate I3 (Serving engine):** GREEN. `ops/trino_serving/run_trino.sh` grep confirms: 4 catalog-type case arms in `write_configs()` (hadoop/jdbc/rest/glue), `fs.hadoop.enabled=true` count = exactly 2 (hadoop + jdbc blocks, required for Trino 468 `file://` scheme per project-memory finding), jdbc+rest URI prereq validation `if [[ -z "${ICEBERG_CATALOG_URI}" ]] → exit 3` present. `_build_serving_endpoint(args)` in cli.py emits all 4 engine dicts (trino/athena/spark_thrift/duckdb). Operator runbook §Trino + §Athena Binding exist. Trino SELECT proof = workstation-only (DoD line 190 still unchecked).
+
+**Gate I4 (Retire staging-swap):** GREEN. `_execute_iceberg_write()` function body grep for `staging|SwapMode|atomic_swap|build_staging_path` = **0 matches** (excludes module-level import for legacy else-branch). OD-I1 soak strategy active: `--iceberg-enabled` = strictly opt-in (`action="store_true", default=None` on both sql_run_parser [line 521](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L521) and publish_run_parser [line 647](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L647)). `_iceberg_effective_enabled()` [lines 141-150](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L141-L150) returns `None` when neither CLI flag nor env var set. Publish runtime P-2 fix confirmed: `_register_level4_source()` [lines 395-417](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L395-L417) has standard dual-path (Iceberg branch uses `manifest.domain` for correct FQ resolution; Parquet branch generalized to `manifest.source.stage` not hardcoded `"level4"`). `grep namespace="spark_parquet" publish/runtime.py` → **0 matches**. Computed `source_namespace = "iceberg" if use_iceberg else "spark_parquet"` present at 2 sites [lines 168, 434](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/publish/runtime.py#L168-L434).
+
+**Gate I5 (Parity tooling):** GREEN. `_warehouse_path_for_stage()` in parity_check.py takes 3 args (no `domain`), path = `warehouse_root / stage.value / table_name` — matches `spark_executor._table_path()` layout exactly. `measure_model_parity()` dual-path correct. `compare_parity_reports()` 5 semantics locked. Publish CLI 8-flag parity confirmed: publish_run_parser has identical 8 `--iceberg-*` flags with same `choices`/`default` contracts as sql_run_parser; `_validate_iceberg_catalog_binding(args)` called BEFORE `build_spark_session()` in both handlers; `_resolve_iceberg_session_kwargs()` used at both build_spark_session call sites for uniform CLI-arg > env > warehouse-root/iceberg fallback precedence.
+
+**Gate I3 audit persistence (2026-08-19 gap):** GREEN. `run_sql_models_locally(serving_endpoint: … | None = None)` + `_build_audit_context(serving_endpoint=…)` serialize via `json.dumps(sort_keys=True)`. `run_publish_definitions_locally(serving_endpoint: … | None = None)` same pattern. Both default `None` → backward-compat (15 non-CLI call sites untouched). CLI stdout payload for BOTH `sql run` AND `publish run` now carries `serving_endpoint` from identical local variable. 8/8 regression tests PASS.
+
+**Minor lint cleanup (non-code impact):** 3 E501 line-too-long in tests/test_iceberg_catalog_config.py fixed: long `pytest.raises(match=…)` strings hoisted to local vars (`rest_match`, `jdbc_match`); 4-clause `assert "java" or "jvm" or "spark" or "getorcreate"` replaced with `any(tok in … for tok in jvm_tokens)`. All 23 tests in that file continue to PASS post-cleanup.
+
+### (B) Iceberg v2 API Conformance Cleanup — Gate I1 `_execute_iceberg_write()` Alignment to Official 1.11 Docs
+
+User question prompted comparison against official Apache Iceberg 1.11 docs (iceberg.apache.org/docs/latest/spark-writes/) — result: we already used v2 `writeTo()` everywhere (not old v1 `write.format("iceberg").mode(…).save(…)` ✅), but `.using("iceberg")` was present on 4 write sites instead of the 2 the docs require.
+
+**Rule (per official Iceberg 1.11 Spark Writes §"Creating tables"):**
+> If you have replaced the default Spark catalog (`spark_catalog`) with Iceberg's `SparkSessionCatalog`, **CTAS/RTAS operations** (`.create()` / `.replace()` / `.createOrReplace()`) **require** `.using("iceberg")` because `SparkSessionCatalog` is mixed-format. For existing-table writes (`.append()`, `.overwritePartitions()`) the catalog-qualified FQ name already unambiguously resolves through the named `SparkCatalog` (Iceberg-only) → `.using("iceberg")` is redundant but harmless.
+
+**Our matching config (relevant):** `spark.sql.catalog.spark_catalog = SparkSessionCatalog` (mixed) + `spark.sql.defaultCatalog = spark_catalog` set in [session.py line 295](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L295) ✅
+
+**Applied edits (2 removed, 2 kept) in [_execute_iceberg_write](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py#L342-L458):**
+
+| Site | Operation | `.using("iceberg")` | Rationale |
+|---|---|---|---|
+| L371 `partition_overwrite` branch | `.overwritePartitions()` | **REMOVED** ⚡ | Existing-table write; dynamic overwrite to pre-materialized table; FQ name resolves via Iceberg catalog; redundant per docs |
+| L397 `append` primary (try) branch | `.append()` | **REMOVED** ⚡ | Existing-table write; same rationale; matches canonical `data.writeTo("prod.db.table").append()` from docs |
+| L409 `append` fallback (except) branch | `.create()` (CTAS for bootstrap) | **KEPT** ✅ | CTAS on mixed SparkSessionCatalog; explicitly required by docs |
+| L433 `full_refresh` branch | `.createOrReplace()` (RTAS) | **KEPT** ✅ | RTAS on mixed SparkSessionCatalog; explicitly required by docs |
+
+Post-edit `grep .using("iceberg") spark_executor.py` = exactly 2 hits (CTAS + RTAS) → 1:1 with official doc pattern.
+
+### Regression Test Baseline (today vs Full Baseline session)
+
+| Baseline metric | Full-baseline session | Today (post API cleanup + lint fixes) | Status |
+|---|---|---|---|
+| tests/test_iceberg_catalog_config.py | 23/23 PASS | **23/23 PASS** | ✅ No regressions (lint-only edits to 3 lines in 3 tests) |
+| tests/test_iceberg_parity_and_audit.py | 25/25 PASS | **25/25 PASS** | ✅ Stable |
+| Combined Iceberg-only total | 48 PASS | **48 PASS** | ✅ Stable |
+| Core non-JVM 6-file suite (config_loader..staging_swap) | 105 PASS | **105 PASS** | ✅ Stable |
+| Combined non-JVM grand total | 153 PASS | **153 PASS** | ✅ Stable |
+| JVM-dependent failures class | JAVA_GATEWAY_EXITED only (unchanged) | JAVA_GATEWAY_EXITED only | ✅ Zero new logical failures |
+| `ruff check src/` entire tree | All passed (0 errors) | **All passed (0 errors)** | ✅ |
+| `ruff check` 3 iceberg test files | 3 E501 (test_iceberg_catalog_config.py) | **0 errors** — 3 E501 fixed | ✅ **Net improvement** |
+| VS Code diagnostics | Empty | **Empty** | ✅ |
+| `.using("iceberg")` count in _execute_iceberg_write | 4 (all sites) | **exactly 2** (CTAS + RTAS only) | ✅ **API conformance cleanup** |
+| Old/discouraged `write.format("iceberg").mode(…).save(…)` usage | 0 | **0** | ✅ Never introduced; confirmed not present |
+
+### Remaining Workstation Proof Items (unchanged; require JDK 17+ install — outside sandbox)
+
+1. **Gate I3 Trino SELECT proof:** `bash ops/trino_serving/run_trino.sh bootstrap start && bash ops/trino_serving/run_trino.sh cli -- --execute "SELECT * FROM iceberg.level3.sales.base_orders LIMIT 10"` — confirm L3 + L4 tables queryable via JDBC. Updates DoD checkbox line 190 (last remaining unchecked DoD item).
+2. **Gate I5 end-to-end parity run:** `bash ops/run_local_demo_iceberg_parity.sh all` — confirm exit code 0, `parity_report_compare.json` shows all models `row_count_match=true` and `md5_match=true`. DoD checkbox line 197 currently marked tooling-green with proof-run pending.
+3. **Publish Iceberg read proof:** Run `sql run --iceberg-enabled` then `publish run --iceberg-enabled` against the same warehouse. Confirm: (a) publish emits `namespace=iceberg` in 3 lineage `DatasetRef` inputs; (b) Level5 export CSV/JSONL/TSV written; (c) zero `AnalysisException: Path does not exist`; (d) `artifacts.audit_path` JSON for both SQL and Publish stages contains `context.serving_endpoint` with correct non-empty JSON-string value (end-to-end audit-persistence verification).
+4. **OD-I1 step (a): Default flag flip** — after items 1-3 are green on a workstation, the OD-I1 delete sequence activates: flip Iceberg default from opt-in → opt-out in CLI argparse + env-default in `_iceberg_effective_enabled()` and `_is_iceberg_enabled()` (e.g., swap the `"false"` default to `"true"` and require explicit `ELT_PIPELINE_ICEBERG_ENABLED=false` to disable); mark this step complete in the OD-I1 status line of the Open Decisions block above.
+
 ## Cross-References
 
 - Decision: [PRD 09 — L3/L4 Serving and Table Format](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/09-prd-level3-level4-serving-and-table-format.md) (Accepted 2026-08-15).

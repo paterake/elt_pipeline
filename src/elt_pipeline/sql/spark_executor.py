@@ -374,7 +374,6 @@ class SparkSqlModelExecutor:
                 (
                     dataframe
                     .writeTo(fq_table)
-                    .using("iceberg")
                     .option("mergeSchema", "true")
                     .partitionedBy(*effective_partition_columns)
                     .overwritePartitions()
@@ -399,7 +398,6 @@ class SparkSqlModelExecutor:
             try:
                 writer = (
                     dataframe.writeTo(fq_table)
-                    .using("iceberg")
                     .option("mergeSchema", "true")
                 )
                 if effective_partition_columns:

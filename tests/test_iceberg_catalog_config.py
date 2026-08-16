@@ -31,7 +31,8 @@ class TestSessionBuilderCatalogValidation:
                 )
 
     def test_rest_requires_catalog_uri(self):
-        with pytest.raises(ValueError, match="iceberg_catalog_type=rest requires iceberg_catalog_uri"):
+        rest_match = "iceberg_catalog_type=rest requires iceberg_catalog_uri"
+        with pytest.raises(ValueError, match=rest_match):
             with patch.dict(os.environ, {}, clear=True):
                 build_spark_session(
                     app_name="test",
@@ -42,7 +43,8 @@ class TestSessionBuilderCatalogValidation:
                 )
 
     def test_jdbc_requires_catalog_uri(self):
-        with pytest.raises(ValueError, match="iceberg_catalog_type=jdbc requires iceberg_catalog_uri"):
+        jdbc_match = "iceberg_catalog_type=jdbc requires iceberg_catalog_uri"
+        with pytest.raises(ValueError, match=jdbc_match):
             with patch.dict(os.environ, {}, clear=True):
                 build_spark_session(
                     app_name="test",
@@ -64,7 +66,8 @@ class TestSessionBuilderCatalogValidation:
                 )
         err_text = str(exc_info.value).lower()
         assert "valueerror" not in str(type(exc_info.value)).lower() or "uri" not in err_text
-        assert "java" in err_text or "jvm" in err_text or "spark" in err_text or "getorcreate" in err_text
+        jvm_tokens = ("java", "jvm", "spark", "getorcreate")
+        assert any(tok in err_text for tok in jvm_tokens)
 
     def test_glue_passes_validation_no_uri_required(self):
         with pytest.raises(Exception) as exc_info:
