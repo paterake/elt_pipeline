@@ -31,6 +31,12 @@ class EnvVarNames:
 
     # Spark / ELT compute
     spark_master: str = "ELT_PIPELINE_SPARK_MASTER"
+    spark_app_name: str = "ELT_PIPELINE_SPARK_APP_NAME"
+    spark_driver_host: str = "ELT_PIPELINE_SPARK_DRIVER_HOST"
+    spark_driver_bind_address: str = "ELT_PIPELINE_SPARK_DRIVER_BIND_ADDRESS"
+    spark_shuffle_partitions: str = "ELT_PIPELINE_SPARK_SHUFFLE_PARTITIONS"
+    spark_default_parallelism: str = "ELT_PIPELINE_SPARK_DEFAULT_PARALLELISM"
+    spark_aqe: str = "ELT_PIPELINE_SPARK_AQE"
     ivy_home: str = "ELT_PIPELINE_IVY_HOME"
     root_path: str = "ELT_PIPELINE_ROOT_PATH"
     warehouse_root: str = "ELT_PIPELINE_WAREHOUSE_ROOT"
@@ -54,6 +60,11 @@ class EnvVarNames:
     trino_port: str = "ELT_PIPELINE_TRINO_PORT"
     trino_host: str = "ELT_PIPELINE_TRINO_HOST"
     trino_version: str = "ELT_PIPELINE_TRINO_VERSION"
+    trino_jvm_xms_mb: str = "ELT_PIPELINE_TRINO_JVM_XMS_MB"
+    trino_jvm_xmx_mb: str = "ELT_PIPELINE_TRINO_JVM_XMX_MB"
+
+    # Publish runtime
+    publish_max_rows: str = "ELT_PIPELINE_PUBLISH_MAX_ROWS"
 
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
@@ -135,6 +146,8 @@ class SparkRuntime:
 class ServingDefaults:
     default_trino_port: int = 8080
     default_trino_host: str = "127.0.0.1"
+    default_trino_xms_mb: int = 512
+    default_trino_xmx_mb: int = 1024
     default_coordinator: bool = True
     default_include_coordinator: bool = True
     default_http_server_authentication_type: str = "none"

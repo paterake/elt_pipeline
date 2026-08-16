@@ -15,13 +15,16 @@
 # Usage:
 #   ops/trino_serving/run_trino.sh (start|stop|status|restart|cli|write-configs|env)
 #
-# Optional env (honor in this order):
-#   ELT_PIPELINE_REPO_RUN_DIR          Override shared output root.
-#   ELT_PIPELINE_TRINO_PORT            HTTP port, default 8080.
-#   ELT_PIPELINE_TRINO_HOST            Bind host, default 127.0.0.1.
-#   ELT_PIPELINE_TRINO_VERSION         Default 468 (matches manifest).
-#   ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR Iceberg warehouse dir (default:
-#                                      $repo_run_parent/warehouse/iceberg).
+# Optional env (honored through the Mercell/Camellos singleton — ONE cascade,
+# CLI arg > ELT_PIPELINE_* ENV > pipeline.yaml YAML > frozen manifest defaults):
+#   ELT_PIPELINE_CONFIG_PATH             Override root YAML config location.
+#   ELT_PIPELINE_ENVIRONMENT             YAML environment layer.
+#   ELT_PIPELINE_REPO_RUN_DIR            Override shared output root.
+#   ELT_PIPELINE_TRINO_PORT              HTTP port, default 8080.
+#   ELT_PIPELINE_TRINO_HOST              Bind host, default 127.0.0.1.
+#   ELT_PIPELINE_TRINO_VERSION           Default 468 (matches manifest).
+#   ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR   Iceberg warehouse dir (default:
+#                                        $repo_run_parent/warehouse/iceberg).
 #   ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE
 #                         Trino SERVING catalog: jdbc | rest | glue | nessie | snowflake
 #                         Default = jdbc (zero-service workstation; AUTO sqlite URI below
@@ -67,14 +70,25 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." >/dev/null 2>&1 && 
 
 # ==============================================================================
 # BOOTSTRAP: load every default, env-var name, path, version, and boolean flag
-#   ONE TIME from the single manifest:
-#     src/elt_pipeline/config/runtime_manifest.py
+#   ONE TIME through the Mercell/Camellos runtime_context singleton:
 #
-# Python source files and this ONE bash script share ZERO duplicated defaults.
-# Python reads runtime_manifest.py directly; bash uses the manifest Python to
-# emit a KEY=VALUE file we then source. Fail-fast on any error so that a missing
-# venv / bad manifest attribute / broken PYTHONPATH aborts immediately with a
-# clear error (no silent fallback to empty strings that turn into "////etc").
+#     SINGLE cascade (materialized exactly ONCE):
+#       1. CLI / function args (passed into runtime_context.initialize)
+#       2. ELT_PIPELINE_* OS env vars
+#       3. pipeline.yaml YAML sections + 3-layer environment merge
+#       4. Frozen manifest defaults
+#
+#   Python runtime_context.initialize() is the ONLY writer — every value
+#   emitted below is a FINAL scalar with the full cascade already applied.
+#   Bash downstream consumers are pure readers. NO _lookup_env re-resolution,
+#   NO duplicated defaults. One writer, many readers, zero drift.
+#
+# Legacy env var bridge (one-time translation before singleton materializes):
+#   ELT_PIPELINE_ICEBERG_CATALOG_TYPE (legacy, writer-side name) → copied to
+#   ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE only when the canonical is unset.
+#   Bash then performs the Trino-468-specific hadoop→jdbc remap on the final
+#   serving catalog-type value (this is a Trino-version constraint, not a
+#   general config cascade concern).
 # ==============================================================================
 if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
   _MANIFEST_PYTHON="${REPO_ROOT}/.venv/bin/python"
@@ -103,97 +117,91 @@ if ! REPO_ROOT="${REPO_ROOT}" PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHO
      <<'PY' 2>"${_MANIFEST_PY_ERR}"
 import pathlib, sys, os
 sys.path.insert(0, next(p for p in os.environ.get("PYTHONPATH","").split(os.pathsep) if p))
+
+# Legacy → canonical env var bridge (applied BEFORE singleton initialize so
+# the legacy var is treated as a proper tier-2 override when the canonical
+# is unset). Runs in-process here rather than in bash because we need the
+# translation to happen before runtime_context reads os.environ.
+_legacy_ctype = os.environ.get("ELT_PIPELINE_ICEBERG_CATALOG_TYPE", "").strip()
+_canon_ctype = os.environ.get("ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE", "").strip()
+if _legacy_ctype and not _canon_ctype:
+    os.environ["ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE"] = _legacy_ctype
+
+from elt_pipeline.config import runtime_context
 from elt_pipeline.config.runtime_manifest import runtime_manifest as M
 
-# ---------------------------------------------------------------------------
-# PORTABILITY CONTRACT: YAML runtime. section is the user-visible no-code
-# interface. Load it via the same helper used by the CLI so defaults cascade
-# consistently. Layering applied here:
-#   YAML (pipeline.runtime → environments[default].runtime →
-#         environments[$ELT_PIPELINE_ENVIRONMENT].runtime)
-#   OVER frozen manifest defaults.
-# User ENV vars then take highest precedence via bash _lookup_env later.
-# ENV is NEVER required — it is purely an override (CI / secrets convenience).
-# Auto-discovery chain (first hit wins):
-#   1. ELT_PIPELINE_CONFIG_PATH env var  (user override for multi-config setups)
-#   2. <repo_root>/pipeline.yaml         (clone-n-run root config, always present)
-# ---------------------------------------------------------------------------
-_yaml_overrides: dict = {}
-_yaml_cp = os.environ.get("ELT_PIPELINE_CONFIG_PATH", "").strip() or None
-_yaml_env = os.environ.get("ELT_PIPELINE_ENVIRONMENT", "").strip() or None
-if _yaml_cp is None:
+# Auto-discover pipeline.yaml config path (mirrors cli.py pre-init logic).
+# Same 2-chain: ELT_PIPELINE_CONFIG_PATH env → <repo_root>/pipeline.yaml
+_config_path_arg: str | None = None
+_env_cp = os.environ.get("ELT_PIPELINE_CONFIG_PATH", "").strip()
+if _env_cp:
+    _config_path_arg = _env_cp
+else:
     _repo_root_from_env = os.environ.get("REPO_ROOT", "").strip()
     if _repo_root_from_env:
         _candidate = pathlib.Path(_repo_root_from_env) / "pipeline.yaml"
         if _candidate.is_file():
-            _yaml_cp = str(_candidate)
-if _yaml_cp is not None:
-    from elt_pipeline.config.loader import load_runtime_overrides
-    _yaml_overrides = load_runtime_overrides(_yaml_cp, environment=_yaml_env)
+            _config_path_arg = str(_candidate)
+    else:
+        _candidate = pathlib.Path(__file__).resolve().parents[2] / "pipeline.yaml"
+        if _candidate.is_file():
+            _config_path_arg = str(_candidate)
+_env_environment = os.environ.get("ELT_PIPELINE_ENVIRONMENT", "").strip() or None
 
-_ts = _yaml_overrides.get("trino_serving", {}) if isinstance(_yaml_overrides, dict) else {}
-_iw = _yaml_overrides.get("iceberg_writer", {}) if isinstance(_yaml_overrides, dict) else {}
-_is = _yaml_overrides.get("iceberg_serving", {}) if isinstance(_yaml_overrides, dict) else {}
-_y_repo_run_dir_raw = (
-    _yaml_overrides.get("repo_run_dir") if isinstance(_yaml_overrides, dict) else None
+runtime_context.initialize(
+    config_path_arg=_config_path_arg,
+    environment_arg=_env_environment,
 )
-_y_repo_run_dir = "" if _y_repo_run_dir_raw in (None, "") else str(_y_repo_run_dir_raw)
-def _y(field, mapping, default):
-    v = mapping.get(field) if isinstance(mapping, dict) else None
-    return default if v in (None, "") else v
 
 lines = []
 def emit(key, val):
     lines.append(f'{key}="{val}"')
 def emit_bool(key, python_bool):
     lines.append(f'{key}="{'1' if python_bool else '0'}"')
+def _final(key, default):
+    v = runtime_context.get(key)
+    return default if v in (None, "") else v
 
-_y_trino_port = _y("port", _ts, M.serving.default_trino_port)
-_y_trino_host = _y("host", _ts, M.serving.default_trino_host)
-_y_trino_version = _y("version", _ts, M.versions.trino_server)
-_y_catalog_name = _y("catalog_name", _iw,
-                      _y("catalog_name", _is, M.catalogs.default_catalog_name))
-_y_writer_catalog = _y("catalog_type", _iw, M.catalogs.workstation_default_writer_catalog)
-_y_serving_catalog = _y("catalog_type", _is, M.catalogs.workstation_default_serving_catalog)
-_y_jdbc_sqlite_class = _y("jdbc_driver", _is, M.jdbc.sqlite_class)
-_y_node_environment = _y("node_environment", _ts, M.serving.default_node_environment)
-_y_http_auth_type = _y("http_authentication_type", _ts,
-                        M.serving.default_http_server_authentication_type)
-_y_coord = _y("coordinator", _ts, M.serving.default_coordinator)
-_y_inc_coord = _y("include_coordinator", _ts, M.serving.default_include_coordinator)
-_y_fs_hadoop = _y("fs_hadoop_enabled", _ts, M.serving.always_emit_fs_hadoop_enabled)
-_y_reg_tbl = _y("register_table_procedure_enabled", _ts,
-                 M.serving.always_enable_register_table_procedure)
+# FINAL scalars — every value has the FULL 4-tier cascade applied:
+#   env > YAML > manifest. Downstream bash uses these directly, no re-resolve.
+emit("VAR_FINAL_TRINO_PORT",        _final("trino_serving.port", M.serving.default_trino_port))
+emit("VAR_FINAL_TRINO_HOST",        _final("trino_serving.host", M.serving.default_trino_host))
+emit("VAR_FINAL_TRINO_VERSION",     _final("trino_serving.version", M.versions.trino_server))
+emit("VAR_FINAL_CATALOG_NAME",      _final("iceberg_serving.catalog_name",
+                                       _final("iceberg_writer.catalog_name",
+                                              M.catalogs.default_catalog_name)))
+emit("VAR_FINAL_SERVING_CATALOG",   _final("iceberg_serving.catalog_type",
+                                       M.catalogs.workstation_default_serving_catalog))
+emit("VAR_FINAL_WAREHOUSE_DIR",     _final("iceberg_serving.warehouse_dir",
+                                       _final("iceberg_writer.warehouse_dir", "")))
+emit("VAR_FINAL_CATALOG_URI",       _final("iceberg_serving.catalog_uri",
+                                       _final("iceberg_writer.catalog_uri", "")))
+emit("VAR_FINAL_REST_TOKEN",        _final("iceberg_serving.rest_token",
+                                       _final("iceberg_writer.rest_token", "")))
+emit("VAR_FINAL_REST_WAREHOUSE",    _final("iceberg_serving.rest_warehouse",
+                                       _final("iceberg_writer.rest_warehouse", "")))
+emit("VAR_FINAL_GLUE_REGION",       _final("iceberg_serving.glue_region",
+                                       _final("iceberg_writer.glue_region", "")))
+emit("VAR_FINAL_JDBC_DRIVER",       _final("iceberg_serving.jdbc_driver", ""))
+emit("VAR_FINAL_JDBC_SQLITE_CLASS", _final("iceberg_serving.jdbc_driver",
+                                       M.jdbc.sqlite_class))
+emit("VAR_FINAL_REPO_RUN_DIR",      _final("repo_run_dir", ""))
+emit("VAR_FINAL_NODE_ENVIRONMENT",  _final("trino_serving.node_environment",
+                                       M.serving.default_node_environment))
+emit("VAR_FINAL_HTTP_AUTH_TYPE",    _final("trino_serving.http_authentication_type",
+                                       M.serving.default_http_server_authentication_type))
+emit_bool("VAR_FINAL_COORDINATOR",                  bool(_final("trino_serving.coordinator",
+                                                        M.serving.default_coordinator)))
+emit_bool("VAR_FINAL_INCLUDE_COORDINATOR",          bool(_final("trino_serving.include_coordinator",
+                                                        M.serving.default_include_coordinator)))
+emit_bool("VAR_FINAL_FS_HADOOP_ENABLED",            bool(_final("trino_serving.fs_hadoop_enabled",
+                                                        M.serving.always_emit_fs_hadoop_enabled)))
+emit_bool("VAR_FINAL_REGISTER_TABLE_PROCEDURE_ENABLED",
+         bool(_final("trino_serving.register_table_procedure_enabled",
+                     M.serving.always_enable_register_table_procedure)))
 
-emit("VAR_DEFAULT_PORT",                       _y_trino_port)
-emit("VAR_DEFAULT_HOST",                       _y_trino_host)
-emit("VAR_DEFAULT_TRINO_VERSION",              _y_trino_version)
-emit("VAR_DEFAULT_CATALOG_NAME",               _y_catalog_name)
-emit("VAR_DEFAULT_WRITER_CATALOG",             _y_writer_catalog)
-emit("VAR_DEFAULT_SERVING_CATALOG",            _y_serving_catalog)
-emit("VAR_DEFAULT_JDBC_SQLITE_CLASS",          _y_jdbc_sqlite_class)
-emit("VAR_DEFAULT_NODE_ENVIRONMENT",           _y_node_environment)
-emit("VAR_DEFAULT_HTTP_AUTH_TYPE",             _y_http_auth_type)
-emit_bool("VAR_COORDINATOR",                   bool(_y_coord))
-emit_bool("VAR_INCLUDE_COORDINATOR",           bool(_y_inc_coord))
-emit_bool("VAR_FS_HADOOP_ENABLED",             bool(_y_fs_hadoop))
-emit_bool("VAR_REGISTER_TABLE_PROCEDURE_ENABLED", bool(_y_reg_tbl))
-
-emit("VAR_ENV_REPO_RUN_DIR",                   M.env.repo_run_dir)
-emit("VAR_ENV_TRINO_PORT",                     M.env.trino_port)
-emit("VAR_ENV_TRINO_HOST",                     M.env.trino_host)
-emit("VAR_ENV_TRINO_VERSION",                  M.env.trino_version)
-emit("VAR_ENV_CATALOG_NAME",                   M.env.iceberg_catalog_name)
-emit("VAR_ENV_WRITER_CATALOG_TYPE",            M.env.iceberg_writer_catalog_type)
-emit("VAR_ENV_SERVING_CATALOG_TYPE",           M.env.iceberg_serving_catalog_type)
-emit("VAR_ENV_CATALOG_TYPE_LEGACY",            M.env.iceberg_catalog_type_legacy)
-emit("VAR_ENV_WAREHOUSE_DIR",                  M.env.iceberg_warehouse_dir)
-emit("VAR_ENV_CATALOG_URI",                    M.env.iceberg_catalog_uri)
-emit("VAR_ENV_REST_TOKEN",                     M.env.iceberg_rest_token)
-emit("VAR_ENV_REST_WAREHOUSE",                 M.env.iceberg_rest_warehouse)
-emit("VAR_ENV_GLUE_REGION",                    M.env.iceberg_glue_region)
-emit("VAR_ENV_JDBC_DRIVER",                    M.env.iceberg_jdbc_driver)
-
+# Static path constants (manifest only — these never take user env overrides
+# because they are internal structural layout concerns, not user config).
 emit("VAR_PATH_RESULTS_ELT_RELPATH",              M.paths.repo_run_results_elt_relpath)
 emit("VAR_PATH_USER_REPO_RUN_HOME",               M.paths.default_user_repo_run_home)
 emit("VAR_PATH_TRINO_CACHE_RELPATH",              M.paths.trino_cache_relpath)
@@ -202,16 +210,21 @@ emit("VAR_PATH_TRINO_INSTALL_RELPATH",            M.paths.trino_install_relpath)
 emit("VAR_PATH_ICEBERG_WAREHOUSE_RELPATH",        M.paths.iceberg_warehouse_relpath)
 emit("VAR_PATH_SERVING_JDBC_METASTORE_RELPATH",   M.paths.serving_jdbc_metastore_relpath)
 emit("VAR_PATH_TRINO_TARBALL_TEMPLATE",           M.paths.trino_server_tarball_relpath_template)
-emit("VAR_YAML_REPO_RUN_DIR",                     _y_repo_run_dir)
 lines.append(f'VAR_SERVING_CATALOG_VALIDS="{" ".join(M.catalogs.serving_catalog_type_valid_values)}"')
 lines.append(f'VAR_WRITER_CATALOG_VALIDS="{" ".join(M.catalogs.writer_catalog_type_valid_values)}"')
+
+# User-facing env var names for error messages (documentation strings only;
+# bash never reads os.environ directly after the singleton materializer runs).
+emit("VAR_DOCENV_SERVING_CATALOG_TYPE", "ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE")
+emit("VAR_DOCENV_CATALOG_TYPE_LEGACY",  "ELT_PIPELINE_ICEBERG_CATALOG_TYPE")
+emit("VAR_DOCENV_CATALOG_URI",          "ELT_PIPELINE_ICEBERG_CATALOG_URI")
 
 pathlib.Path(sys.argv[1]).write_text("\n".join(lines) + "\n")
 PY
 then
   _manifest_exit=$?
   cat >&2 <<EOF
-ERROR [run_trino.sh bootstrap]: manifest python emit failed (rc=${_manifest_exit}).
+ERROR [run_trino.sh bootstrap]: singleton Python emit failed (rc=${_manifest_exit}).
   REPO_ROOT   = ${REPO_ROOT}
   PYTHON      = ${_MANIFEST_PYTHON}
   PYTHONPATH  = ${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}
@@ -225,20 +238,18 @@ EOF
   exit 8
 fi
 
-# Source the KEY=VALUE file generated by the manifest python. Validate every
-# scalar we depend on is non-empty.
+# Source the KEY=VALUE file generated by the singleton Python emit.
 set -a
 # shellcheck disable=SC1090
 source "${_MANIFEST_BOOTSTRAP_FILE}"
 set +a
 
 _REQUIRED_SCALARS=(
-  VAR_DEFAULT_PORT VAR_DEFAULT_HOST VAR_DEFAULT_TRINO_VERSION
-  VAR_DEFAULT_CATALOG_NAME VAR_DEFAULT_SERVING_CATALOG VAR_DEFAULT_JDBC_SQLITE_CLASS
-  VAR_DEFAULT_NODE_ENVIRONMENT VAR_DEFAULT_HTTP_AUTH_TYPE
-  VAR_COORDINATOR VAR_INCLUDE_COORDINATOR VAR_FS_HADOOP_ENABLED VAR_REGISTER_TABLE_PROCEDURE_ENABLED
-  VAR_ENV_REPO_RUN_DIR VAR_ENV_TRINO_PORT VAR_ENV_TRINO_HOST VAR_ENV_TRINO_VERSION
-  VAR_ENV_CATALOG_NAME VAR_ENV_SERVING_CATALOG_TYPE VAR_ENV_WAREHOUSE_DIR VAR_ENV_CATALOG_URI
+  VAR_FINAL_TRINO_PORT VAR_FINAL_TRINO_HOST VAR_FINAL_TRINO_VERSION
+  VAR_FINAL_CATALOG_NAME VAR_FINAL_SERVING_CATALOG VAR_FINAL_JDBC_SQLITE_CLASS
+  VAR_FINAL_NODE_ENVIRONMENT VAR_FINAL_HTTP_AUTH_TYPE
+  VAR_FINAL_COORDINATOR VAR_FINAL_INCLUDE_COORDINATOR
+  VAR_FINAL_FS_HADOOP_ENABLED VAR_FINAL_REGISTER_TABLE_PROCEDURE_ENABLED
   VAR_PATH_RESULTS_ELT_RELPATH VAR_PATH_USER_REPO_RUN_HOME VAR_PATH_TRINO_ARTIFACTS_RELPATH
   VAR_PATH_TRINO_INSTALL_RELPATH VAR_PATH_ICEBERG_WAREHOUSE_RELPATH
   VAR_PATH_SERVING_JDBC_METASTORE_RELPATH VAR_PATH_TRINO_TARBALL_TEMPLATE
@@ -252,7 +263,7 @@ for _s in "${_REQUIRED_SCALARS[@]}"; do
 done
 if ((${#_missing[@]} > 0)); then
   cat >&2 <<EOF
-ERROR [run_trino.sh bootstrap]: one or more manifest scalars resolved empty after source.
+ERROR [run_trino.sh bootstrap]: one or more singleton scalars resolved empty after source.
   Missing vars: ${_missing[*]}
   Manifest source: ${_MANIFEST_BOOTSTRAP_FILE}
   Emitted file contents:
@@ -262,57 +273,24 @@ EOF
 fi
 unset _s _missing _REQUIRED_SCALARS _manifest_exit
 
-# Repo run root resolution.
-# Priority (portability contract — ENV is optional override only):
-#   1. User ENV via VAR_ENV_REPO_RUN_DIR → highest (CI/secrets override)
-#   2. YAML runtime.repo_run_dir → no-code portable user sets once after clone
-#   3. Frozen manifest default ($HOME/...) → absolute floor, zero-config workstation
-_rer_override=""
-# Portable "is variable set" check using ${VARNAME+marker — works on bash 3.2
-# (macOS default) AND newer bash; avoids `[[ -v NAME ]]` which chokes on indirect
-# names on older bash (emits: "conditional binary operator expected").
-_rer_set_marker="${!VAR_ENV_REPO_RUN_DIR+SET}"
-if [[ -n "${_rer_set_marker}" ]]; then
-  _rer_override="${!VAR_ENV_REPO_RUN_DIR}"
-fi
-if [[ -n "${_rer_override}" ]]; then
-  REPO_RUN_ELT="${_rer_override%/}/${VAR_PATH_RESULTS_ELT_RELPATH}"
-elif [[ -n "${VAR_YAML_REPO_RUN_DIR}" ]]; then
-  REPO_RUN_ELT="${VAR_YAML_REPO_RUN_DIR%/}/${VAR_PATH_RESULTS_ELT_RELPATH}"
+# Repo run root resolution:
+#   Singleton already applied: ENV ELT_PIPELINE_REPO_RUN_DIR > YAML repo_run_dir
+#   Manifest frozen default applied here as absolute floor.
+if [[ -n "${VAR_FINAL_REPO_RUN_DIR}" ]]; then
+  REPO_RUN_ELT="${VAR_FINAL_REPO_RUN_DIR%/}/${VAR_PATH_RESULTS_ELT_RELPATH}"
 else
   REPO_RUN_ELT="${HOME}/${VAR_PATH_USER_REPO_RUN_HOME}/${VAR_PATH_RESULTS_ELT_RELPATH}"
 fi
-unset _rer_override _rer_set_marker
 
-# _lookup_env VAR_ENV_REF [DEFAULT]
-# Look up a runtime env via its manifest-driven VAR_ENV_* name.  VAR_ENV_REF names
-# the manifest constant that holds the USER-FACING env var name (e.g.
-# VAR_ENV_TRINO_PORT → value is "ELT_PIPELINE_TRINO_PORT").  If that user-facing
-# env var exists and is non-empty, return its value; otherwise return DEFAULT.
-_lookup_env() {
-  local _name_ref="${1}"
-  local _default="${2:-}"
-  local _user_var="${!_name_ref}"
-  if [[ -z "${_user_var}" ]]; then
-    printf '%s' "${_default}"
-    return 0
-  fi
-  local _set_marker="${!_user_var+SET}"
-  if [[ -z "${_set_marker}" ]]; then
-    printf '%s' "${_default}"
-    return 0
-  fi
-  local _user_val="${!_user_var}"
-  if [[ -n "${_user_val}" ]]; then
-    printf '%s' "${_user_val}"
-  else
-    printf '%s' "${_default}"
-  fi
-}
+# ==============================================================
+# SINGLE cascade is COMPLETE.
+# Below here: pure bash consumption of VAR_FINAL_* scalars.
+# NO _lookup_env. NO os.environ re-reads. ZERO drift vectors.
+# ==============================================================
 
-TRINO_PORT="$(_lookup_env VAR_ENV_TRINO_PORT "${VAR_DEFAULT_PORT}")"
-TRINO_HOST="$(_lookup_env VAR_ENV_TRINO_HOST "${VAR_DEFAULT_HOST}")"
-TRINO_VERSION="$(_lookup_env VAR_ENV_TRINO_VERSION "${VAR_DEFAULT_TRINO_VERSION}")"
+TRINO_PORT="${VAR_FINAL_TRINO_PORT}"
+TRINO_HOST="${VAR_FINAL_TRINO_HOST}"
+TRINO_VERSION="${VAR_FINAL_TRINO_VERSION}"
 TRINO_CACHE_DIR="${REPO_RUN_ELT}/${VAR_PATH_TRINO_CACHE_RELPATH}"
 TRINO_HOME_DIR="${TRINO_CACHE_DIR}"
 TRINO_SERVER_NAME="trino-server-${TRINO_VERSION}"
@@ -323,34 +301,31 @@ TRINO_DATA_DIR="${TRINO_RUNTIME}/data"
 TRINO_LOG_DIR="${REPO_RUN_ELT}/${VAR_PATH_TRINO_ARTIFACTS_RELPATH}"
 TRINO_PID_FILE="${TRINO_RUNTIME}/var/run/launcher.pid"
 
-ICEBERG_CATALOG_NAME="$(_lookup_env VAR_ENV_CATALOG_NAME "${VAR_DEFAULT_CATALOG_NAME}")"
+ICEBERG_CATALOG_NAME="${VAR_FINAL_CATALOG_NAME}"
 
-# SERVING_CATALOG_TYPE resolution (Trino serving side only):
-#   1. Canonical user env named by VAR_ENV_SERVING_CATALOG_TYPE
-#   2. Legacy env named by VAR_ENV_CATALOG_TYPE_LEGACY (remap "hadoop" → "jdbc"
-#      since Trino 468 dropped HADOOP from the CatalogType enum).
-_user_serving="$(_lookup_env VAR_ENV_SERVING_CATALOG_TYPE "")"
-if [[ -z "${_user_serving}" ]]; then
-  _legacy="$(_lookup_env VAR_ENV_CATALOG_TYPE_LEGACY "")"
-  if [[ -z "${_legacy}" ]]; then
-    _user_serving="${VAR_DEFAULT_SERVING_CATALOG}"
-  elif [[ "${_legacy}" == "hadoop" ]]; then
-    _user_serving="${VAR_DEFAULT_SERVING_CATALOG}"
-  else
-    _user_serving="${_legacy}"
-  fi
+# SERVING_CATALOG_TYPE: single-source (singleton) + Trino-468-specific
+# hadoop→jdbc remap (legacy env already bridged into singleton during
+# pre-init translation in the Python heredoc).
+_user_serving="${VAR_FINAL_SERVING_CATALOG}"
+if [[ "${_user_serving}" == "hadoop" ]]; then
+  _user_serving="jdbc"
 fi
 SERVING_CATALOG_TYPE="${_user_serving}"
-unset _user_serving _legacy
+unset _user_serving
 
-_warehouse_default="${REPO_RUN_ELT}/${VAR_PATH_ICEBERG_WAREHOUSE_RELPATH}"
-ICEBERG_WAREHOUSE_DIR="$(_lookup_env VAR_ENV_WAREHOUSE_DIR "${_warehouse_default}")"
-unset _warehouse_default
-ICEBERG_CATALOG_URI="$(_lookup_env VAR_ENV_CATALOG_URI "")"
-ICEBERG_REST_TOKEN="$(_lookup_env VAR_ENV_REST_TOKEN "")"
-ICEBERG_REST_WAREHOUSE="$(_lookup_env VAR_ENV_REST_WAREHOUSE "")"
-ICEBERG_GLUE_REGION="$(_lookup_env VAR_ENV_GLUE_REGION "")"
-JDBC_DRIVER="$(_lookup_env VAR_ENV_JDBC_DRIVER "")"
+# ICEBERG_WAREHOUSE_DIR: if singleton left empty (no env + no YAML + no
+# manifest floor for this key), fall back to standard location under
+# the resolved REPO_RUN_ELT (structural layout, mirrors writer default).
+if [[ -n "${VAR_FINAL_WAREHOUSE_DIR}" ]]; then
+  ICEBERG_WAREHOUSE_DIR="${VAR_FINAL_WAREHOUSE_DIR}"
+else
+  ICEBERG_WAREHOUSE_DIR="${REPO_RUN_ELT}/${VAR_PATH_ICEBERG_WAREHOUSE_RELPATH}"
+fi
+ICEBERG_CATALOG_URI="${VAR_FINAL_CATALOG_URI}"
+ICEBERG_REST_TOKEN="${VAR_FINAL_REST_TOKEN}"
+ICEBERG_REST_WAREHOUSE="${VAR_FINAL_REST_WAREHOUSE}"
+ICEBERG_GLUE_REGION="${VAR_FINAL_GLUE_REGION}"
+JDBC_DRIVER="${VAR_FINAL_JDBC_DRIVER}"
 
 # ---------------------------------------------------------------------------
 # Sanity check: every derived path must be absolute AND have zero occurrences
@@ -390,18 +365,17 @@ _path_check ICEBERG_WAREHOUSE_DIR "${ICEBERG_WAREHOUSE_DIR}"
 if [[ "${_path_check_ok}" -ne 1 ]]; then
   cat >&2 <<EOF
 ERROR [run_trino.sh path check]: one or more derived paths resolved invalid (see above).
-  This almost always means the runtime_manifest.py Python emit produced empty
-  VAR_PATH_* scalars, or the user-facing env var referenced by VAR_ENV_REPO_RUN_DIR
-  points at a bad location.  The manifest file is single source of truth:
+  This almost always means runtime_context.get() produced empty VAR_PATH_*
+  scalars, or the user-facing env var ELT_PIPELINE_REPO_RUN_DIR points at a
+  bad location.  The manifest file is single source of truth for paths:
     ${REPO_ROOT}/src/elt_pipeline/config/runtime_manifest.py
   Current resolved scalars (for debugging):
-    VAR_ENV_REPO_RUN_DIR                    = ${VAR_ENV_REPO_RUN_DIR}
-    \${${VAR_ENV_REPO_RUN_DIR}} (user env)  = ${!VAR_ENV_REPO_RUN_DIR:-<unset>}
-    VAR_PATH_USER_REPO_RUN_HOME             = ${VAR_PATH_USER_REPO_RUN_HOME}
-    VAR_PATH_RESULTS_ELT_RELPATH            = ${VAR_PATH_RESULTS_ELT_RELPATH}
-    VAR_PATH_TRINO_INSTALL_RELPATH          = ${VAR_PATH_TRINO_INSTALL_RELPATH}
-    VAR_PATH_TRINO_ARTIFACTS_RELPATH        = ${VAR_PATH_TRINO_ARTIFACTS_RELPATH}
-    VAR_PATH_ICEBERG_WAREHOUSE_RELPATH      = ${VAR_PATH_ICEBERG_WAREHOUSE_RELPATH}
+    VAR_FINAL_REPO_RUN_DIR              = ${VAR_FINAL_REPO_RUN_DIR}
+    VAR_PATH_USER_REPO_RUN_HOME         = ${VAR_PATH_USER_REPO_RUN_HOME}
+    VAR_PATH_RESULTS_ELT_RELPATH        = ${VAR_PATH_RESULTS_ELT_RELPATH}
+    VAR_PATH_TRINO_INSTALL_RELPATH      = ${VAR_PATH_TRINO_INSTALL_RELPATH}
+    VAR_PATH_TRINO_ARTIFACTS_RELPATH    = ${VAR_PATH_TRINO_ARTIFACTS_RELPATH}
+    VAR_PATH_ICEBERG_WAREHOUSE_RELPATH  = ${VAR_PATH_ICEBERG_WAREHOUSE_RELPATH}
 EOF
   exit 10
 fi
@@ -421,9 +395,9 @@ if [[ "${_in_valid}" -ne 1 ]]; then
 ERROR [run_trino.sh catalog check]: SERVING_CATALOG_TYPE=${SERVING_CATALOG_TYPE} is not in the manifest-enumerated valid set.
   Valid values (from runtime_manifest.catalogs.serving_catalog_type_valid_values):
     ${VAR_SERVING_CATALOG_VALIDS}
-  User-facing env vars (choose one):
-    canonical : ${VAR_ENV_SERVING_CATALOG_TYPE}
-    legacy    : ${VAR_ENV_CATALOG_TYPE_LEGACY} (legacy "hadoop" is auto-remapped to "jdbc")
+  User-facing env vars (choose one, resolved through singleton 4-tier cascade):
+    canonical : ${VAR_DOCENV_SERVING_CATALOG_TYPE}
+    legacy    : ${VAR_DOCENV_CATALOG_TYPE_LEGACY} (legacy "hadoop" is auto-remapped to "jdbc" for Trino 468)
 EOF
   exit 11
 fi
@@ -442,7 +416,7 @@ if [[ "${SERVING_CATALOG_TYPE}" == "jdbc" && -z "${ICEBERG_CATALOG_URI}" ]]; the
   SERVING_JDBC_METASTORE_DIR="$(dirname -- "${SERVING_JDBC_METASTORE_PATH}")"
   mkdir -p -- "${SERVING_JDBC_METASTORE_DIR}"
   ICEBERG_CATALOG_URI="jdbc:sqlite:${SERVING_JDBC_METASTORE_PATH}"
-  JDBC_DRIVER="${JDBC_DRIVER:-${VAR_DEFAULT_JDBC_SQLITE_CLASS}}"
+  JDBC_DRIVER="${JDBC_DRIVER:-${VAR_FINAL_JDBC_SQLITE_CLASS}}"
 fi
 
 mkdir -p \
@@ -511,7 +485,7 @@ write_configs() {
   fi
   log "Writing configs into ${TRINO_ETC_DIR}"
   cat > "${TRINO_ETC_DIR}/node.properties" <<EOF
-node.environment=${VAR_DEFAULT_NODE_ENVIRONMENT}
+node.environment=${VAR_FINAL_NODE_ENVIRONMENT}
 node.id=eltp-coordinator-1
 node.data-dir=${TRINO_DATA_DIR}
 EOF
@@ -526,8 +500,8 @@ EOF
 -XX:+ExitOnOutOfMemoryError
 -Djdk.attach.allowAttachSelf=true
 EOF
-  _coordinator_bool="false"; [[ "${VAR_COORDINATOR}" == "1" ]] && _coordinator_bool="true"
-  _include_coord_bool="false"; [[ "${VAR_INCLUDE_COORDINATOR}" == "1" ]] && _include_coord_bool="true"
+  _coordinator_bool="false"; [[ "${VAR_FINAL_COORDINATOR}" == "1" ]] && _coordinator_bool="true"
+  _include_coord_bool="false"; [[ "${VAR_FINAL_INCLUDE_COORDINATOR}" == "1" ]] && _include_coord_bool="true"
   _shared_secret="$(dd if=/dev/urandom bs=1 count=16 2>/dev/null | base64 2>/dev/null || echo 'eltp-dev-static-shared-secret')"
   cat > "${TRINO_ETC_DIR}/config.properties" <<EOF
 coordinator=${_coordinator_bool}
@@ -540,8 +514,8 @@ web-ui.enabled=false
 query.max-memory=2GB
 query.max-memory-per-node=2GB
 node.internal-address=${TRINO_HOST}
-node.environment=${VAR_DEFAULT_NODE_ENVIRONMENT}
-http-server.authentication.type=${VAR_DEFAULT_HTTP_AUTH_TYPE}
+node.environment=${VAR_FINAL_NODE_ENVIRONMENT}
+http-server.authentication.type=${VAR_FINAL_HTTP_AUTH_TYPE}
 internal-communication.shared-secret=eltp-${_shared_secret}
 EOF
   unset _coordinator_bool _include_coord_bool _shared_secret
@@ -550,13 +524,13 @@ EOF
 connector.name=iceberg
 EOF
   _emit_fs_hadoop_enabled=""
-  [[ "${VAR_FS_HADOOP_ENABLED}" == "1" ]] && _emit_fs_hadoop_enabled="true"
+  [[ "${VAR_FINAL_FS_HADOOP_ENABLED}" == "1" ]] && _emit_fs_hadoop_enabled="true"
   _emit_register_table_procedure_enabled=""
-  [[ "${VAR_REGISTER_TABLE_PROCEDURE_ENABLED}" == "1" ]] && _emit_register_table_procedure_enabled="true"
+  [[ "${VAR_FINAL_REGISTER_TABLE_PROCEDURE_ENABLED}" == "1" ]] && _emit_register_table_procedure_enabled="true"
   case "${SERVING_CATALOG_TYPE}" in
     jdbc)
       if [[ -z "${ICEBERG_CATALOG_URI}" ]]; then
-        echo "ERROR: ${VAR_ENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=jdbc (or omit to enable AUTO sqlite workstation default)." >&2
+        echo "ERROR: ${VAR_DOCENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=jdbc (or omit to enable AUTO sqlite workstation default)." >&2
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
@@ -580,7 +554,7 @@ EOF
       ;;
     rest)
       if [[ -z "${ICEBERG_CATALOG_URI}" ]]; then
-        echo "ERROR: ${VAR_ENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=rest." >&2
+        echo "ERROR: ${VAR_DOCENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=rest." >&2
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
@@ -603,7 +577,7 @@ EOF
       ;;
     nessie)
       if [[ -z "${ICEBERG_CATALOG_URI}" ]]; then
-        echo "ERROR: ${VAR_ENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=nessie." >&2
+        echo "ERROR: ${VAR_DOCENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=nessie." >&2
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
@@ -628,7 +602,7 @@ EOF
       ;;
     snowflake)
       if [[ -z "${ICEBERG_CATALOG_URI}" ]]; then
-        echo "ERROR: ${VAR_ENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=snowflake." >&2
+        echo "ERROR: ${VAR_DOCENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=snowflake." >&2
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
@@ -667,7 +641,7 @@ EOF
       fi
       ;;
     *)
-      echo "ERROR: unsupported ${VAR_ENV_SERVING_CATALOG_TYPE}=${SERVING_CATALOG_TYPE} (valid: ${VAR_SERVING_CATALOG_VALIDS})" >&2
+      echo "ERROR: unsupported ${VAR_DOCENV_SERVING_CATALOG_TYPE}=${SERVING_CATALOG_TYPE} (valid: ${VAR_SERVING_CATALOG_VALIDS})" >&2
       exit 4
       ;;
   esac
@@ -726,8 +700,8 @@ case "${action}" in
     echo "jdbc_endpoint: jdbc:trino://${TRINO_HOST}:${TRINO_PORT}/${ICEBERG_CATALOG_NAME}"
     echo "iceberg_warehouse: ${ICEBERG_WAREHOUSE_DIR}"
     echo "catalog_name: ${ICEBERG_CATALOG_NAME}"
-    echo "catalog_type: ${ICEBERG_CATALOG_TYPE}"
-    case "${ICEBERG_CATALOG_TYPE}" in
+    echo "catalog_type: ${SERVING_CATALOG_TYPE}"
+    case "${SERVING_CATALOG_TYPE}" in
       jdbc)  echo "jdbc_catalog_uri: ${ICEBERG_CATALOG_URI}" ;;
       rest)
         echo "rest_catalog_uri: ${ICEBERG_CATALOG_URI}"
@@ -761,7 +735,7 @@ TRINO_HOME_DIR=${TRINO_HOME_DIR}
 TRINO_PORT=${TRINO_PORT}
 TRINO_HOST=${TRINO_HOST}
 ICEBERG_CATALOG_NAME=${ICEBERG_CATALOG_NAME}
-ICEBERG_CATALOG_TYPE=${ICEBERG_CATALOG_TYPE}
+ICEBERG_CATALOG_TYPE=${SERVING_CATALOG_TYPE}
 ICEBERG_WAREHOUSE_DIR=${ICEBERG_WAREHOUSE_DIR}
 ICEBERG_CATALOG_URI=${ICEBERG_CATALOG_URI}
 ICEBERG_REST_TOKEN_PROVIDED=$([[ -n "${ICEBERG_REST_TOKEN}" ]] && echo yes || echo no)

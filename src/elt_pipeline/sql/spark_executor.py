@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 
 from pyspark.errors import PySparkException
 from pyspark.sql import DataFrame, SparkSession
 
+from elt_pipeline.config import runtime_context
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.path_utils import join_paths
@@ -31,44 +31,42 @@ from elt_pipeline.sql.models import (
     SqlValidationResult,
 )
 
-_ICEBERG_ENABLED_ENV_VAR = runtime_manifest.env.iceberg_enabled
-_ICEBERG_CATALOG_NAME_ENV_VAR = runtime_manifest.env.iceberg_catalog_name
 _DEFAULT_ICEBERG_CATALOG_NAME = runtime_manifest.catalogs.default_catalog_name
 
 
 def _is_iceberg_enabled(spark: SparkSession) -> bool:
     """Return True if Iceberg is active for the given Spark session.
 
-    3-tier resolution (consistent with the 4-tier portability contract — tiers
-    1-3 are captured in the Spark conf itself because build_spark_session
-    applies them before the session is returned):
+    Mercell/Camellos 3-tier resolution (single cascade through singleton):
       1. Spark session conf (builder already applied CLI arg > ENV > YAML > manifest)
          → If ``spark.sql.extensions`` contains the Iceberg extension class, it's ON.
-      2. ENV ELT_PIPELINE_ICEBERG_ENABLED (legacy override — if set, must match;
-         explicit False here short-circuits even if extensions are loaded).
-      3. Fallback → False (opt-in model pre-Gate OD-I1; post-OD-I1: YAML sets True
-         and builder sets extension → True via tier 1).
+      2. runtime_context singleton (``spark.enable_iceberg``) — explicit boolean
+         from the single materializer (False short-circuits even if extensions loaded).
+      3. Fallback → presence of extensions in Spark conf.
     """
     try:
         conf_val = spark.conf.get("spark.sql.extensions", "")
     except Exception:  # noqa: BLE001
         conf_val = ""
     has_extension = runtime_manifest.classes.iceberg_spark_extensions.split(".")[-1] in conf_val
-    env_enabled = os.environ.get(_ICEBERG_ENABLED_ENV_VAR, "").lower()
-    if env_enabled in ("false", "0", "no", "off"):
-        return False
-    if env_enabled in ("true", "1", "yes", "on"):
-        return True
+    ctx_val = runtime_context.get("spark.enable_iceberg")
+    if ctx_val is not None:
+        ctx_raw = str(ctx_val).strip().lower()
+        if ctx_raw in ("false", "0", "no", "off"):
+            return False
+        if ctx_raw in ("true", "1", "yes", "on"):
+            return True
     return has_extension
 
 
 def _iceberg_catalog_name(spark: SparkSession | None = None) -> str:
     """Resolve the active Iceberg catalog name.
 
-    Preference (mirrors the cascade):
+    Mercell/Camellos precedence (single cascade):
       1. ``spark.sql.defaultCatalog`` — *actually* active in the session
          (build_spark_session applies CLI arg > ENV > YAML > manifest here).
-      2. ENV ``ELT_PIPELINE_ICEBERG_CATALOG_NAME`` — explicit user override.
+      2. runtime_context singleton (``iceberg_writer.catalog_name``, fallback
+         ``iceberg_serving.catalog_name``) — single materializer path.
       3. Frozen manifest default — ``iceberg``.
     """
     if spark is not None:
@@ -78,10 +76,13 @@ def _iceberg_catalog_name(spark: SparkSession | None = None) -> str:
             default_catalog = ""
         if default_catalog:
             return default_catalog
-    return (
-        os.environ.get(_ICEBERG_CATALOG_NAME_ENV_VAR, "").strip()
-        or _DEFAULT_ICEBERG_CATALOG_NAME
-    )
+    writer_name = runtime_context.get("iceberg_writer.catalog_name")
+    if writer_name and str(writer_name).strip():
+        return str(writer_name).strip()
+    serving_name = runtime_context.get("iceberg_serving.catalog_name")
+    if serving_name and str(serving_name).strip():
+        return str(serving_name).strip()
+    return _DEFAULT_ICEBERG_CATALOG_NAME
 
 
 def _iceberg_table_fq(

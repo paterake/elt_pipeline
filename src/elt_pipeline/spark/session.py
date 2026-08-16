@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,54 +8,25 @@ from pyspark.sql import SparkSession
 from elt_pipeline.config import runtime_context
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 
-_MASTER_ENV_VAR = runtime_manifest.env.spark_master
 _DEFAULT_MASTER = runtime_manifest.spark.default_master
 
-_ICEBERG_ENABLED_ENV_VAR = runtime_manifest.env.iceberg_enabled
-_ICEBERG_CATALOG_NAME_ENV_VAR = runtime_manifest.env.iceberg_catalog_name
 _DEFAULT_ICEBERG_CATALOG_NAME = runtime_manifest.catalogs.default_catalog_name
-_ICEBERG_WAREHOUSE_ENV_VAR = runtime_manifest.env.iceberg_warehouse_dir
-_ICEBERG_WRITER_CATALOG_TYPE_ENV_VAR = runtime_manifest.env.iceberg_writer_catalog_type
-_ICEBERG_CATALOG_TYPE_ENV_VAR = runtime_manifest.env.iceberg_catalog_type_legacy
-_DEFAULT_ICEBERG_WRITER_CATALOG_TYPE = runtime_manifest.catalogs.workstation_default_writer_catalog
-_ICEBERG_CATALOG_URI_ENV_VAR = runtime_manifest.env.iceberg_catalog_uri
-_ICEBERG_REST_TOKEN_ENV_VAR = runtime_manifest.env.iceberg_rest_token
-_ICEBERG_REST_WAREHOUSE_ENV_VAR = runtime_manifest.env.iceberg_rest_warehouse
-_ICEBERG_GLUE_REGION_ENV_VAR = runtime_manifest.env.iceberg_glue_region
-_IVY_HOME_ENV_VAR = runtime_manifest.env.ivy_home
-_DEFAULT_IVY_HOME_RELPATH = runtime_manifest.paths.spark_ivy_relpath
-_JDBC_JARS_EXTRA_ENV_VAR = runtime_manifest.env.iceberg_jdbc_jars_extra
-_JDBC_DRIVER_ENV_VAR = runtime_manifest.env.iceberg_jdbc_driver
-_JDBC_SCHEMA_VERSION_ENV_VAR = runtime_manifest.env.iceberg_jdbc_schema_version
-
-
-def _resolve_final(*, singleton_key: str, env_var: str, manifest_default: Any) -> Any:
-    """Return final value: singleton (Mercell/Camellos) > os.environ > manifest_floor.
-
-    The singleton is the primary (materialized once at entry point); os.environ
-    only kicks in for direct API callers that haven't gone through main()
-    (back-compat); manifest always the floor.
-
-    **Note:** Callers should still prefer explicit params as the absolute
-    highest tier; this function covers the remaining tiers (2-4).
-    """
-    if runtime_context.is_initialized():
-        v = runtime_context.get(singleton_key)
-        if v not in (None, ""):
-            return v
-    if env_var:
-        env_val = os.environ.get(env_var)
-        if env_val not in (None, ""):
-            return env_val
-    return manifest_default
+_DEFAULT_ICEBERG_WRITER_CATALOG_TYPE = (
+    runtime_manifest.catalogs.workstation_default_writer_catalog
+)
 
 
 def _iceberg_enabled() -> bool:
-    final = _resolve_final(
-        singleton_key="spark.enable_iceberg",
-        env_var=_ICEBERG_ENABLED_ENV_VAR,
-        manifest_default="true",
-    )
+    """Return True if Iceberg is enabled: singleton > manifest floor.
+
+    The singleton (materialized once at entry point via runtime_context) is
+    the ONLY config source. Direct API callers who skip main() still get
+    env-var resolution through the singleton's lazy _ensure() bootstrap —
+    the same single materializer, never a scattered os.environ read.
+    """
+    final = runtime_context.get("spark.enable_iceberg")
+    if final is None or final == "":
+        final = "true"
     raw = str(final).strip().lower()
     if raw in {"", "1", "true", "yes", "on"}:
         return True
@@ -70,11 +40,16 @@ def _iceberg_enabled() -> bool:
 
 
 def _resolve_ivy_home() -> str:
-    configured = os.environ.get(_IVY_HOME_ENV_VAR, "").strip()
-    if configured:
-        return configured
+    """Resolve ivy_home strictly through the runtime_context singleton.
+
+    The singleton materializer handles all tiers (ENV > YAML > cwd/.cache/ivy2)
+    in exactly ONE place. No direct os.environ reads here.
+    """
+    configured = runtime_context.get("spark.ivy_home")
+    if configured and str(configured).strip():
+        return str(configured).strip()
     cwd = Path.cwd()
-    default = cwd / _DEFAULT_IVY_HOME_RELPATH
+    default = cwd / runtime_manifest.paths.spark_ivy_relpath
     return str(default.resolve())
 
 
@@ -93,16 +68,17 @@ def build_spark_session(
 ) -> SparkSession:
     """Build a SparkSession, wiring the Iceberg V2 DataSource when iceberg_enabled.
 
-    Mercell/Camellos 4-tier precedence (highest to lowest):
+    Mercell/Camellos 3-tier precedence (highest to lowest, single cascade):
       1. Explicit function parameters (caller-injected).
-      2. runtime_context singleton — materialized once at main() entry point.
-      3. ``runtime_overrides`` dict (transitionary: explicit-pass back-compat).
-      4. ``os.environ`` ELT_PIPELINE_* — back-compat for direct API callers.
-      5. Frozen defaults from ``runtime_manifest`` (single floor of truth).
+      2. runtime_context singleton — materialized ONCE at main() entry point.
+         This singleton materializer is the ONLY place env/YAML/manifest
+         cascade is applied; direct API callers who skip main() still get
+         the full cascade through the singleton's lazy _ensure() bootstrap.
+      3. ``runtime_overrides`` dict (transitionary explicit-pass back-compat).
+      4. Frozen defaults from ``runtime_manifest`` (single floor of truth).
 
-    The singleton (tier 2) is the primary path for normal framework runs;
-    tiers 3+ only kick in for direct API callers that haven't gone through
-    the main() bootstrap (back-compat during transition).
+    **Zero os.environ reads here.** All environmental resolution flows through
+    the singleton materializer — one writer, many readers, zero drift.
     """
     ro = (runtime_overrides or {}).copy()
     writer_conf = (
@@ -117,20 +93,21 @@ def build_spark_session(
         param: Any,
         *,
         singleton_key: str,
-        env_var: str = "",
         override_path: tuple[str, ...] | None = None,
     ):
         """Mercell/Camellos precedence:
-        param > SINGLETON (final) > ro dict > os.environ > manifest_default.
+        param > SINGLETON (final via runtime_context) > ro dict > None.
+
+        The singleton's lazy bootstrap (``_ensure()``) handles the full
+        4-tier cascade (arg > ENV > YAML > manifest) ONCE; callers that
+        skip ``main()`` still get env-var resolution through this single
+        materializer path — no duplicated os.environ reads here.
         """
         if param is not None and not (isinstance(param, str) and param == ""):
             return param
-        # Singleton (materialized once at entry) = the canonical single-source tier
-        if runtime_context.is_initialized():
-            sv = runtime_context.get(singleton_key)
-            if sv is not None and sv != "":
-                return sv
-        # Explicit-pass runtime_overrides dict (legacy transition)
+        sv = runtime_context.get(singleton_key)
+        if sv is not None and sv != "":
+            return sv
         if override_path:
             node: Any = ro
             for key in override_path:
@@ -140,11 +117,6 @@ def build_spark_session(
                     node = None
             if node is not None and node != "":
                 return node
-        # os.environ back-compat for direct API callers (not through main())
-        if env_var:
-            env_val = os.environ.get(env_var)
-            if env_val is not None and env_val != "":
-                return env_val
         return None
 
     resolved_app_name = (
@@ -155,7 +127,6 @@ def build_spark_session(
         _resolve(
             master,
             singleton_key="spark.master",
-            env_var=_MASTER_ENV_VAR,
             override_path=("spark", "master"),
         )
         or _DEFAULT_MASTER
@@ -215,7 +186,6 @@ def build_spark_session(
         from_conf = _resolve(
             None,
             singleton_key="spark.enable_iceberg",
-            env_var=_ICEBERG_ENABLED_ENV_VAR,
             override_path=("spark", "enable_iceberg"),
         )
         if from_conf is None:
@@ -223,60 +193,20 @@ def build_spark_session(
         else:
             use_iceberg = str(from_conf).strip().lower() in {"1", "true", "yes", "on"}
     if use_iceberg:
-        os.environ[_ICEBERG_ENABLED_ENV_VAR] = "true"
-        w_warehouse = (
-            _resolve(
-                iceberg_warehouse_dir,
-                singleton_key="iceberg_writer.warehouse_dir",
-                env_var=_ICEBERG_WAREHOUSE_ENV_VAR,
-                override_path=("iceberg_writer", "warehouse_dir"),
-            )
-            or _resolve(
-                iceberg_warehouse_dir,
-                singleton_key="iceberg_serving.warehouse_dir",
-                env_var=_ICEBERG_WAREHOUSE_ENV_VAR,
-                override_path=("iceberg_serving", "warehouse_dir"),
-            )
-            or None
-        )
-        if w_warehouse:
-            os.environ[_ICEBERG_WAREHOUSE_ENV_VAR] = str(w_warehouse)
-        cname = (
-            _resolve(
-                iceberg_catalog_name,
-                singleton_key="iceberg_writer.catalog_name",
-                env_var=_ICEBERG_CATALOG_NAME_ENV_VAR,
-                override_path=("iceberg_writer", "catalog_name"),
-            )
-            or _resolve(
-                iceberg_catalog_name,
-                singleton_key="iceberg_serving.catalog_name",
-                env_var=_ICEBERG_CATALOG_NAME_ENV_VAR,
-                override_path=("iceberg_serving", "catalog_name"),
-            )
-            or None
-        )
-        if cname:
-            os.environ[_ICEBERG_CATALOG_NAME_ENV_VAR] = str(cname)
         ctype_param = _resolve(
             iceberg_catalog_type,
             singleton_key="iceberg_writer.catalog_type",
-            env_var=_ICEBERG_WRITER_CATALOG_TYPE_ENV_VAR,
             override_path=("iceberg_writer", "catalog_type"),
         )
         if ctype_param is None:
             ctype_param = _resolve(
                 None,
                 singleton_key="iceberg_writer.catalog_type",
-                env_var=_ICEBERG_CATALOG_TYPE_ENV_VAR,
                 override_path=("iceberg_writer", "catalog_type"),
             )
-        if ctype_param is not None and str(ctype_param).strip():
-            os.environ[_ICEBERG_WRITER_CATALOG_TYPE_ENV_VAR] = str(ctype_param).lower()
         ivy_home = Path(_resolve_ivy_home())
         (ivy_home / "cache").mkdir(parents=True, exist_ok=True)
         (ivy_home / "jars").mkdir(parents=True, exist_ok=True)
-        os.environ["IVY_HOME"] = str(ivy_home)
         builder = builder.config("spark.jars.ivy", str(ivy_home))
         builder = builder.config(
             "spark.sql.extensions",
@@ -286,13 +216,11 @@ def build_spark_session(
             _resolve(
                 iceberg_catalog_name,
                 singleton_key="iceberg_writer.catalog_name",
-                env_var=_ICEBERG_CATALOG_NAME_ENV_VAR,
                 override_path=("iceberg_writer", "catalog_name"),
             )
             or _resolve(
                 None,
                 singleton_key="iceberg_serving.catalog_name",
-                env_var="",
                 override_path=("iceberg_serving", "catalog_name"),
             )
             or _DEFAULT_ICEBERG_CATALOG_NAME
@@ -300,13 +228,11 @@ def build_spark_session(
         ctype_a = _resolve(
             iceberg_catalog_type,
             singleton_key="iceberg_writer.catalog_type",
-            env_var=_ICEBERG_WRITER_CATALOG_TYPE_ENV_VAR,
             override_path=("iceberg_writer", "catalog_type"),
         )
         ctype_b = _resolve(
             None,
             singleton_key="iceberg_writer.catalog_type",
-            env_var=_ICEBERG_CATALOG_TYPE_ENV_VAR,
             override_path=("iceberg_writer", "catalog_type"),
         )
         ctype_default = writer_conf.get("catalog_type") or _DEFAULT_ICEBERG_WRITER_CATALOG_TYPE
@@ -321,13 +247,11 @@ def build_spark_session(
             _resolve(
                 iceberg_catalog_uri,
                 singleton_key="iceberg_writer.catalog_uri",
-                env_var=_ICEBERG_CATALOG_URI_ENV_VAR,
                 override_path=("iceberg_serving", "catalog_uri"),
             )
             or _resolve(
                 None,
                 singleton_key="iceberg_serving.catalog_uri",
-                env_var="",
                 override_path=("iceberg_serving", "catalog_uri"),
             )
         )
@@ -335,13 +259,11 @@ def build_spark_session(
             _resolve(
                 iceberg_warehouse_dir,
                 singleton_key="iceberg_writer.warehouse_dir",
-                env_var=_ICEBERG_WAREHOUSE_ENV_VAR,
                 override_path=("iceberg_writer", "warehouse_dir"),
             )
             or _resolve(
                 None,
                 singleton_key="iceberg_serving.warehouse_dir",
-                env_var="",
                 override_path=("iceberg_serving", "warehouse_dir"),
             )
         )
@@ -349,26 +271,22 @@ def build_spark_session(
             _resolve(
                 iceberg_rest_token,
                 singleton_key="iceberg_writer.rest_token",
-                env_var=_ICEBERG_REST_TOKEN_ENV_VAR,
                 override_path=("iceberg_serving", "rest_token"),
             )
             or _resolve(
                 None,
                 singleton_key="iceberg_serving.catalog_uri",
-                env_var="",
                 override_path=("iceberg_serving", "rest_token"),
             )
         )
         rest_warehouse = _resolve(
             iceberg_rest_warehouse,
             singleton_key="iceberg_writer.rest_warehouse",
-            env_var=_ICEBERG_REST_WAREHOUSE_ENV_VAR,
             override_path=("iceberg_serving", "rest_warehouse"),
         )
         glue_region = _resolve(
             iceberg_glue_region,
             singleton_key="iceberg_writer.glue_region",
-            env_var=_ICEBERG_GLUE_REGION_ENV_VAR,
             override_path=("iceberg_serving", "glue_region"),
         )
 
@@ -380,7 +298,6 @@ def build_spark_session(
             extra = _resolve(
                 None,
                 singleton_key="iceberg_serving.jdbc_jars_extra",
-                env_var=_JDBC_JARS_EXTRA_ENV_VAR,
                 override_path=None,
             )
             extra = str(extra).strip() if extra else ""
@@ -420,8 +337,9 @@ def build_spark_session(
         elif catalog_type == "jdbc":
             if not catalog_uri:
                 raise ValueError(
-                    f"{_ICEBERG_WRITER_CATALOG_TYPE_ENV_VAR}=jdbc requires "
-                    f"iceberg_catalog_uri (env var {_ICEBERG_CATALOG_URI_ENV_VAR})"
+                    "iceberg_writer.catalog_type=jdbc requires "
+                    "iceberg_catalog_uri (config key iceberg_writer.catalog_uri "
+                    "or env var ELT_PIPELINE_ICEBERG_CATALOG_URI)"
                 )
             builder = builder.config(
                 "spark.sql.catalog.spark_catalog",
@@ -450,13 +368,11 @@ def build_spark_session(
             jdbc_driver = _resolve(
                 None,
                 singleton_key="iceberg_serving.jdbc_driver",
-                env_var=_JDBC_DRIVER_ENV_VAR,
                 override_path=None,
             )
             schema_version = _resolve(
                 None,
                 singleton_key="iceberg_serving.jdbc_schema_version",
-                env_var=_JDBC_SCHEMA_VERSION_ENV_VAR,
                 override_path=None,
             )
             schema_version = schema_version or "V1"
@@ -489,8 +405,9 @@ def build_spark_session(
         elif catalog_type == "rest":
             if not catalog_uri:
                 raise ValueError(
-                    f"{_ICEBERG_WRITER_CATALOG_TYPE_ENV_VAR}=rest requires "
-                    f"iceberg_catalog_uri (env var {_ICEBERG_CATALOG_URI_ENV_VAR})"
+                    "iceberg_writer.catalog_type=rest requires "
+                    "iceberg_catalog_uri (config key iceberg_writer.catalog_uri "
+                    "or env var ELT_PIPELINE_ICEBERG_CATALOG_URI)"
                 )
             builder = builder.config(
                 "spark.sql.catalog.spark_catalog",

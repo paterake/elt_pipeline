@@ -723,7 +723,6 @@ def _resolve_iceberg_session_kwargs(
     if enabled is None:
         return kwargs
     kwargs["iceberg_enabled"] = enabled
-    import os as _os
 
     ro = runtime_overrides if isinstance(runtime_overrides, dict) else {}
     writer_conf = (
@@ -733,62 +732,72 @@ def _resolve_iceberg_session_kwargs(
         ro.get("iceberg_serving", {}) if isinstance(ro.get("iceberg_serving"), dict) else {}
     )
 
-    def _pick(*, argname: str, envkey: str, runtime_subkey: str | None, runtime_conf: dict | None):
+    def _pick(
+        *,
+        argname: str,
+        singleton_keys: tuple[str, ...],
+        runtime_subkey: str | None,
+        runtime_conf: dict | None,
+    ):
         val = getattr(args, argname, None)
         if val:
             return val
-        env_val = _os.environ.get(envkey, "").strip()
-        if env_val:
-            return env_val
+        for skey in singleton_keys:
+            sv = runtime_context.get(skey)
+            if sv is not None and sv != "":
+                return sv
         if runtime_subkey and runtime_conf:
             rval = runtime_conf.get(runtime_subkey)
             if rval not in (None, ""):
                 return rval
         return None
 
-    env = runtime_manifest.env
     catalog_name = _pick(
         argname="iceberg_catalog_name",
-        envkey=env.iceberg_catalog_name,
+        singleton_keys=("iceberg_writer.catalog_name", "iceberg_serving.catalog_name"),
         runtime_subkey="catalog_name",
         runtime_conf=writer_conf or serving_conf,
     )
+    catalog_type_arg = getattr(args, "iceberg_writer_catalog_type", None) or getattr(
+        args, "iceberg_catalog_type", None
+    )
+    _ct_singleton = runtime_context.get("iceberg_writer.catalog_type")
+    if _ct_singleton in (None, ""):
+        _ct_singleton = runtime_context.get("iceberg_serving.catalog_type")
     catalog_type = (
-        getattr(args, "iceberg_writer_catalog_type", None)
-        or getattr(args, "iceberg_catalog_type", None)
-        or _os.environ.get(env.iceberg_writer_catalog_type, "").strip()
-        or _os.environ.get(env.iceberg_catalog_type_legacy, "").strip()
+        catalog_type_arg
+        or (_ct_singleton if _ct_singleton not in (None, "") else None)
         or writer_conf.get("catalog_type")
         or serving_conf.get("catalog_type")
         or None
     )
     catalog_uri = _pick(
         argname="iceberg_catalog_uri",
-        envkey=env.iceberg_catalog_uri,
+        singleton_keys=("iceberg_writer.catalog_uri", "iceberg_serving.catalog_uri"),
         runtime_subkey="catalog_uri",
         runtime_conf=serving_conf,
     )
     warehouse_dir = _pick(
         argname="iceberg_warehouse_dir",
-        envkey=env.iceberg_warehouse_dir,
+        singleton_keys=("iceberg_writer.warehouse_dir", "iceberg_serving.warehouse_dir"),
         runtime_subkey="warehouse_dir",
         runtime_conf=writer_conf,
     )
     rest_token = _pick(
         argname="iceberg_rest_token",
-        envkey=env.iceberg_rest_token,
+        singleton_keys=("iceberg_writer.rest_token", "iceberg_serving.rest_token"),
         runtime_subkey="rest_token",
         runtime_conf=serving_conf,
     )
     rest_warehouse = _pick(
         argname="iceberg_rest_warehouse",
-        envkey=env.iceberg_rest_warehouse,
+        singleton_keys=("iceberg_writer.rest_warehouse", "iceberg_serving.rest_warehouse"),
         runtime_subkey="rest_warehouse",
         runtime_conf=serving_conf,
     )
     glue_region = _pick(
         argname="iceberg_glue_region",
-        envkey=env.iceberg_glue_region,
+        singleton_keys=("iceberg_writer.glue_region", "iceberg_serving.glue_region"),
         runtime_subkey="glue_region",
         runtime_conf=serving_conf,
     )

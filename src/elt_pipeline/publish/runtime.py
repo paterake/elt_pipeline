@@ -13,6 +13,7 @@ from pathlib import Path
 
 from pyspark.sql import Row, SparkSession
 
+from elt_pipeline.config import runtime_context
 from elt_pipeline.ingest.storage import LocalArtifactStore
 from elt_pipeline.integrations import LineageAdapter, build_lineage_adapter
 from elt_pipeline.publish.models import (
@@ -58,8 +59,8 @@ _PUBLISH_MAX_ROWS_DEFAULT = 1_000_000
 
 
 def _resolve_publish_max_rows() -> int:
-    raw = os.environ.get(_PUBLISH_MAX_ROWS_ENV_VAR)
-    if raw is None:
+    raw = runtime_context.get("publish.max_rows")
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         return _PUBLISH_MAX_ROWS_DEFAULT
     try:
         value = int(raw)

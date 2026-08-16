@@ -51,8 +51,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..shared.infra import runtime_manifest
 from .loader import load_runtime_overrides
+from .runtime_manifest import runtime_manifest
 
 # ---------------------------------------------------------------------------
 # Singleton storage
@@ -268,14 +268,14 @@ def _materialize(
         _final(
             env.spark_shuffle_partitions,
             ("spark", "shuffle_partitions"),
-            runtime_manifest.spark_defaults.shuffle_partitions,
+            runtime_manifest.spark.default_shuffle_partitions,
         )
     )
     spark_conf["default_parallelism"] = int(
         _final(
             env.spark_default_parallelism,
             ("spark", "default_parallelism"),
-            runtime_manifest.spark_defaults.default_parallelism,
+            runtime_manifest.spark.default_parallelism,
         )
     )
     spark_conf["enable_iceberg"] = (
@@ -298,7 +298,7 @@ def _materialize(
         _final(
             env.spark_aqe,
             ("spark", "adaptive_query_execution"),
-            runtime_manifest.spark_defaults.aqe_enabled,
+            runtime_manifest.spark.default_adaptive_enabled,
         )
     )
     # normalize AQE to bool if string
@@ -379,7 +379,7 @@ def _materialize(
         "",
     )
     serving_conf["jdbc_driver"] = _final(
-        env.iceberg_serving_jdbc_driver,
+        env.iceberg_jdbc_driver,
         ("iceberg_serving", "jdbc_driver"),
         "org.sqlite.JDBC",
     )
@@ -408,7 +408,99 @@ def _materialize(
             serv.default_trino_xmx_mb,
         )
     )
+    trino_conf["http_authentication_type"] = _final(
+        None,
+        ("trino_serving", "http_authentication_type"),
+        serv.default_http_server_authentication_type,
+    )
+    trino_conf["coordinator"] = bool(
+        _final(
+            None,
+            ("trino_serving", "coordinator"),
+            serv.default_coordinator,
+        )
+    )
+    trino_conf["include_coordinator"] = bool(
+        _final(
+            None,
+            ("trino_serving", "include_coordinator"),
+            serv.default_include_coordinator,
+        )
+    )
+    trino_conf["node_environment"] = _final(
+        None,
+        ("trino_serving", "node_environment"),
+        serv.default_node_environment,
+    )
+    trino_conf["fs_hadoop_enabled"] = bool(
+        _final(
+            None,
+            ("trino_serving", "fs_hadoop_enabled"),
+            serv.always_emit_fs_hadoop_enabled,
+        )
+    )
+    trino_conf["register_table_procedure_enabled"] = bool(
+        _final(
+            None,
+            ("trino_serving", "register_table_procedure_enabled"),
+            serv.always_enable_register_table_procedure,
+        )
+    )
     nested["trino_serving"] = trino_conf
+
+    # --- spark extra (ivy_home)
+    ivy_env_raw = os.environ.get(env.ivy_home, "").strip()
+    if ivy_env_raw:
+        spark_conf["ivy_home"] = str(Path(ivy_env_raw).expanduser().resolve())
+    else:
+        yaml_ivy = (
+            _dotted_get(ro if isinstance(ro, dict) else {}, "spark.ivy_home")
+        )
+        if yaml_ivy not in (None, ""):
+            spark_conf["ivy_home"] = str(Path(str(yaml_ivy)).expanduser().resolve())
+        else:
+            import pathlib as _pl
+
+            cwd_default = _pl.Path.cwd() / paths.spark_ivy_relpath
+            spark_conf["ivy_home"] = str(cwd_default.resolve())
+    nested["spark"] = spark_conf
+
+    # --- iceberg_serving extra (jdbc fields)
+    serving_conf["jdbc_jars_extra"] = _final(
+        env.iceberg_jdbc_jars_extra,
+        ("iceberg_serving", "jdbc_jars_extra"),
+        "",
+    )
+    serving_conf["jdbc_schema_version"] = _final(
+        env.iceberg_jdbc_schema_version,
+        ("iceberg_serving", "jdbc_schema_version"),
+        "V1",
+    )
+
+    # --- publish
+    _pmr_env = os.environ.get(env.publish_max_rows, "").strip()
+    if _pmr_env:
+        try:
+            _pmr_val = int(_pmr_env)
+            if _pmr_val > 0:
+                publish_max_rows = _pmr_val
+            else:
+                publish_max_rows = 1_000_000
+        except (TypeError, ValueError):
+            publish_max_rows = 1_000_000
+    else:
+        _pmr_yaml = (
+            _dotted_get(ro if isinstance(ro, dict) else {}, "publish.max_rows")
+        )
+        if _pmr_yaml not in (None, ""):
+            try:
+                _pmr_val = int(str(_pmr_yaml))
+                publish_max_rows = _pmr_val if _pmr_val > 0 else 1_000_000
+            except (TypeError, ValueError):
+                publish_max_rows = 1_000_000
+        else:
+            publish_max_rows = 1_000_000
+    nested["publish"] = {"max_rows": publish_max_rows}
 
     # --- env overlay metadata
     nested["environment"] = environment_arg
