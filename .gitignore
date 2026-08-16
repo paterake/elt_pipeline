@@ -205,6 +205,9 @@ cython_debug/
 # .vscode/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
+# Ad-hoc debug / spike scripts — transient developer scratch, never source-controlled
+_dbg_*.py
+_spike_*.py
 
 # Ruff stuff:
 .ruff_cache/

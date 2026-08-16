@@ -27,7 +27,7 @@ from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
-from elt_pipeline.shared.path_utils import path_relative_to
+from elt_pipeline.shared.path_utils import path_exists, path_read_bytes, path_relative_to
 from elt_pipeline.shared.runtime import RunContext, StageName
 
 
@@ -56,12 +56,30 @@ def _payload_to_text(payload: Any, *, manifest: Level1ArtifactManifest) -> str:
                     "data_path": manifest.data_path,
                 },
             ) from exc
-    if isinstance(payload, str):
-        return payload
     if isinstance(payload, (dict, list)):
         import json
 
         return json.dumps(payload)
+    if isinstance(payload, str):
+        if path_exists(payload) and ("/" in payload or "\\" in payload):
+            raw = path_read_bytes(payload)
+            payload_format = manifest.payload_format.strip().lower()
+            encoding = "utf-8-sig" if payload_format == "csv" else "utf-8"
+            try:
+                return raw.decode(encoding)
+            except UnicodeDecodeError as exc:
+                raise PipelineError(
+                    message=f"Failed to decode payload for artifact {manifest.artifact_id}",
+                    error_code="NORMALIZE_TEXT_DECODE_FAILED",
+                    error_category="input_contract_error",
+                    retryable=False,
+                    context={
+                        "artifact_id": manifest.artifact_id,
+                        "data_path": manifest.data_path,
+                        "file_path": payload,
+                    },
+                ) from exc
+        return payload
     return str(payload)
 
 
@@ -78,7 +96,7 @@ def _read_raw_dataframe(
         rdd = spark.sparkContext.parallelize(lines)
         return spark.read.csv(rdd, header=True, inferSchema=False)
     rdd = spark.sparkContext.parallelize([text])
-    return spark.read.json(rdd)
+    return spark.read.option("multiline", "true").json(rdd)
 
 
 def normalize_level1_to_local_level2(

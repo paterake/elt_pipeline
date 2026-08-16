@@ -1062,6 +1062,7 @@ def main(argv: list[str] | None = None) -> int:
                             warehouse_root=args.warehouse_root,
                             root_path=args.root_path,
                             environment=sql_environment,
+                            run_id=run_context.run_id,
                             partition_values=partition_values,
                         ).plan(
                             compiled_models,

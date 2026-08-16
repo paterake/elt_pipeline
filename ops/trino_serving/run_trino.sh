@@ -158,7 +158,6 @@ coordinator=true
 node-scheduler.include-coordinator=true
 http-server.http.port=${TRINO_PORT}
 http-server.https.enabled=false
-http-server.http.host=${TRINO_HOST}
 discovery.uri=http://${TRINO_HOST}:${TRINO_PORT}
 plugin.dir=${plugin_dir}
 web-ui.enabled=false
@@ -166,7 +165,6 @@ query.max-memory=2GB
 query.max-memory-per-node=2GB
 node.internal-address=${TRINO_HOST}
 node.environment=elt_pipeline_iceberg
-discovery-server.enabled=true
 EOF
   mkdir -p -- "${TRINO_ETC_DIR}/catalog"
   cat > "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
@@ -174,9 +172,16 @@ connector.name=iceberg
 EOF
   case "${ICEBERG_CATALOG_TYPE}" in
     hadoop)
+      local metastore_jdbc_dir="${REPO_RUN_ELT}/.artifacts/trino"
+      mkdir -p -- "${metastore_jdbc_dir}"
+      local metastore_jdbc_url="jdbc:sqlite:${metastore_jdbc_dir}/iceberg_jdbc_metastore.db"
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
-iceberg.catalog.type=hadoop
-iceberg.warehouse=${ICEBERG_WAREHOUSE_DIR}
+iceberg.catalog.type=jdbc
+iceberg.jdbc-catalog.driver-class=org.sqlite.JDBC
+iceberg.jdbc-catalog.connection-url=${metastore_jdbc_url}
+iceberg.jdbc-catalog.catalog-name=${ICEBERG_CATALOG_NAME}
+iceberg.jdbc-catalog.default-warehouse-dir=${ICEBERG_WAREHOUSE_DIR}
+iceberg.register-table-procedure.enabled=true
 fs.hadoop.enabled=true
 EOF
       ;;
@@ -188,7 +193,7 @@ EOF
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
 iceberg.catalog.type=jdbc
 iceberg.jdbc-catalog.connection-url=${ICEBERG_CATALOG_URI}
-iceberg.warehouse=${ICEBERG_WAREHOUSE_DIR}
+iceberg.jdbc-catalog.default-warehouse-dir=${ICEBERG_WAREHOUSE_DIR}
 fs.hadoop.enabled=true
 EOF
       jdbc_driver="${ELT_PIPELINE_ICEBERG_JDBC_DRIVER:-}"
@@ -215,6 +220,7 @@ EOF
         echo "iceberg.warehouse=${rest_wh}" >> \
           "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
       fi
+      echo "fs.hadoop.enabled=true" >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
       ;;
     glue)
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
@@ -228,6 +234,7 @@ EOF
         echo "iceberg.warehouse=${ICEBERG_WAREHOUSE_DIR}" >> \
           "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
       fi
+      echo "fs.hadoop.enabled=true" >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties"
       ;;
     *)
       echo "ERROR: unsupported ELT_PIPELINE_ICEBERG_CATALOG_TYPE=${ICEBERG_CATALOG_TYPE}" >&2

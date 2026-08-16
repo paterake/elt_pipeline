@@ -17,16 +17,18 @@
 -- overwrites exactly one day's snapshot — the WHERE clause and the write partition are
 -- the same key, unlike the default late-arrival pattern where they differ.
 
-cte_snapshot_base AS (
+WITH cte_snapshot_base AS (
     SELECT
         order_id,
         amount,
         order_date AS business_date,
-        customer_id,
+        customer__customer_id AS customer_id,
+        customer__name AS customer_name,
         source_name,
         ingest_date,
         _run_id
     FROM raw_orders
-    WHERE ingest_date = '{{ window.start_date }}'
+    WHERE order_date >= '{{ window.start_date }}'
+      AND order_date <= '{{ window.end_date }}'
 )
 SELECT * FROM cte_snapshot_base

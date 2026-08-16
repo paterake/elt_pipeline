@@ -61,7 +61,7 @@ def _write_json_file(path: str, payload: Any) -> None:
 
 def _summarize_parquet_dir(data_dir: str) -> tuple[int, int]:
     try:
-        part_files = sorted(path_glob(join_paths(data_dir, "*.parquet")))
+        part_files = sorted(path_glob(data_dir, "*.parquet"))
     except PipelineError:
         return (0, 0)
     file_count = len(part_files)

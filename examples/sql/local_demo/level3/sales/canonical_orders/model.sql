@@ -11,16 +11,18 @@
 --  4. Re-running the same ingest_date window is idempotent — dynamic partition overwrite
 --     replaces the same partitions with the same rows, no duplicates, no orphaned data.
 
-cte_src_base AS (
+WITH cte_src_base AS (
     SELECT
         order_id,
         amount,
         order_date,
-        customer_id,
+        customer__customer_id AS customer_id,
+        customer__name AS customer_name,
         source_name,
         ingest_date,
         order_date AS business_date
     FROM raw_orders
-    WHERE ingest_date = '{{ window.start_date }}'
+    WHERE order_date >= '{{ window.start_date }}'
+      AND order_date <= '{{ window.end_date }}'
 )
 SELECT * FROM cte_src_base

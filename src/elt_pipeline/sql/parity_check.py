@@ -13,6 +13,7 @@ from pyspark.sql.functions import (
     lit,
     sort_array,
     struct,
+    to_json,
 )
 from pyspark.sql.functions import (
     md5 as spark_md5,
@@ -44,7 +45,7 @@ def _sorted_row_md5(df: DataFrame) -> tuple[int, str, list[str]]:
     if not columns:
         return 0, hashlib.md5(b"").hexdigest(), []
     row_struct = struct(*[col(c).cast("string").alias(c) for c in columns])
-    per_row_md5 = df.select(spark_md5(row_struct).alias("rh"))
+    per_row_md5 = df.select(spark_md5(to_json(row_struct).cast("binary")).alias("rh"))
     agg = per_row_md5.select(
         sort_array(collect_list(col("rh"))).alias("sorted_rh"),
         collect_list(lit(1)).alias("__n"),

@@ -61,6 +61,10 @@ class Level2DatasetLocator:
                     "search_root": entity_root,
                 },
             )
-        dataframe = self.spark.read.option("mergeSchema", "true").parquet(entity_root)
+        dataframe = (
+            self.spark.read.option("mergeSchema", "true")
+            .option("basePath", entity_root)
+            .parquet(*matches)
+        )
         dataframe = dataframe.filter(dataframe["table"] == sanitized_table)
         return dataframe

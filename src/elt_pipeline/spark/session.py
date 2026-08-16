@@ -70,6 +70,13 @@ def build_spark_session(
 
     use_iceberg = iceberg_enabled if iceberg_enabled is not None else _iceberg_enabled()
     if use_iceberg:
+        os.environ[_ICEBERG_ENABLED_ENV_VAR] = "true"
+        if iceberg_warehouse_dir:
+            os.environ[_ICEBERG_WAREHOUSE_ENV_VAR] = iceberg_warehouse_dir
+        if iceberg_catalog_name:
+            os.environ[_ICEBERG_CATALOG_NAME_ENV_VAR] = iceberg_catalog_name
+        if iceberg_catalog_type:
+            os.environ[_ICEBERG_CATALOG_TYPE_ENV_VAR] = iceberg_catalog_type.lower()
         ivy_home = Path(_resolve_ivy_home())
         (ivy_home / "cache").mkdir(parents=True, exist_ok=True)
         (ivy_home / "jars").mkdir(parents=True, exist_ok=True)
