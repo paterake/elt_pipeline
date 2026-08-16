@@ -13,8 +13,14 @@ from typing import Any
 from pydantic import ValidationError
 from pyspark.sql import SparkSession
 
-from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_config
+from elt_pipeline.config import runtime_context
+from elt_pipeline.config.loader import (
+    load_pipeline_config,
+    load_runtime_overrides,
+    resolve_entity_config,
+)
 from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntityConfig
+from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.ingest import (
     KafkaConnectorConfig,
     LocalArtifactStore,
@@ -83,8 +89,49 @@ from elt_pipeline.sql.models import SqlModelStage
 # Default local scratch locations for runtime output. Both live under a single gitignored
 # `.ignore/` directory so bare commands run from the repo do not pollute the working tree.
 # Override with --root-path / --warehouse-root for real runs.
-_DEFAULT_ROOT_PATH = ".ignore/runtime"
-_DEFAULT_WAREHOUSE_ROOT = ".ignore/warehouse"
+# PORTABILITY: Final defaults for argparse are computed via _cli_default_root_paths()
+# below using the same 4-tier cascade as every other consumer:
+#   explicit arg > ENV ELT_PIPELINE_CONFIG_PATH > pipeline.yaml runtime.cli_default_* > manifest
+# No single env var is ever required to be set.
+_MODULE_MANIFEST_ROOT_PATH_DEFAULT: str = runtime_manifest.paths.cli_default_root_path
+_MODULE_MANIFEST_WH_PATH_DEFAULT: str = runtime_manifest.paths.cli_default_warehouse_root
+
+
+@dataclass(frozen=True)
+class _RuntimeContext:
+    """Composed once at the CLI entry point (Mercell/Camellos runner pattern).
+
+    Captures every runtime decision *explicitly* so downstream helpers never
+    have to re-discover repo roots, re-read config YAML, or rely on ENV-only
+    fallbacks — the single source of truth for a given invocation.
+
+    Single-writer principle: only main() calls _compose_runtime_context();
+    helpers take ``runtime_overrides`` / ``config_path`` explicitly.
+    """
+
+    repo_root: Path
+    """Absolute path to the repo root (used as relative anchor)."""
+
+    config_path_resolved: Path | None
+    """Absolute path to the pipeline YAML actually used, or None if fallback to manifest-only."""
+
+    config_path_source: str
+    """Human-readable origin of config_path.
+
+    Values: "arg" | "env" | "repo_root_auto" | "manifest_fallback".
+    """
+
+    environment: str | None
+    """Selected environment overlay name (e.g. "default", "staging", None)"""
+
+    runtime_overrides: dict[str, Any]
+    """4-tier composed overrides: already passed through load_runtime_overrides()."""
+
+    cli_default_root_path: str
+    """Final --root-path default value for argparse defaults (after YAML cascade)."""
+
+    cli_default_warehouse_root: str
+    """Final --warehouse-root default value for argparse defaults (after YAML cascade)."""
 
 
 @dataclass(frozen=True)
@@ -113,154 +160,533 @@ class _PublishRerunSelection:
     backfill: bool
 
 
-def _repo_run_dir() -> Path | None:
+def _load_runtime_overrides_from_env_or_args(
+    *,
+    config_path: str | None = None,
+    environment: str | None = None,
+) -> dict[str, Any]:
+    """Resolve runtime overrides (YAML → frozen manifest defaults fallback).
+
+    Order used to locate a config path (first hit wins — portability contract:
+    NO single env var is ever required; root pipeline.yaml is auto-discovered):
+      1. Explicit ``config_path`` function argument (highest — CLI --config-path).
+      2. ``ELT_PIPELINE_CONFIG_PATH`` environment variable (optional override
+         for multi-config setups, CI, or running outside the repo tree).
+      3. ``<repo-root>/pipeline.yaml`` — the user-edited clone-n-run root
+         config file. Present on every clone; this is the default no-code
+         path.
+      4. No config found → return empty dict; caller falls back to ENV +
+         manifest frozen defaults (absolute floor — still zero crashes).
+    """
     import os as _os
 
-    explicit = _os.environ.get("ELT_PIPELINE_REPO_RUN_DIR", "").strip()
+    resolved_path: str | None = config_path
+    if not resolved_path:
+        cp_key = "ELT_PIPELINE_CONFIG_PATH"
+        resolved_path = _os.environ.get(cp_key, "").strip() or None
+    if resolved_path is None:
+        repo_root_candidate = Path(__file__).resolve().parents[2] / "pipeline.yaml"
+        if repo_root_candidate.is_file():
+            resolved_path = str(repo_root_candidate)
+    if resolved_path is None:
+        return {}
+    return load_runtime_overrides(resolved_path, environment=environment)
+
+
+def _repo_run_dir(
+    runtime_overrides: dict[str, Any] | None = None,
+) -> Path | None:
+    """Return the repo_run root directory.
+
+    Cascade: ENV ELT_PIPELINE_REPO_RUN_DIR > YAML runtime.repo_run_dir > frozen manifest default.
+    """
+    import os as _os
+
+    explicit = _os.environ.get(runtime_manifest.env.repo_run_dir, "").strip()
     if explicit:
         return Path(explicit).expanduser()
+    ro = (
+        runtime_overrides
+        if isinstance(runtime_overrides, dict)
+        else _load_runtime_overrides_from_env_or_args()
+    )
+    yaml_dir = (ro.get("repo_run_dir") if isinstance(ro, dict) else None) or None
+    if yaml_dir:
+        return Path(str(yaml_dir)).expanduser()
     home = Path(_os.path.expanduser("~"))
-    canonical = home / "Documents" / "__data" / "repo_run" / "results" / "elt_pipeline"
-    if canonical.parent.exists():
+    fallback_root = home / runtime_manifest.paths.default_user_repo_run_home
+    canonical = fallback_root / runtime_manifest.paths.repo_run_results_elt_relpath
+    if fallback_root.exists():
         return canonical
     return None
 
 
+def _compose_runtime_context(
+    *,
+    config_path_arg: Path | str | None = None,
+    environment_arg: str | None = None,
+) -> _RuntimeContext:
+    """Entry-point runner (Mercell/Camellos pattern) — compose once, pass everywhere.
+
+    Composes the entire runtime decision matrix *explicitly* at the top of
+    ``main()`` before any subcommand branch runs.  Resulting ``_RuntimeContext``
+    is the single immutable source of truth for the invocation.  **No downstream
+    helper ever re-reads the YAML or re-discovers repo roots via side-channel
+    heuristics** (closes the drift gap identified vs Mercell/Camellos pattern).
+
+    Returns:
+        Frozen _RuntimeContext populated with every decision needed downstream:
+          ``repo_root``                    absolute anchor, never re-computed
+          ``config_path_resolved``         the YAML actually loaded, or None
+          ``config_path_source``           "arg" | "env" | "repo_root_auto" | "manifest_fallback"
+          ``environment``                  selected environment overlay name
+          ``runtime_overrides``            dict result of load_runtime_overrides()
+          ``cli_default_root_path``       argparse default (after YAML cascade)
+          ``cli_default_warehouse_root``   argparse default (after YAML cascade)
+    """
+    import os as _os
+
+    # 1) Repo root — explicit anchor. cli.py lives at src/elt_pipeline/cli.py so
+    #    parents[2] = <repo_root>.  We compute ONCE and cache as the anchor.
+    repo_root = Path(__file__).resolve().parents[2]
+
+    # 2) Config-path cascade — arg > ENV > repo_root/pipeline.yaml > None.
+    cp_source: str
+    config_path_resolved: Path | None
+    if config_path_arg:
+        config_path_resolved = Path(str(config_path_arg)).resolve()
+        cp_source = "arg"
+    else:
+        env_cp = _os.environ.get("ELT_PIPELINE_CONFIG_PATH", "").strip()
+        if env_cp:
+            config_path_resolved = Path(env_cp).resolve()
+            cp_source = "env"
+        else:
+            auto_candidate = repo_root / "pipeline.yaml"
+            if auto_candidate.is_file():
+                config_path_resolved = auto_candidate
+                cp_source = "repo_root_auto"
+            else:
+                config_path_resolved = None
+                cp_source = "manifest_fallback"
+
+    # 3) Runtime overrides — loaded ONCE here, with environment overlay applied.
+    if config_path_resolved is not None:
+        ro = load_runtime_overrides(str(config_path_resolved), environment=environment_arg)
+    else:
+        ro = {}
+
+    # 4) CLI default paths for argparse — repo_run_dir (ENV > YAML) trumps manifest.
+    rrd = _repo_run_dir(runtime_overrides=ro)
+    if rrd is not None:
+        root_default = str((rrd / "runtime").as_posix())
+        wh_default = str((rrd / "warehouse").as_posix())
+    else:
+        yaml_root = (
+            ro.get("cli_default_root_path") if isinstance(ro, dict) else None
+        ) or None
+        yaml_wh = (
+            ro.get("cli_default_warehouse_root") if isinstance(ro, dict) else None
+        ) or None
+        root_default = (
+            str(yaml_root) if yaml_root else _MODULE_MANIFEST_ROOT_PATH_DEFAULT
+        )
+        wh_default = str(yaml_wh) if yaml_wh else _MODULE_MANIFEST_WH_PATH_DEFAULT
+
+    return _RuntimeContext(
+        repo_root=repo_root,
+        config_path_resolved=config_path_resolved,
+        config_path_source=cp_source,
+        environment=environment_arg,
+        runtime_overrides=ro,
+        cli_default_root_path=root_default,
+        cli_default_warehouse_root=wh_default,
+    )
+
+
 def _resolve_defaults_for_repo_run() -> tuple[str, str]:
     target = _repo_run_dir()
-    if target is None:
-        return _DEFAULT_ROOT_PATH, _DEFAULT_WAREHOUSE_ROOT
-    root = str((target / "runtime").as_posix())
-    warehouse = str((target / "warehouse").as_posix())
-    return root, warehouse
+    if target is not None:
+        root = str((target / "runtime").as_posix())
+        warehouse = str((target / "warehouse").as_posix())
+        return root, warehouse
+    ro = _load_runtime_overrides_from_env_or_args(config_path=None, environment=None)
+    yaml_root = (
+        ro.get("cli_default_root_path") if isinstance(ro, dict) else None
+    ) or None
+    yaml_wh = (
+        ro.get("cli_default_warehouse_root") if isinstance(ro, dict) else None
+    ) or None
+    root = str(yaml_root) if yaml_root else _MODULE_MANIFEST_ROOT_PATH_DEFAULT
+    wh = str(yaml_wh) if yaml_wh else _MODULE_MANIFEST_WH_PATH_DEFAULT
+    return root, wh
 
 
 _DEFAULT_ROOT_PATH_EVAL, _DEFAULT_WAREHOUSE_ROOT_EVAL = _resolve_defaults_for_repo_run()
+_DEFAULT_ROOT_PATH: str = _DEFAULT_ROOT_PATH_EVAL
+_DEFAULT_WAREHOUSE_ROOT: str = _DEFAULT_WAREHOUSE_ROOT_EVAL
 
 
-def _iceberg_effective_enabled(args: Any) -> bool | None:
+def _iceberg_effective_enabled(
+    args: Any, *, runtime_overrides: dict[str, Any] | None = None
+) -> bool | None:
+    """Return True if Iceberg is enabled, None if no tier matched.
+
+    3-tier precedence (Mercell/Camellos):
+      1. CLI/args (explicit --iceberg-enabled flag)            — highest
+      2. runtime_context singleton (final materialized value)  — primary
+      3. runtime_overrides explicit-pass (legacy)              — transition
+      4. manifest frozen default = None → caller decides
+
+    **Zero os.environ reads.**  The singleton materializer at main() is the
+    only place that reads ``ELT_PIPELINE_*`` env vars.
+    """
     explicit = getattr(args, "iceberg_enabled", None)
     if explicit is True:
         return True
-    import os as _os
 
-    env = _os.environ.get("ELT_PIPELINE_ICEBERG_ENABLED", "false").lower()
-    if env in ("true", "1", "yes", "on"):
-        return True
+    # Singleton — single source of truth (Mercell/Camellos)
+    if runtime_context.is_initialized():
+        final_val = runtime_context.get("spark.enable_iceberg")
+        if final_val is True:
+            return True
+        if final_val is False:
+            return False
+
+    # Legacy explicit-pass runtime_overrides dict (transitionary)
+    if isinstance(runtime_overrides, dict):
+        spark_conf = runtime_overrides.get("spark")
+        yaml_value = (
+            spark_conf.get("enable_iceberg") if isinstance(spark_conf, dict) else None
+        )
+        if yaml_value is True:
+            return True
+        if yaml_value is False:
+            return False
+
     return None
 
 
-def _validate_iceberg_catalog_binding(args: Any) -> None:
-    import os as _os
+def _get_from_runtime_overrides(
+    runtime_overrides: dict[str, Any] | None,
+    *override_path: str,
+) -> Any:
+    """Traverse ``runtime_overrides`` along the dotted path, tolerant of any None/missing.
 
-    catalog_type = (
-        getattr(args, "iceberg_catalog_type", None)
-        or _os.environ.get("ELT_PIPELINE_ICEBERG_CATALOG_TYPE", "").strip().lower()
-        or "hadoop"
+    Used to implement the 3rd tier of the cascade (YAML overrides).
+    Returns the leaf value, or ``None`` if any intermediate node is missing or not a dict.
+    """
+    node: Any = runtime_overrides
+    if not isinstance(node, dict):
+        return None
+    for key in override_path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _validate_iceberg_catalog_binding(
+    args: Any,
+    *,
+    runtime_overrides: dict[str, Any] | None = None,
+) -> None:
+    """Validate Iceberg writer/serving catalog binding.
+
+    Uses the Mercell/Camellos runtime_context singleton as the single source
+    of truth for FINAL values — zero ``os.environ`` reads here.  The
+    materializer in :mod:`runtime_context` is the only place that reads
+    ``ELT_PIPELINE_*``.
+    """
+    ro: dict[str, Any] = (
+        runtime_overrides if isinstance(runtime_overrides, dict) else {}
     )
-    catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_URI", ""
+    has_singleton = runtime_context.is_initialized()
+
+    def _singleton_or(key: str, ro_path: tuple[str, ...], manifest_default: Any) -> Any:
+        """Tiered read: singleton (final materialized) > explicit ro > manifest."""
+        if has_singleton:
+            v = runtime_context.get(key)
+            if v not in (None, ""):
+                return v
+        from_ro = _get_from_runtime_overrides(ro, *ro_path)
+        if from_ro not in (None, ""):
+            return from_ro
+        return manifest_default
+
+    def _cli_or(key_attrs: list[str]) -> Any:
+        for a in key_attrs:
+            v = getattr(args, a, None)
+            if v not in (None, ""):
+                return v
+        return None
+
+    writer_catalog_type = (
+        _cli_or(["iceberg_writer_catalog_type", "iceberg_catalog_type"])
+        or _singleton_or(
+            "iceberg_writer.catalog_type",
+            ("iceberg_writer", "catalog_type"),
+            runtime_manifest.catalogs.workstation_default_writer_catalog,
+        )
+        or runtime_manifest.catalogs.workstation_default_writer_catalog
     )
-    if catalog_type in {"jdbc", "rest"} and not catalog_uri:
+    if isinstance(writer_catalog_type, str):
+        writer_catalog_type = writer_catalog_type.strip().lower()
+    serving_catalog_type = (
+        _singleton_or(
+            "iceberg_serving.catalog_type",
+            ("iceberg_serving", "catalog_type"),
+            runtime_manifest.catalogs.workstation_default_serving_catalog,
+        )
+        or runtime_manifest.catalogs.workstation_default_serving_catalog
+    )
+    if isinstance(serving_catalog_type, str):
+        serving_catalog_type = serving_catalog_type.strip().lower()
+    catalog_uri = (
+        _cli_or(["iceberg_catalog_uri"])
+        or _singleton_or(
+            "iceberg_serving.catalog_uri",
+            ("iceberg_serving", "catalog_uri"),
+            "",
+        )
+        or ""
+    )
+    writer_valid = set(runtime_manifest.catalogs.writer_catalog_type_valid_values)
+    serving_valid = set(runtime_manifest.catalogs.serving_catalog_type_valid_values)
+    if writer_catalog_type not in writer_valid:
         raise build_sql_runtime_error(
             code=SqlRuntimeErrorCode.config_invalid,
             message=(
-                f"Iceberg catalog binding requires --iceberg-catalog-uri (or env "
-                f"ELT_PIPELINE_ICEBERG_CATALOG_URI) when --iceberg-catalog-type={catalog_type}."
+                "Unsupported Iceberg WRITER catalog binding type. "
+                f"Supported: {', '.join(sorted(writer_valid))}."
+            ),
+            retryable=False,
+            context={"requested_writer_catalog_type": writer_catalog_type},
+        )
+    if serving_catalog_type not in serving_valid:
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.config_invalid,
+            message=(
+                "Unsupported Iceberg SERVING catalog binding type. "
+                f"Supported: {', '.join(sorted(serving_valid))}."
+            ),
+            retryable=False,
+            context={"requested_serving_catalog_type": serving_catalog_type},
+        )
+    if writer_catalog_type in {"jdbc", "rest"} and not catalog_uri:
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.config_invalid,
+            message=(
+                f"Iceberg writer catalog binding requires --iceberg-catalog-uri (or "
+                f"`runtime_context.get('iceberg_serving.catalog_uri')`) when "
+                f"--iceberg-writer-catalog-type={writer_catalog_type}."
             ),
             retryable=False,
             context={
-                "iceberg_catalog_type": catalog_type,
+                "iceberg_writer_catalog_type": writer_catalog_type,
                 "provided_uri": bool(catalog_uri),
             },
         )
-    if catalog_type not in {"hadoop", "jdbc", "rest", "glue"}:
+    if (
+        serving_catalog_type in {"jdbc", "rest", "nessie", "snowflake"}
+        and not catalog_uri
+        and serving_catalog_type != runtime_manifest.catalogs.workstation_default_serving_catalog
+    ):
         raise build_sql_runtime_error(
             code=SqlRuntimeErrorCode.config_invalid,
             message=(
-                "Unsupported Iceberg catalog binding type. Supported: hadoop, jdbc, rest, glue."
+                "Iceberg serving catalog binding requires "
+                f"`iceberg_serving.catalog_uri` when "
+                f"`iceberg_serving.catalog_type`={serving_catalog_type}. "
+                "Omit SERVING_CATALOG_TYPE (defaults to jdbc+sqlite workstation) "
+                "or provide a catalog URI."
             ),
             retryable=False,
-            context={"requested_catalog_type": catalog_type},
+            context={
+                "iceberg_serving_catalog_type": serving_catalog_type,
+                "provided_uri": bool(catalog_uri),
+            },
         )
 
 
-def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
-    import os as _os
+def _build_serving_endpoint(
+    args: Any, *, runtime_overrides: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Build the Iceberg serving endpoint descriptor.
 
-    enabled = _iceberg_effective_enabled(args)
+    Mercell/Camellos pattern — zero ``os.environ`` reads; all final values
+    come from the runtime_context singleton (materialized once at entry).
+
+    Explicit fallback: explicit CLI args > singleton final > ro dict (legacy) > manifest.
+    """
+    ro: dict[str, Any] = (
+        runtime_overrides if isinstance(runtime_overrides, dict) else {}
+    )
+    has_singleton = runtime_context.is_initialized()
+
+    def _cli(*attrs: str) -> Any:
+        for a in attrs:
+            v = getattr(args, a, None)
+            if v not in (None, ""):
+                return v
+        return None
+
+    def _final(
+        singleton_key: str,
+        ro_path: tuple[str, ...],
+        manifest_default: Any,
+    ) -> Any:
+        """Final value: singleton > explicit ro > manifest."""
+        if has_singleton:
+            v = runtime_context.get(singleton_key)
+            if v not in (None, ""):
+                return v
+        from_ro = _get_from_runtime_overrides(ro, *ro_path)
+        if from_ro not in (None, ""):
+            return from_ro
+        return manifest_default
+
+    enabled = _iceberg_effective_enabled(args, runtime_overrides=ro)
     if enabled is None:
         return None
-    catalog_name = getattr(args, "iceberg_catalog_name", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_NAME"
-    ) or "iceberg"
-    catalog_type = getattr(args, "iceberg_catalog_type", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_TYPE"
-    ) or "hadoop"
-    catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_URI"
+    catalog_name = (
+        _cli("iceberg_catalog_name")
+        or _final(
+            "iceberg_writer.catalog_name",
+            ("iceberg_writer", "catalog_name"),
+            runtime_manifest.catalogs.default_catalog_name,
+        )
+        or _final(
+            "iceberg_serving.catalog_name",
+            ("iceberg_serving", "catalog_name"),
+            runtime_manifest.catalogs.default_catalog_name,
+        )
     )
-    warehouse_dir = getattr(args, "iceberg_warehouse_dir", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR"
+    writer_catalog_type = (
+        _cli("iceberg_writer_catalog_type", "iceberg_catalog_type")
+        or _final(
+            "iceberg_writer.catalog_type",
+            ("iceberg_writer", "catalog_type"),
+            runtime_manifest.catalogs.workstation_default_writer_catalog,
+        )
+    )
+    if isinstance(writer_catalog_type, str):
+        writer_catalog_type = writer_catalog_type.strip().lower()
+    serving_catalog_type = (
+        _final(
+            "iceberg_serving.catalog_type",
+            ("iceberg_serving", "catalog_type"),
+            runtime_manifest.catalogs.workstation_default_serving_catalog,
+        )
+    )
+    if isinstance(serving_catalog_type, str):
+        serving_catalog_type = serving_catalog_type.strip().lower()
+    catalog_uri = (
+        _cli("iceberg_catalog_uri")
+        or _final(
+            "iceberg_serving.catalog_uri",
+            ("iceberg_serving", "catalog_uri"),
+            "",
+        )
+        or ""
+    )
+    warehouse_dir = (
+        _cli("iceberg_warehouse_dir")
+        or _final(
+            "iceberg_writer.warehouse_dir",
+            ("iceberg_writer", "warehouse_dir"),
+            "",
+        )
+        or ""
     )
     if not warehouse_dir:
         warehouse_root = getattr(args, "warehouse_root", None)
         if warehouse_root:
             warehouse_dir = str(Path(path_normalize(warehouse_root)) / "iceberg")
-    trino_port = (
-        _os.environ.get("ELT_PIPELINE_TRINO_PORT", "").strip() or "8080"
+    trino_version = _final(
+        "trino_serving.version",
+        ("trino_serving", "version"),
+        runtime_manifest.versions.trino_server,
     )
-    trino_host = (
-        _os.environ.get("ELT_PIPELINE_TRINO_HOST", "").strip() or "127.0.0.1"
+    trino_port = str(
+        _final(
+            "trino_serving.port",
+            ("trino_serving", "port"),
+            runtime_manifest.serving.default_trino_port,
+        )
     )
-    glue_region = getattr(args, "iceberg_glue_region", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_GLUE_REGION"
+    trino_host = _final(
+        "trino_serving.host",
+        ("trino_serving", "host"),
+        runtime_manifest.serving.default_trino_host,
     )
-    jdbc = (
-        f"jdbc:trino://{trino_host}:{trino_port}/{catalog_name}"
+    glue_region = (
+        _cli("iceberg_glue_region")
+        or _final(
+            "iceberg_writer.glue_region",
+            ("iceberg_writer", "glue_region"),
+            "",
+        )
+        or ""
     )
+    jdbc = f"jdbc:trino://{trino_host}:{trino_port}/{catalog_name}"
+    _env_keys_ref = runtime_manifest.env
     catalog_notes = {
         "hadoop": (
-            "Filesystem-based catalog; local-first, zero-infra dev binding. "
-            "Warehouse dir is the local filesystem root."
+            "Filesystem-based writer catalog; local-first, zero-infra dev binding. "
+            "Warehouse dir is the local filesystem root. Trino SERVING side bridges "
+            "this to jdbc+sqlite (cache-only; data-lake files remain source of truth)."
         ),
         "jdbc": (
-            "JDBC-backed catalog (H2, Postgres, etc). "
-            "Requires --iceberg-catalog-uri (JDBC connection string)."
+            "JDBC-backed catalog (SQLite workstation default, Postgres, MySQL, etc.). "
+            f"Requires {_env_keys_ref.iceberg_catalog_uri} (JDBC connection string) "
+            "on writer side; serving side auto-generates SQLite URI when omitted."
         ),
         "rest": (
             "REST catalog server (Polaris, Nessie, Lakekeeper, Tabular). "
-            "Requires --iceberg-catalog-uri (REST endpoint). "
-            "Token via ELT_PIPELINE_ICEBERG_REST_TOKEN."
+            f"Requires {_env_keys_ref.iceberg_catalog_uri} (REST endpoint). "
+            f"Token via {_env_keys_ref.iceberg_rest_token}."
         ),
         "glue": (
             "AWS Glue Data Catalog (AWS-managed binding). "
-            "Region via --iceberg-glue-region or ELT_PIPELINE_ICEBERG_GLUE_REGION; "
+            f"Region via --iceberg-glue-region or {_env_keys_ref.iceberg_glue_region}; "
             "credentials from standard AWS SDK chain."
+        ),
+        "nessie": (
+            "Apache Nessie catalog (Git-like versioned branch semantics). "
+            f"Configure via {_env_keys_ref.iceberg_serving_catalog_type}=nessie + URI."
+        ),
+        "snowflake": (
+            "Snowflake Iceberg catalog (Snowflake Polaris-backed). "
+            f"Configure via {_env_keys_ref.iceberg_serving_catalog_type}=snowflake + URI "
+            "and appropriate Snowflake credential env vars."
         ),
     }
     return {
         "table_format": "iceberg",
         "catalog_name": catalog_name,
-        "catalog_type": catalog_type,
-        "catalog_type_note": catalog_notes.get(catalog_type, ""),
+        "writer_catalog_type": writer_catalog_type,
+        "serving_catalog_type": serving_catalog_type,
+        "catalog_type_note": catalog_notes.get(serving_catalog_type, ""),
+        "writer_catalog_type_note": catalog_notes.get(writer_catalog_type, ""),
         "catalog_uri_provided": bool(catalog_uri),
         "glue_region_provided": bool(glue_region),
         "warehouse_dir": warehouse_dir or "",
         "engines": {
             "trino": {
+                "version": trino_version,
                 "host": trino_host,
                 "port": trino_port,
                 "jdbc_url": jdbc,
-                "driver_class": "io.trino.jdbc.TrinoDriver",
+                "driver_class": runtime_manifest.classes.trino_jdbc_driver,
                 "script_path": "ops/trino_serving/run_trino.sh",
                 "sample_query": (
                     f"SELECT * FROM {catalog_name}.level3.<domain>.<table_name> LIMIT 10"
                 ),
                 "trino_iceberg_catalog_note": (
-                    "Trino 468 Iceberg connector: set fs.hadoop.enabled=true in the catalog "
-                    "properties when using file:// scheme (local warehouse). See "
-                    "docs/operator/LOCAL_OPERATOR_RUNBOOK.md and ops/trino_serving/run_trino.sh."
+                    f"Trino {trino_version} Iceberg connector: fs.hadoop.enabled=true is "
+                    "auto-injected (see run_trino.sh) when using file:// scheme (local "
+                    "warehouse). See docs/operator/LOCAL_OPERATOR_RUNBOOK.md."
                 ),
             },
             "spark_thrift": {
@@ -288,42 +714,88 @@ def _build_serving_endpoint(args: Any) -> dict[str, Any] | None:
 
 
 def _resolve_iceberg_session_kwargs(
-    *, args: Any, app_name: str
+    *, args: Any, app_name: str, runtime_overrides: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {"app_name": app_name}
+    if runtime_overrides:
+        kwargs["runtime_overrides"] = runtime_overrides
     enabled = _iceberg_effective_enabled(args)
     if enabled is None:
         return kwargs
     kwargs["iceberg_enabled"] = enabled
     import os as _os
 
-    catalog_name = getattr(args, "iceberg_catalog_name", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_NAME"
+    ro = runtime_overrides if isinstance(runtime_overrides, dict) else {}
+    writer_conf = (
+        ro.get("iceberg_writer", {}) if isinstance(ro.get("iceberg_writer"), dict) else {}
     )
-    catalog_type = getattr(args, "iceberg_catalog_type", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_TYPE"
+    serving_conf = (
+        ro.get("iceberg_serving", {}) if isinstance(ro.get("iceberg_serving"), dict) else {}
     )
-    catalog_uri = getattr(args, "iceberg_catalog_uri", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_CATALOG_URI"
+
+    def _pick(*, argname: str, envkey: str, runtime_subkey: str | None, runtime_conf: dict | None):
+        val = getattr(args, argname, None)
+        if val:
+            return val
+        env_val = _os.environ.get(envkey, "").strip()
+        if env_val:
+            return env_val
+        if runtime_subkey and runtime_conf:
+            rval = runtime_conf.get(runtime_subkey)
+            if rval not in (None, ""):
+                return rval
+        return None
+
+    env = runtime_manifest.env
+    catalog_name = _pick(
+        argname="iceberg_catalog_name",
+        envkey=env.iceberg_catalog_name,
+        runtime_subkey="catalog_name",
+        runtime_conf=writer_conf or serving_conf,
     )
-    warehouse_dir = getattr(args, "iceberg_warehouse_dir", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR"
+    catalog_type = (
+        getattr(args, "iceberg_writer_catalog_type", None)
+        or getattr(args, "iceberg_catalog_type", None)
+        or _os.environ.get(env.iceberg_writer_catalog_type, "").strip()
+        or _os.environ.get(env.iceberg_catalog_type_legacy, "").strip()
+        or writer_conf.get("catalog_type")
+        or serving_conf.get("catalog_type")
+        or None
     )
-    rest_token = getattr(args, "iceberg_rest_token", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_REST_TOKEN"
+    catalog_uri = _pick(
+        argname="iceberg_catalog_uri",
+        envkey=env.iceberg_catalog_uri,
+        runtime_subkey="catalog_uri",
+        runtime_conf=serving_conf,
     )
-    rest_warehouse = getattr(args, "iceberg_rest_warehouse", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_REST_WAREHOUSE"
+    warehouse_dir = _pick(
+        argname="iceberg_warehouse_dir",
+        envkey=env.iceberg_warehouse_dir,
+        runtime_subkey="warehouse_dir",
+        runtime_conf=writer_conf,
     )
-    glue_region = getattr(args, "iceberg_glue_region", None) or _os.environ.get(
-        "ELT_PIPELINE_ICEBERG_GLUE_REGION"
+    rest_token = _pick(
+        argname="iceberg_rest_token",
+        envkey=env.iceberg_rest_token,
+        runtime_subkey="rest_token",
+        runtime_conf=serving_conf,
+    )
+    rest_warehouse = _pick(
+        argname="iceberg_rest_warehouse",
+        envkey=env.iceberg_rest_warehouse,
+        runtime_subkey="rest_warehouse",
+        runtime_conf=serving_conf,
+    )
+    glue_region = _pick(
+        argname="iceberg_glue_region",
+        envkey=env.iceberg_glue_region,
+        runtime_subkey="glue_region",
+        runtime_conf=serving_conf,
     )
     if not warehouse_dir and enabled:
         warehouse_root = getattr(args, "warehouse_root", None)
         if warehouse_root:
-            warehouse_dir = str(
-                Path(path_normalize(warehouse_root)) / "iceberg"
-            )
+            warehouse_dir = str(Path(path_normalize(warehouse_root)) / "iceberg")
     if catalog_name:
         kwargs["iceberg_catalog_name"] = catalog_name
     if catalog_type:
@@ -587,6 +1059,18 @@ def build_parser() -> argparse.ArgumentParser:
             "enabled, automatically falls back to <warehouse-root>/iceberg."
         ),
     )
+    run_parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional pipeline YAML config path for runtime infrastructure overrides "
+            "(Spark, Iceberg, Trino). When provided, runtime defaults are loaded from "
+            "the YAML ``runtime:`` section with layering: CLI args > ENV > YAML > "
+            "frozen manifest defaults. Also auto-resolves from env "
+            "``ELT_PIPELINE_CONFIG_PATH`` when not explicitly passed."
+        ),
+    )
 
     publish_parser = subparsers.add_parser(
         "publish",
@@ -618,6 +1102,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--backfill",
         action="store_true",
         help="Treat the publish selection as a targeted historical backfill.",
+    )
+    publish_explain_parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional pipeline YAML config path for runtime infrastructure overrides "
+            "(Spark, Iceberg, Trino). When provided, runtime defaults are loaded from "
+            "the YAML ``runtime:`` section. Also auto-resolves from env "
+            "``ELT_PIPELINE_CONFIG_PATH``."
+        ),
     )
 
     publish_run_parser = publish_subparsers.add_parser(
@@ -712,6 +1207,17 @@ def build_parser() -> argparse.ArgumentParser:
             "enabled, automatically falls back to <warehouse-root>/iceberg."
         ),
     )
+    publish_run_parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional pipeline YAML config path for runtime infrastructure overrides "
+            "(Spark, Iceberg, Trino). When provided, runtime defaults are loaded from "
+            "the YAML ``runtime:`` section. Also auto-resolves from env "
+            "``ELT_PIPELINE_CONFIG_PATH``."
+        ),
+    )
 
     schedule_parser = subparsers.add_parser(
         "schedule",
@@ -739,9 +1245,44 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # ================================================================
+    # Entry-point runner pattern (Mercell/Camellos):
+    #  - FIRST → runtime_context SINGLETON.initialize() — materializes
+    #    EVERY final config value via the 4-tier cascade.
+    #  - From this point on, NO framework component reads os.environ
+    #    or re-reads pipeline.yaml on its own.  Everything reads via
+    #    runtime_context.get(dotted_key) — simple key-value lookup.
+    #  - ALSO compose the legacy _RuntimeContext frozen dataclass into
+    #    a LOCAL VARIABLE renamed to `composed_ctx` (to avoid name
+    #    collision with the runtime_context singleton module).  This
+    #    feeds callers still waiting to be migrated from the explicit
+    #    runtime_overrides dict pattern; eventually all migrate to
+    #    runtime_context.get().
+    # ================================================================
+    _config_path_arg = getattr(args, "config_path", None)
+    _config_path_str = str(_config_path_arg) if _config_path_arg is not None else None
+    _environment_arg = getattr(args, "environment", None)
+
+    # (1) New singleton (Mercell/Camellos) — ONE source of truth for framework.
+    runtime_context.initialize(
+        config_path_arg=_config_path_str,
+        environment_arg=_environment_arg,
+    )
+
     try:
         if args.command == "validate-config":
-            config = load_pipeline_config(args.config_path)
+            if args.config_path is None:
+                explicit_cp = runtime_context.config_path()
+                if explicit_cp is None:
+                    raise ConfigValidationError(
+                        message=(
+                            "Cannot validate-config: no pipeline.yaml found at "
+                            "repo root and --config-path omitted"
+                        ),
+                    )
+                config = load_pipeline_config(str(explicit_cp))
+            else:
+                config = load_pipeline_config(args.config_path)
             if args.source and args.entity:
                 resolved = resolve_entity_config(
                     config,
@@ -765,7 +1306,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "ingest":
-            config = load_pipeline_config(args.config_path)
+            if args.config_path is None:
+                ingest_cp = runtime_context.config_path()
+                if ingest_cp is None:
+                    raise ConfigValidationError(
+                        message=(
+                            "ingest: no pipeline.yaml found at repo root "
+                            "and --config-path omitted"
+                        ),
+                    )
+                config = load_pipeline_config(str(ingest_cp))
+            else:
+                config = load_pipeline_config(args.config_path)
             cli_window = _build_cli_window_selection(
                 window_start=args.window_start,
                 window_end=args.window_end,
@@ -808,7 +1360,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if args.command == "normalize":
-            config = load_pipeline_config(args.config_path)
+            if args.config_path is None:
+                normalize_cp = runtime_context.config_path()
+                if normalize_cp is None:
+                    raise ConfigValidationError(
+                        message=(
+                            "normalize: no pipeline.yaml found at repo root "
+                            "and --config-path omitted"
+                        ),
+                    )
+                config = load_pipeline_config(str(normalize_cp))
+            else:
+                config = load_pipeline_config(args.config_path)
             cli_window = _build_cli_window_selection(
                 window_start=args.window_start,
                 window_end=args.window_end,
@@ -837,8 +1400,21 @@ def main(argv: list[str] | None = None) -> int:
                 selected_environment = args.environment
             selected_source = manifests[0].source_name if args.rerun_run_id else args.source
             selected_entity = manifests[0].entity_name if args.rerun_run_id else args.entity
+            if (
+                args.rerun_run_id
+                and selected_environment != runtime_context.selected_environment()
+            ):
+                rerun_override_ro = _load_runtime_overrides_from_env_or_args(
+                    config_path=str(args.config_path)
+                    if getattr(args, "config_path", None)
+                    else None,
+                    environment=selected_environment,
+                )
+            else:
+                rerun_override_ro = runtime_context.as_runtime_overrides()
             normalize_spark = build_spark_session(
-                app_name=f"elt-pipeline-normalize-{args.job_name}"
+                app_name=f"elt-pipeline-normalize-{args.job_name}",
+                runtime_overrides=rerun_override_ro,
             )
             try:
                 summaries = [
@@ -960,6 +1536,21 @@ def main(argv: list[str] | None = None) -> int:
                     model for model in ordered_models if model.model_id in selected_ids
                 ]
 
+            if (
+                rerun_run_id
+                and sql_environment != runtime_context.selected_environment()
+            ):
+                _sql_runtime_overrides = _load_runtime_overrides_from_env_or_args(
+                    config_path=(
+                        str(args.config_path)
+                        if getattr(args, "config_path", None)
+                        else None
+                    ),
+                    environment=sql_environment,
+                )
+            else:
+                _sql_runtime_overrides = runtime_context.as_runtime_overrides()
+
             run_context = new_run_context(
                 stage=StageName.sql,
                 job_name=getattr(args, "job_name", "sql-compile"),
@@ -1048,12 +1639,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.sql_command == "run":
-                _validate_iceberg_catalog_binding(args)
+                _validate_iceberg_catalog_binding(args, runtime_overrides=_sql_runtime_overrides)
                 if args.validate_only or args.explain:
                     sql_spark = build_spark_session(
                         **_resolve_iceberg_session_kwargs(
                             args=args,
                             app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}",
+                            runtime_overrides=_sql_runtime_overrides,
                         )
                     )
                     try:
@@ -1112,9 +1704,12 @@ def main(argv: list[str] | None = None) -> int:
                     **_resolve_iceberg_session_kwargs(
                         args=args,
                         app_name=f"elt-pipeline-sql-{getattr(args, 'job_name', 'sql-run')}",
+                        runtime_overrides=_sql_runtime_overrides,
                     )
                 )
-                serving_endpoint = _build_serving_endpoint(args)
+                serving_endpoint = _build_serving_endpoint(
+                    args, runtime_overrides=_sql_runtime_overrides
+                )
                 try:
                     result = run_sql_models_locally(
                         root_path=args.root_path,
@@ -1282,6 +1877,21 @@ def main(argv: list[str] | None = None) -> int:
                         },
                     )
 
+            if (
+                rerun_run_id
+                and publish_environment != runtime_context.selected_environment()
+            ):
+                _publish_runtime_overrides = _load_runtime_overrides_from_env_or_args(
+                    config_path=(
+                        str(args.config_path)
+                        if getattr(args, "config_path", None)
+                        else None
+                    ),
+                    environment=publish_environment,
+                )
+            else:
+                _publish_runtime_overrides = runtime_context.as_runtime_overrides()
+
             cli_window = _build_cli_window_selection(
                 window_start=selection_window_start,
                 window_end=selection_window_end,
@@ -1330,14 +1940,19 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
             if args.publish_command == "run":
-                _validate_iceberg_catalog_binding(args)
+                _validate_iceberg_catalog_binding(
+                    args, runtime_overrides=_publish_runtime_overrides
+                )
                 publish_spark = build_spark_session(
                     **_resolve_iceberg_session_kwargs(
                         args=args,
                         app_name=f"elt-pipeline-publish-{getattr(args, 'job_name', 'publish-run')}",
+                        runtime_overrides=_publish_runtime_overrides,
                     )
                 )
-                serving_endpoint = _build_serving_endpoint(args)
+                serving_endpoint = _build_serving_endpoint(
+                    args, runtime_overrides=_publish_runtime_overrides
+                )
                 try:
                     result = run_publish_definitions_locally(
                         root_path=path_normalize(args.root_path),

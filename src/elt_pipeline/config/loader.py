@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from elt_pipeline.config.models import PipelineConfig, ResolvedEntityConfig
+from elt_pipeline.config.models import PipelineConfig, ResolvedEntityConfig, RuntimeConfig
 from elt_pipeline.shared.errors import ConfigValidationError
 from elt_pipeline.shared.path_utils import (
     _StorageScheme,
@@ -39,6 +39,56 @@ def load_pipeline_config(config_path: str | Path) -> PipelineConfig:
             message="Configuration schema validation failed",
             context={"config_path": str(path), "errors": exc.errors(include_url=False)},
         ) from exc
+
+
+def load_runtime_overrides(
+    config_path: str | Path | None,
+    *,
+    environment: str | None = None,
+) -> dict[str, Any]:
+    """Load infrastructure-wide runtime defaults from the pipeline YAML.
+
+    Returns a deep-merged dict shaped like the RuntimeConfig Pydantic model
+    (with None values for fields not set by the user).  If no config_path is
+    provided, return empty dict so callers fall through to ENV + manifest
+    frozen defaults.
+
+    Merge order (later layers win):
+      1. PipelineConfig.runtime (lowest precedence)
+      2. environments["default"].runtime (if present)
+      3. environments[environment].runtime (highest precedence runtime layer,
+         if `environment` is set and the overlay is defined)
+
+    Design contract — portable, no-code friendly:
+      * Users set infrastructure config ONCE in the pipeline YAML runtime
+        section and NEVER need to export ELT_PIPELINE_* env vars on the shell.
+      * ENV vars remain available as the highest-precedence override at call
+        time (useful for CI/secret injection), but are optional for the
+        workstation happy path.
+    """
+    if config_path is None:
+        return {}
+    config = load_pipeline_config(config_path)
+    layers: list[Mapping[str, Any]] = [
+        config.runtime.model_dump(mode="python", exclude_none=True),
+    ]
+    default_env = config.environments.get("default")
+    if default_env is not None:
+        layers.append(
+            default_env.runtime.model_dump(mode="python", exclude_none=True)
+        )
+    if environment:
+        selected = config.environments.get(environment)
+        if selected is not None:
+            layers.append(
+                selected.runtime.model_dump(mode="python", exclude_none=True)
+            )
+    merged = _deep_merge(*layers)
+    # Round-trip through RuntimeConfig to guarantee returned dict only contains
+    # RuntimeConfig fields — arbitrary extra keys from the deep merge are
+    # rejected by Pydantic strictness.
+    sanitized = RuntimeConfig.model_validate(merged)
+    return sanitized.model_dump(mode="python", exclude_none=True)
 
 
 def resolve_entity_config(

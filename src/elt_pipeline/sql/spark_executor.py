@@ -6,6 +6,7 @@ from collections.abc import Callable
 from pyspark.errors import PySparkException
 from pyspark.sql import DataFrame, SparkSession
 
+from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.path_utils import join_paths
 from elt_pipeline.sql._staging_swap import (
@@ -30,28 +31,53 @@ from elt_pipeline.sql.models import (
     SqlValidationResult,
 )
 
-_ICEBERG_ENABLED_ENV_VAR = "ELT_PIPELINE_ICEBERG_ENABLED"
-_ICEBERG_CATALOG_NAME_ENV_VAR = "ELT_PIPELINE_ICEBERG_CATALOG_NAME"
-_DEFAULT_ICEBERG_CATALOG_NAME = "iceberg"
+_ICEBERG_ENABLED_ENV_VAR = runtime_manifest.env.iceberg_enabled
+_ICEBERG_CATALOG_NAME_ENV_VAR = runtime_manifest.env.iceberg_catalog_name
+_DEFAULT_ICEBERG_CATALOG_NAME = runtime_manifest.catalogs.default_catalog_name
 
 
 def _is_iceberg_enabled(spark: SparkSession) -> bool:
-    env_enabled = os.environ.get(_ICEBERG_ENABLED_ENV_VAR, "false").lower() in (
-        "true",
-        "1",
-        "yes",
-        "on",
-    )
-    if not env_enabled:
-        return False
+    """Return True if Iceberg is active for the given Spark session.
+
+    3-tier resolution (consistent with the 4-tier portability contract — tiers
+    1-3 are captured in the Spark conf itself because build_spark_session
+    applies them before the session is returned):
+      1. Spark session conf (builder already applied CLI arg > ENV > YAML > manifest)
+         → If ``spark.sql.extensions`` contains the Iceberg extension class, it's ON.
+      2. ENV ELT_PIPELINE_ICEBERG_ENABLED (legacy override — if set, must match;
+         explicit False here short-circuits even if extensions are loaded).
+      3. Fallback → False (opt-in model pre-Gate OD-I1; post-OD-I1: YAML sets True
+         and builder sets extension → True via tier 1).
+    """
     try:
         conf_val = spark.conf.get("spark.sql.extensions", "")
-    except Exception:  # noqa: BLE001 - conf retrieval failure means non-Iceberg
+    except Exception:  # noqa: BLE001
+        conf_val = ""
+    has_extension = runtime_manifest.classes.iceberg_spark_extensions.split(".")[-1] in conf_val
+    env_enabled = os.environ.get(_ICEBERG_ENABLED_ENV_VAR, "").lower()
+    if env_enabled in ("false", "0", "no", "off"):
         return False
-    return "IcebergSparkSessionExtensions" in conf_val
+    if env_enabled in ("true", "1", "yes", "on"):
+        return True
+    return has_extension
 
 
-def _iceberg_catalog_name() -> str:
+def _iceberg_catalog_name(spark: SparkSession | None = None) -> str:
+    """Resolve the active Iceberg catalog name.
+
+    Preference (mirrors the cascade):
+      1. ``spark.sql.defaultCatalog`` — *actually* active in the session
+         (build_spark_session applies CLI arg > ENV > YAML > manifest here).
+      2. ENV ``ELT_PIPELINE_ICEBERG_CATALOG_NAME`` — explicit user override.
+      3. Frozen manifest default — ``iceberg``.
+    """
+    if spark is not None:
+        try:
+            default_catalog = spark.conf.get("spark.sql.defaultCatalog", "").strip()
+        except Exception:  # noqa: BLE001
+            default_catalog = ""
+        if default_catalog:
+            return default_catalog
     return (
         os.environ.get(_ICEBERG_CATALOG_NAME_ENV_VAR, "").strip()
         or _DEFAULT_ICEBERG_CATALOG_NAME
@@ -59,9 +85,9 @@ def _iceberg_catalog_name() -> str:
 
 
 def _iceberg_table_fq(
-    *, stage: SqlModelStage, domain: str, name: str
+    *, stage: SqlModelStage, domain: str, name: str, spark: SparkSession | None = None
 ) -> str:
-    catalog = _iceberg_catalog_name()
+    catalog = _iceberg_catalog_name(spark)
     return f"{catalog}.{stage.value}.{domain}.{name}"
 
 
@@ -194,6 +220,7 @@ class SparkSqlModelExecutor:
                     stage=dependency.stage,
                     domain=dependency.domain,
                     name=dependency.target_table_name,
+                    spark=self.spark,
                 )
                 dataframe = self.spark.table(dep_fq)
             else:
@@ -346,9 +373,10 @@ class SparkSqlModelExecutor:
         dataframe: DataFrame,
         effective_partition_columns: list[str],
     ) -> int:
-        catalog = _iceberg_catalog_name()
+        catalog = _iceberg_catalog_name(self.spark)
         fq_table = _iceberg_table_fq(
-            stage=model.stage, domain=model.domain, name=model.target_table_name
+            stage=model.stage, domain=model.domain, name=model.target_table_name,
+            spark=self.spark,
         )
         namespace = f"{catalog}.{model.stage.value}.{model.domain}"
         try:
@@ -489,6 +517,7 @@ class SparkSqlModelExecutor:
                     stage=model.stage,
                     domain=model.domain,
                     name=model.target_table_name,
+                    spark=self.spark,
                 )
                 target_df = self.spark.table(fq_table)
             else:

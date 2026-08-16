@@ -1,0 +1,126 @@
+# ============================================================================
+# elt_pipeline — root-level runtime config (the one file you edit after clone)
+# ============================================================================
+#
+# PORTABILITY CONTRACT:
+#   Every infrastructure default flows through this YAML via the
+#   load_runtime_overrides() helper. OS env vars (ELT_PIPELINE_*) are optional
+#   overrides only.  You NEVER need to export a single env variable to run
+#   locally after cloning — just edit the values below.
+#
+# CASCADE (highest → lowest, applied identically in Python + bash):
+#   1. CLI / function arguments (command-line flags passed to uv run elt-pipeline)
+#   2. OS environment variables  →  optional, for CI / secrets / multi-machine
+#   3. This file's runtime: + environments[].runtime:  →  clone-n-run config
+#   4. Frozen dataclass defaults in runtime_manifest.py  →  framework floor
+#
+# 3-LAYER YAML MERGE (for runtime:):
+#   pipeline.runtime                (global defaults — edit here first)
+#   environments["default"].runtime (per-env overlay — workstation baseline)
+#   environments["<env>"].runtime   (per-env override — e.g. staging/prod)
+#
+# Want a different setup for CI or cloud? Add an environments block and pass
+#   --environment=staging  (CLI)   or  set  ELT_PIPELINE_ENVIRONMENT=staging
+#
+# Want to use a DIFFERENT config file entirely?
+#   --config-path=/path/to/other.yaml  (CLI)  or  ELT_PIPELINE_CONFIG_PATH=...
+# ============================================================================
+
+schema_version: "1.0"
+
+# ---------------------------------------------------------------------------
+# GLOBAL RUNTIME DEFAULTS (edit these to configure your workstation / tenant)
+# ---------------------------------------------------------------------------
+runtime:
+  # Local scratch + warehouse root. Default points at the shared repo_run
+  # directory used by every framework tool (Trino cache, Ivy jars, Iceberg
+  # warehouse, metastore SQLite, logs).
+  # Change this if you want data somewhere else (e.g. an external drive).
+  repo_run_dir: "~/Documents/__data/repo_run"
+
+  # -------------------------------------------------------------------------
+  # Spark / ELT compute
+  # -------------------------------------------------------------------------
+  spark:
+    master: "local[*]"
+    app_name: "elt_pipeline"
+    driver_host: "127.0.0.1"
+    driver_bind_address: "127.0.0.1"
+    shuffle_partitions: 4
+    default_parallelism: 4
+    aqe_enabled: true
+    # Iceberg on-by-default now that L3/L4 serving is GREEN (opt-out model).
+    enable_iceberg: true
+
+  # -------------------------------------------------------------------------
+  # Iceberg WRITE path (Spark ELT writer → source of truth)
+  #   hadoop = file-native (zero-service, local POSIX). Do NOT switch unless
+  #            you have a dedicated metastore service.
+  # -------------------------------------------------------------------------
+  iceberg_writer:
+    catalog_type: "hadoop"
+    catalog_name: "iceberg"
+    # If empty → auto-derived as <repo_run_dir>/results/elt_pipeline/warehouse/iceberg
+    warehouse_dir: ""
+
+  # -------------------------------------------------------------------------
+  # Iceberg SERVE path (Trino consumer → read-only JDBC/REST bridge)
+  #   jdbc = auto-SQLite metastore seeded via CALL system.register_table
+  #          (zero-service, disposable; correct for workstation)
+  #   rest = Polaris / Nessie / Lakekeeper / Tabular (requires URI + token)
+  #   glue = AWS Glue Data Catalog (requires region + credentials)
+  # -------------------------------------------------------------------------
+  iceberg_serving:
+    catalog_type: "jdbc"
+    # If empty + catalog_type=jdbc → auto-SQLite at
+    #   <repo_run_dir>/results/elt_pipeline/.artifacts/trino/iceberg_jdbc_metastore.db
+    catalog_uri: ""
+    jdbc_driver: "org.sqlite.JDBC"
+    rest_token: ""
+    rest_warehouse: ""
+    glue_region: ""
+
+  # -------------------------------------------------------------------------
+  # Trino serving engine (workstation mode)
+  # -------------------------------------------------------------------------
+  trino_serving:
+    host: "127.0.0.1"
+    port: 8080
+    # Version is pinned from the manifest to ensure compatibility with the
+    # Java 23 + Iceberg 1.11 toolchain. Only change if you know what you're
+    # doing (Trino upgrades typically require JDK bumps too).
+    version: "468"
+    http_authentication_type: "none"
+    coordinator: true
+    include_coordinator: true
+    node_environment: "elt_pipeline_iceberg"
+    # Hadoop FS factory must be enabled for local POSIX file reads in Trino 468.
+    fs_hadoop_enabled: true
+    # CALL system.register_table(…) is the ONLY supported metastore seeding
+    # mechanism (no SQLite DDL hacks).
+    register_table_procedure_enabled: true
+
+
+# ---------------------------------------------------------------------------
+# PER-ENVIRONMENT OVERLAYS
+#   default    → workstation baseline (merged on top of pipeline.runtime)
+#   <custom>   → add yours, select via --environment=<name> or env var
+# ---------------------------------------------------------------------------
+environments:
+  default:
+    runtime: {}  # workstation baseline — already set above; customize here.
+
+  # Example: CI runner in a container with ephemeral /tmp scratch.
+  # ci:
+  #   runtime:
+  #     repo_run_dir: "/tmp/repo_run"
+  #     spark:
+  #       master: "local[2]"
+  #       shuffle_partitions: 2
+
+
+# ---------------------------------------------------------------------------
+# INGESTION SOURCES (optional — add if you use `uv run elt-pipeline ingest run`)
+#   For examples see: examples/configs/*.yaml
+# ---------------------------------------------------------------------------
+sources: []
