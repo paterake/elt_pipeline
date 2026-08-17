@@ -66,16 +66,16 @@ runtime:
   # -------------------------------------------------------------------------
   # Iceberg SERVE path (Trino consumer → read-only JDBC/REST bridge)
   #   jdbc = auto-SQLite metastore seeded via CALL system.register_table
-  #          (zero-service, disposable; correct for workstation)
+  #          (zero-service, disposable; correct for WORKSTATION P0/P1 proof)
   #   rest = Polaris / Nessie / Lakekeeper / Tabular (requires URI + token)
   #   glue = AWS Glue Data Catalog (requires region + credentials)
   # -------------------------------------------------------------------------
   iceberg_serving:
     catalog_type: "jdbc"
-    # If empty + catalog_type=jdbc → auto-SQLite at
-    #   <repo_run_dir>/results/elt_pipeline/.artifacts/trino/iceberg_jdbc_metastore.db
-    catalog_uri: ""
     jdbc_driver: "org.sqlite.JDBC"
+    # Empty = auto-derive sqlite jdbc URI from manifest template
+    #   jdbc:sqlite:<repo_run_dir>/results/elt_pipeline/.artifacts/trino/iceberg_jdbc_metastore.db
+    catalog_uri: ""
     rest_token: ""
     rest_warehouse: ""
     glue_region: ""

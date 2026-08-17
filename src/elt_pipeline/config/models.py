@@ -35,6 +35,8 @@ class RuntimeIcebergWriterConfig(BaseModel):
     catalog_type: str | None = None
     catalog_name: str | None = None
     warehouse_dir: str | None = None
+    hive_metastore_uri: str | None = None
+    catalog_impl_override: str | None = None
 
 
 class RuntimeIcebergServingConfig(BaseModel):
@@ -48,6 +50,7 @@ class RuntimeIcebergServingConfig(BaseModel):
     rest_token: str | None = None
     rest_warehouse: str | None = None
     glue_region: str | None = None
+    catalog_impl_override: str | None = None
 
 
 class RuntimeTrinoServingConfig(BaseModel):

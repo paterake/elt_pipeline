@@ -55,6 +55,7 @@ class EnvVarNames:
     iceberg_jdbc_jars_extra: str = "ELT_PIPELINE_ICEBERG_JDBC_JARS_EXTRA"
     iceberg_jdbc_driver: str = "ELT_PIPELINE_ICEBERG_JDBC_DRIVER"
     iceberg_jdbc_schema_version: str = "ELT_PIPELINE_ICEBERG_JDBC_SCHEMA_VERSION"
+    iceberg_hive_metastore_uri: str = "ELT_PIPELINE_ICEBERG_HIVE_METASTORE_URI"
 
     # Trino serving
     trino_port: str = "ELT_PIPELINE_TRINO_PORT"
@@ -162,6 +163,7 @@ class ServingDefaults:
 @dataclass(frozen=True)
 class CatalogBindings:
     serving_catalog_type_valid_values: tuple[str, ...] = (
+        "hadoop",
         "jdbc",
         "rest",
         "glue",
@@ -169,18 +171,29 @@ class CatalogBindings:
         "snowflake",
     )
     writer_catalog_type_valid_values: tuple[str, ...] = (
-        "hadoop",
-        "jdbc",
-        "rest",
         "glue",
+        "hadoop",
+        "hive_metastore",
+        "jdbc",
+        "nessie",
+        "rest",
     )
     default_catalog_name: str = "iceberg"
-    # Workstation defaults: writer = hadoop (file-native, zero-service, source of truth)
-    #                    serving = jdbc (auto-sqlite cache; disposable, populated via
-    #                                CALL system.register_table from JSON files on disk)
+    # Workstation defaults:
+    #   writer  = hadoop   (file-native, zero-service, source of truth)
+    #   serving = jdbc     (auto-SQLite metastore; disposable, zero-service,
+    #                       correct for WORKSTATION P0/P1 proof.  sqlite-jdbc
+    #                       jar is auto-downloaded + injected into
+    #                       plugin/<catalog>/ dir by run_trino.sh write-configs)
     workstation_default_writer_catalog: str = "hadoop"
     workstation_default_serving_catalog: str = "jdbc"
     workstation_default_serving_jdbc_driver: str = "sqlite"
+    # Auto-derived sqlite jdbc URI template when YAML+env leave catalog_uri="".
+    # Placeholder {repo_run_elt_dir} is resolved at runtime_context materialization
+    # time to <repo_run_dir>/results/elt_pipeline
+    workstation_default_serving_jdbc_sqlite_uri_template: str = (
+        "jdbc:sqlite:{repo_run_elt_dir}/.artifacts/trino/iceberg_jdbc_metastore.db"
+    )
 
 
 # --- 8. JDBC DRIVER CONSTANTS -----------------------------------------------------

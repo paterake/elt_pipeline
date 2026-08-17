@@ -303,15 +303,7 @@ TRINO_PID_FILE="${TRINO_RUNTIME}/var/run/launcher.pid"
 
 ICEBERG_CATALOG_NAME="${VAR_FINAL_CATALOG_NAME}"
 
-# SERVING_CATALOG_TYPE: single-source (singleton) + Trino-468-specific
-# hadoop→jdbc remap (legacy env already bridged into singleton during
-# pre-init translation in the Python heredoc).
-_user_serving="${VAR_FINAL_SERVING_CATALOG}"
-if [[ "${_user_serving}" == "hadoop" ]]; then
-  _user_serving="jdbc"
-fi
-SERVING_CATALOG_TYPE="${_user_serving}"
-unset _user_serving
+SERVING_CATALOG_TYPE="${VAR_FINAL_SERVING_CATALOG}"
 
 # ICEBERG_WAREHOUSE_DIR: if singleton left empty (no env + no YAML + no
 # manifest floor for this key), fall back to standard location under
@@ -499,10 +491,17 @@ EOF
 -XX:+HeapDumpOnOutOfMemoryError
 -XX:+ExitOnOutOfMemoryError
 -Djdk.attach.allowAttachSelf=true
+-Djava.security.manager=allow
+-Djdk.security.allowAllPermissions=true
 EOF
   _coordinator_bool="false"; [[ "${VAR_FINAL_COORDINATOR}" == "1" ]] && _coordinator_bool="true"
   _include_coord_bool="false"; [[ "${VAR_FINAL_INCLUDE_COORDINATOR}" == "1" ]] && _include_coord_bool="true"
   _shared_secret="$(dd if=/dev/urandom bs=1 count=16 2>/dev/null | base64 2>/dev/null || echo 'eltp-dev-static-shared-secret')"
+  _http_auth_line=""
+  case "${VAR_FINAL_HTTP_AUTH_TYPE}" in
+    ""|none|disabled|insecure) ;;
+    *) _http_auth_line="http-server.authentication.type=${VAR_FINAL_HTTP_AUTH_TYPE}" ;;
+  esac
   cat > "${TRINO_ETC_DIR}/config.properties" <<EOF
 coordinator=${_coordinator_bool}
 node-scheduler.include-coordinator=${_include_coord_bool}
@@ -515,26 +514,46 @@ query.max-memory=2GB
 query.max-memory-per-node=2GB
 node.internal-address=${TRINO_HOST}
 node.environment=${VAR_FINAL_NODE_ENVIRONMENT}
-http-server.authentication.type=${VAR_FINAL_HTTP_AUTH_TYPE}
+${_http_auth_line}
 internal-communication.shared-secret=eltp-${_shared_secret}
 EOF
-  unset _coordinator_bool _include_coord_bool _shared_secret
+  unset _coordinator_bool _include_coord_bool _shared_secret _http_auth_line
   mkdir -p -- "${TRINO_ETC_DIR}/catalog"
   cat > "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
 connector.name=iceberg
 EOF
+  # Trino 468 Iceberg connector CatalogType enum is ALL-UPPERCASE
+  # (hadoop→HADOOP is invalid; hadoop → actually Trino has no HADOOP enum, so
+  # the hadoop case maps to hive_metastore-less file scanning approach is done
+  # differently. For the cases Trino DOES support: JDBC, REST, NESSIE, GLUE,
+  # SNOWFLAKE, HIVE_METASTORE — uppercase them.)
+  _uc_cat() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
   _emit_fs_hadoop_enabled=""
   [[ "${VAR_FINAL_FS_HADOOP_ENABLED}" == "1" ]] && _emit_fs_hadoop_enabled="true"
   _emit_register_table_procedure_enabled=""
   [[ "${VAR_FINAL_REGISTER_TABLE_PROCEDURE_ENABLED}" == "1" ]] && _emit_register_table_procedure_enabled="true"
   case "${SERVING_CATALOG_TYPE}" in
+    hadoop)
+      # Trino Iceberg connector has no HADOOP catalog type enum (Spark only).
+      # Workstation fallback route: seed jdbc+sqlite (next case) for serving.
+      # Emit: use HIVE_METASTORELESS catalog type via IcebergCatalog with
+      # catalog type = REST + warehouse root (not supported). Actually: the
+      # simplest file-native route for a local shared warehouse on Trino is
+      # JDBC+sqlite.  Since the Python materializer has already switched this
+      # workstation default to jdbc+sqlite (runtime_manifest workstation_defaults),
+      # landing here means user explicitly requested hadoop serving → we can't
+      # fulfill it and should error out clearly.
+      echo "ERROR: SERVING_CATALOG_TYPE=hadoop is not supported by Trino 468 Iceberg connector." >&2
+      echo "       Use catalog_type=jdbc (sqlite auto-metastore) for workstation zero-service mode." >&2
+      exit 11
+      ;;
     jdbc)
       if [[ -z "${ICEBERG_CATALOG_URI}" ]]; then
         echo "ERROR: ${VAR_DOCENV_CATALOG_URI} is required when SERVING_CATALOG_TYPE=jdbc (or omit to enable AUTO sqlite workstation default)." >&2
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
-iceberg.catalog.type=jdbc
+iceberg.catalog.type=$(_uc_cat "jdbc")
 iceberg.jdbc-catalog.connection-url=${ICEBERG_CATALOG_URI}
 iceberg.jdbc-catalog.catalog-name=${ICEBERG_CATALOG_NAME}
 iceberg.jdbc-catalog.default-warehouse-dir=${ICEBERG_WAREHOUSE_DIR}
@@ -558,7 +577,7 @@ EOF
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
-iceberg.catalog.type=rest
+iceberg.catalog.type=$(_uc_cat "rest")
 iceberg.rest-catalog.uri=${ICEBERG_CATALOG_URI}
 EOF
       if [[ -n "${ICEBERG_REST_TOKEN}" ]]; then
@@ -581,7 +600,7 @@ EOF
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
-iceberg.catalog.type=nessie
+iceberg.catalog.type=$(_uc_cat "nessie")
 iceberg.nessie-catalog.uri=${ICEBERG_CATALOG_URI}
 EOF
       if [[ -n "${ICEBERG_REST_TOKEN}" ]]; then
@@ -606,7 +625,7 @@ EOF
         exit 3
       fi
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
-iceberg.catalog.type=snowflake
+iceberg.catalog.type=$(_uc_cat "snowflake")
 iceberg.snowflake-catalog.uri=${ICEBERG_CATALOG_URI}
 EOF
       if [[ -n "${ICEBERG_REST_TOKEN}" ]]; then
@@ -625,7 +644,7 @@ EOF
       ;;
     glue)
       cat >> "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
-iceberg.catalog.type=glue
+iceberg.catalog.type=$(_uc_cat "glue")
 EOF
       if [[ -n "${ICEBERG_GLUE_REGION}" ]]; then
         echo "iceberg.glue.region=${ICEBERG_GLUE_REGION}" >> \
@@ -646,6 +665,48 @@ EOF
       ;;
   esac
   unset _emit_fs_hadoop_enabled _emit_register_table_procedure_enabled
+  # Ensure JDBC driver jars live in the iceberg connector plugin dir.  Trino's plugin
+  # classloaders are per-connector (plugin/iceberg/); only jars directly in
+  # that folder are visible to the Iceberg connector.
+  local _iceberg_plugin="${plugin_dir}/iceberg"
+  mkdir -p -- "${_iceberg_plugin}"
+  if [[ "${SERVING_CATALOG_TYPE}" == "jdbc" ]]; then
+    local _jdbc_lc
+    _jdbc_lc="$(printf '%s' "${JDBC_DRIVER:-}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${_jdbc_lc}" == *"sqlite"* ]]; then
+      local _sql_jar=""
+      local _artifacts_dir="${TRINO_LOG_DIR}"
+      mkdir -p -- "${_artifacts_dir}"
+      # Route 1: PySpark already downloaded sqlite via Ivy? Use that.
+      local _ivy_cache="${HOME}/.cache/ivy2/jars"
+      if [[ -d "${_ivy_cache}" ]]; then
+        _sql_jar="$(find "${_ivy_cache}" -maxdepth 2 -type f -name "sqlite-jdbc-*.jar" 2>/dev/null | sort -V | tail -1 || true)"
+      fi
+      # Route 2: download from maven central if not found.
+      if [[ -z "${_sql_jar}" ]] || [[ ! -f "${_sql_jar}" ]]; then
+        local _v="3.46.0.0"
+        local _url="https://repo1.maven.org/maven2/org/xerial/sqlite-jdbc/${_v}/sqlite-jdbc-${_v}.jar"
+        _sql_jar="${_artifacts_dir}/sqlite-jdbc-${_v}.jar"
+        if [[ ! -f "${_sql_jar}" ]]; then
+          log "Downloading sqlite-jdbc ${_v} from maven central into ${_sql_jar}"
+          if command -v curl >/dev/null 2>&1; then
+            curl -fsSL --retry 3 "${_url}" -o "${_sql_jar}.part" && mv "${_sql_jar}.part" "${_sql_jar}"
+          elif command -v wget >/dev/null 2>&1; then
+            wget -q -O "${_sql_jar}.part" "${_url}" && mv "${_sql_jar}.part" "${_sql_jar}"
+          fi
+        fi
+      fi
+      if [[ -n "${_sql_jar}" && -f "${_sql_jar}" ]]; then
+        local _dst="${_iceberg_plugin}/$(basename "${_sql_jar}")"
+        if [[ ! -f "${_dst}" ]]; then
+          log "Injecting sqlite-jdbc into Trino iceberg plugin dir: ${_dst}"
+          cp -f "${_sql_jar}" "${_dst}"
+        fi
+      else
+        log "WARNING: sqlite-jdbc jar not found; jdbc catalog mode may fail with ClassNotFoundException." >&2
+      fi
+    fi
+  fi
 }
 
 launcher_args() {

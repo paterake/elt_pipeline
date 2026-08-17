@@ -64,6 +64,8 @@ def build_spark_session(
     iceberg_rest_token: str | None = None,
     iceberg_rest_warehouse: str | None = None,
     iceberg_glue_region: str | None = None,
+    iceberg_hive_metastore_uri: str | None = None,
+    iceberg_catalog_impl_override: str | None = None,
     runtime_overrides: dict[str, Any] | None = None,
 ) -> SparkSession:
     """Build a SparkSession, wiring the Iceberg V2 DataSource when iceberg_enabled.
@@ -168,11 +170,14 @@ def build_spark_session(
     if aqe_enabled is None:
         aqe_enabled = runtime_manifest.spark.default_adaptive_enabled
 
+    jdk23_sm_flags = "-Djava.security.manager=allow -Djdk.security.allowAllPermissions=true"
     builder = (
         SparkSession.builder.appName(resolved_app_name)
         .master(resolved_master)
         .config("spark.driver.host", driver_host)
         .config("spark.driver.bindAddress", driver_bind)
+        .config("spark.driver.extraJavaOptions", jdk23_sm_flags)
+        .config("spark.executor.extraJavaOptions", jdk23_sm_flags)
         .config("spark.sql.shuffle.partitions", shuffle_partitions)
         .config(
             "spark.sql.adaptive.enabled",
@@ -289,9 +294,30 @@ def build_spark_session(
             singleton_key="iceberg_writer.glue_region",
             override_path=("iceberg_serving", "glue_region"),
         )
-
-        spark_catalog_class = runtime_manifest.classes.iceberg_spark_session_catalog
-        leaf_catalog_class = runtime_manifest.classes.iceberg_spark_leaf_catalog
+        hive_metastore_uri = _resolve(
+            iceberg_hive_metastore_uri,
+            singleton_key="iceberg_writer.hive_metastore_uri",
+            override_path=("iceberg_serving", "catalog_uri"),
+        )
+        catalog_impl_override = _resolve(
+            iceberg_catalog_impl_override,
+            singleton_key="iceberg_writer.catalog_impl_override",
+            override_path=("iceberg_serving", "catalog_impl_override"),
+        )
+        #
+        # Gravitino example: catalog_type=rest +
+        #   catalog_impl_override=org.apache.gravitino.iceberg.spark.SparkCatalog + URI.
+        # Generic override — applies to BOTH the SparkSessionCatalog (spark_catalog)
+        # and the leaf SparkCatalog (named <catalog_name>). No vendor branches.
+        spark_catalog_class = (
+            catalog_impl_override
+            or runtime_manifest.classes.iceberg_spark_session_catalog
+        )
+        leaf_catalog_class = (
+            catalog_impl_override or runtime_manifest.classes.iceberg_spark_leaf_catalog
+        )
+        if catalog_type == "nessie":
+            catalog_type = "rest"
 
         base_packages = [runtime_manifest.versions.iceberg_spark_runtime_maven_coord]
         if catalog_type == "jdbc":
@@ -478,6 +504,47 @@ def build_spark_session(
                     f"spark.sql.catalog.{catalog_name}.glue.region",
                     glue_region,
                 )
+            if resolved_warehouse:
+                builder = builder.config(
+                    "spark.sql.catalog.spark_catalog.warehouse",
+                    resolved_warehouse,
+                )
+                builder = builder.config(
+                    f"spark.sql.catalog.{catalog_name}.warehouse",
+                    resolved_warehouse,
+                )
+        elif catalog_type == "hive_metastore":
+            if not hive_metastore_uri:
+                raise ValueError(
+                    "iceberg_writer.catalog_type=hive_metastore requires "
+                    "iceberg_hive_metastore_uri (config key iceberg_writer.hive_metastore_uri "
+                    "or env var ELT_PIPELINE_ICEBERG_HIVE_METASTORE_URI). "
+                    "Format: thrift://<metastore-host>:9083"
+                )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog",
+                spark_catalog_class,
+            )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog.type",
+                "hive_metastore",
+            )
+            builder = builder.config(
+                "spark.sql.catalog.spark_catalog.uri",
+                hive_metastore_uri,
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}",
+                leaf_catalog_class,
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}.type",
+                "hive_metastore",
+            )
+            builder = builder.config(
+                f"spark.sql.catalog.{catalog_name}.uri",
+                hive_metastore_uri,
+            )
             if resolved_warehouse:
                 builder = builder.config(
                     "spark.sql.catalog.spark_catalog.warehouse",

@@ -41,7 +41,10 @@ def _is_iceberg_enabled(spark: SparkSession) -> bool:
       1. Spark session conf (builder already applied CLI arg > ENV > YAML > manifest)
          → If ``spark.sql.extensions`` contains the Iceberg extension class, it's ON.
       2. runtime_context singleton (``spark.enable_iceberg``) — explicit boolean
-         from the single materializer (False short-circuits even if extensions loaded).
+         from the single materializer: ONLY explicit ``false/0/no/off`` here
+         can OVERRIDE and SHORT-CIRCUIT OFF (even if extensions somehow loaded).
+         Explicit ``true/1/yes/on`` cannot turn iceberg ON without extensions
+         actually being present in the session builder config.
       3. Fallback → presence of extensions in Spark conf.
     """
     try:
@@ -54,8 +57,6 @@ def _is_iceberg_enabled(spark: SparkSession) -> bool:
         ctx_raw = str(ctx_val).strip().lower()
         if ctx_raw in ("false", "0", "no", "off"):
             return False
-        if ctx_raw in ("true", "1", "yes", "on"):
-            return True
     return has_extension
 
 

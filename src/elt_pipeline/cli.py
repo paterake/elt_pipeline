@@ -344,6 +344,8 @@ def _iceberg_effective_enabled(
     explicit = getattr(args, "iceberg_enabled", None)
     if explicit is True:
         return True
+    if explicit is False:
+        return False
 
     # Singleton — single source of truth (Mercell/Camellos)
     if runtime_context.is_initialized():
@@ -364,7 +366,13 @@ def _iceberg_effective_enabled(
         if yaml_value is False:
             return False
 
-    return None
+    # OD-I1 step (a): default opt-out = Iceberg ON unless explicitly disabled.
+    # Old opt-in: returned None (caller treated as "skip iceberg").  New opt-out:
+    # Iceberg is the default write path for L3/L4; user must set
+    # ELT_PIPELINE_ICEBERG_ENABLED=false or --no-iceberg-enabled or YAML
+    # spark.enable_iceberg: false to disable.  Gate I4 staging-swap retires
+    # after one soak cycle with this default in place.
+    return True
 
 
 def _get_from_runtime_overrides(
@@ -451,6 +459,15 @@ def _validate_iceberg_catalog_binding(
         )
         or ""
     )
+    hive_metastore_uri = (
+        _cli_or(["iceberg_hive_metastore_uri"])
+        or _singleton_or(
+            "iceberg_writer.hive_metastore_uri",
+            ("iceberg_writer", "hive_metastore_uri"),
+            "",
+        )
+        or ""
+    )
     writer_valid = set(runtime_manifest.catalogs.writer_catalog_type_valid_values)
     serving_valid = set(runtime_manifest.catalogs.serving_catalog_type_valid_values)
     if writer_catalog_type not in writer_valid:
@@ -473,7 +490,7 @@ def _validate_iceberg_catalog_binding(
             retryable=False,
             context={"requested_serving_catalog_type": serving_catalog_type},
         )
-    if writer_catalog_type in {"jdbc", "rest"} and not catalog_uri:
+    if writer_catalog_type in {"jdbc", "rest", "nessie"} and not catalog_uri:
         raise build_sql_runtime_error(
             code=SqlRuntimeErrorCode.config_invalid,
             message=(
@@ -485,6 +502,20 @@ def _validate_iceberg_catalog_binding(
             context={
                 "iceberg_writer_catalog_type": writer_catalog_type,
                 "provided_uri": bool(catalog_uri),
+            },
+        )
+    if writer_catalog_type == "hive_metastore" and not hive_metastore_uri:
+        raise build_sql_runtime_error(
+            code=SqlRuntimeErrorCode.config_invalid,
+            message=(
+                "Iceberg writer catalog binding requires --iceberg-hive-metastore-uri (or "
+                "`runtime_context.get('iceberg_writer.hive_metastore_uri')`) when "
+                "--iceberg-writer-catalog-type=hive_metastore. Format: thrift://<host>:9083."
+            ),
+            retryable=False,
+            context={
+                "iceberg_writer_catalog_type": writer_catalog_type,
+                "provided_hive_metastore_uri": bool(hive_metastore_uri),
             },
         )
     if (
@@ -629,6 +660,19 @@ def _build_serving_endpoint(
         )
         or ""
     )
+    catalog_impl_override = (
+        _cli("iceberg_catalog_impl_override")
+        or _final(
+            "iceberg_writer.catalog_impl_override",
+            ("iceberg_writer", "catalog_impl_override"),
+            None,
+        )
+        or _final(
+            "iceberg_serving.catalog_impl_override",
+            ("iceberg_serving", "catalog_impl_override"),
+            None,
+        )
+    )
     jdbc = f"jdbc:trino://{trino_host}:{trino_port}/{catalog_name}"
     _env_keys_ref = runtime_manifest.env
     catalog_notes = {
@@ -652,6 +696,12 @@ def _build_serving_endpoint(
             f"Region via --iceberg-glue-region or {_env_keys_ref.iceberg_glue_region}; "
             "credentials from standard AWS SDK chain."
         ),
+        "hive_metastore": (
+            "Apache Hive Metastore ICEBERG writer catalog (Thrift RPC). "
+            f"Requires --iceberg-hive-metastore-uri or {_env_keys_ref.iceberg_hive_metastore_uri} "
+            "(format: thrift://<metastore-host>:9083). Writer-only binding; "
+            "serving continues via jdbc/rest/nessie/snowflake valid types."
+        ),
         "nessie": (
             "Apache Nessie catalog (Git-like versioned branch semantics). "
             f"Configure via {_env_keys_ref.iceberg_serving_catalog_type}=nessie + URI."
@@ -671,6 +721,23 @@ def _build_serving_endpoint(
         "writer_catalog_type_note": catalog_notes.get(writer_catalog_type, ""),
         "catalog_uri_provided": bool(catalog_uri),
         "glue_region_provided": bool(glue_region),
+        "catalog_impl_override_provided": bool(catalog_impl_override),
+        "catalog_impl_override_class": catalog_impl_override or "",
+        "catalog_impl_override_note": (
+            f"Custom Iceberg SparkCatalog class override in effect: "
+            f"{catalog_impl_override}. BOTH spark_catalog (SparkSessionCatalog) "
+            "and named iceberg catalog (SparkCatalog) use this class. "
+            "Gravitino example: catalog_type=rest + "
+            "catalog_impl_override=org.apache.gravitino.iceberg.spark.SparkCatalog + URI."
+            if catalog_impl_override
+            else (
+                "No catalog_impl_override in effect; default "
+                + runtime_manifest.classes.iceberg_spark_session_catalog
+                + " / "
+                + runtime_manifest.classes.iceberg_spark_leaf_catalog
+                + " classes used (Apache Iceberg built-in)."
+            )
+        ),
         "warehouse_dir": warehouse_dir or "",
         "engines": {
             "trino": {
@@ -801,6 +868,21 @@ def _resolve_iceberg_session_kwargs(
         runtime_subkey="glue_region",
         runtime_conf=serving_conf,
     )
+    hive_metastore_uri = _pick(
+        argname="iceberg_hive_metastore_uri",
+        singleton_keys=("iceberg_writer.hive_metastore_uri",),
+        runtime_subkey="hive_metastore_uri",
+        runtime_conf=writer_conf,
+    )
+    catalog_impl_override = _pick(
+        argname="iceberg_catalog_impl_override",
+        singleton_keys=(
+            "iceberg_writer.catalog_impl_override",
+            "iceberg_serving.catalog_impl_override",
+        ),
+        runtime_subkey="catalog_impl_override",
+        runtime_conf=writer_conf,
+    )
     if not warehouse_dir and enabled:
         warehouse_root = getattr(args, "warehouse_root", None)
         if warehouse_root:
@@ -819,6 +901,10 @@ def _resolve_iceberg_session_kwargs(
         kwargs["iceberg_rest_warehouse"] = rest_warehouse
     if glue_region:
         kwargs["iceberg_glue_region"] = glue_region
+    if hive_metastore_uri:
+        kwargs["iceberg_hive_metastore_uri"] = hive_metastore_uri
+    if catalog_impl_override:
+        kwargs["iceberg_catalog_impl_override"] = catalog_impl_override
     return kwargs
 
 
@@ -1009,6 +1095,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.add_argument(
+        "--no-iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_false",
+        default=None,
+        help=(
+            "Explicitly DISABLE Iceberg table format (post OD-I1 step(a) opt-out default). "
+            "Takes precedence over env ELT_PIPELINE_ICEBERG_ENABLED=true or YAML "
+            "spark.enable_iceberg=true. Forces legacy parquet + staging-swap path."
+        ),
+    )
+    run_parser.add_argument(
         "--iceberg-catalog-name",
         default=None,
         help="Override env ELT_PIPELINE_ICEBERG_CATALOG_NAME (default: iceberg).",
@@ -1016,10 +1113,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--iceberg-catalog-type",
         default=None,
-        choices=["hadoop", "jdbc", "rest", "glue"],
+        choices=["hadoop", "hive_metastore", "jdbc", "nessie", "rest", "glue"],
         help=(
             "Override env ELT_PIPELINE_ICEBERG_CATALOG_TYPE (default: hadoop). "
-            "hadoop=filesystem (local zero-infra); jdbc=H2/Postgres-backed; "
+            "hadoop=filesystem (local zero-infra); "
+            "hive_metastore=Hive Metastore Thrift (requires --iceberg-hive-metastore-uri); "
+            "jdbc=H2/Postgres-backed (requires URI); "
+            "nessie=Apache Nessie REST server alias (dispatches identical to rest, requires URI); "
             "rest=Polaris/Nessie/Lakekeeper/Tabular (requires URI); "
             "glue=AWS Glue Data Catalog (requires region or default SDK region)."
         ),
@@ -1058,6 +1158,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Override env ELT_PIPELINE_ICEBERG_GLUE_REGION. AWS region for "
             "--iceberg-catalog-type=glue (falls back to standard AWS SDK region chain)."
+        ),
+    )
+    run_parser.add_argument(
+        "--iceberg-hive-metastore-uri",
+        default=None,
+        dest="iceberg_hive_metastore_uri",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_HIVE_METASTORE_URI. Required when "
+            "--iceberg-writer-catalog-type=hive_metastore. Format: thrift://<host>:9083 "
+            "(standard Hive Metastore Thrift endpoint)."
         ),
     )
     run_parser.add_argument(
@@ -1157,6 +1267,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     publish_run_parser.add_argument(
+        "--no-iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_false",
+        default=None,
+        help=(
+            "Explicitly DISABLE Iceberg table format for publish reads (post OD-I1 "
+            "step(a) opt-out default). Takes precedence over env "
+            "ELT_PIPELINE_ICEBERG_ENABLED=true or YAML spark.enable_iceberg=true; "
+            "forces legacy parquet path."
+        ),
+    )
+    publish_run_parser.add_argument(
         "--iceberg-catalog-name",
         default=None,
         help="Override env ELT_PIPELINE_ICEBERG_CATALOG_NAME (default: iceberg).",
@@ -1164,10 +1286,13 @@ def build_parser() -> argparse.ArgumentParser:
     publish_run_parser.add_argument(
         "--iceberg-catalog-type",
         default=None,
-        choices=["hadoop", "jdbc", "rest", "glue"],
+        choices=["hadoop", "hive_metastore", "jdbc", "nessie", "rest", "glue"],
         help=(
             "Override env ELT_PIPELINE_ICEBERG_CATALOG_TYPE (default: hadoop). "
-            "hadoop=filesystem (local zero-infra); jdbc=H2/Postgres-backed; "
+            "hadoop=filesystem (local zero-infra); "
+            "hive_metastore=Hive Metastore Thrift (requires --iceberg-hive-metastore-uri); "
+            "jdbc=H2/Postgres-backed (requires URI); "
+            "nessie=Apache Nessie REST server alias (dispatches identical to rest, requires URI); "
             "rest=Polaris/Nessie/Lakekeeper/Tabular (requires URI); "
             "glue=AWS Glue Data Catalog (requires region or default SDK region)."
         ),
@@ -1206,6 +1331,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Override env ELT_PIPELINE_ICEBERG_GLUE_REGION. AWS region for "
             "--iceberg-catalog-type=glue (falls back to standard AWS SDK region chain)."
+        ),
+    )
+    publish_run_parser.add_argument(
+        "--iceberg-hive-metastore-uri",
+        default=None,
+        dest="iceberg_hive_metastore_uri",
+        help=(
+            "Override env ELT_PIPELINE_ICEBERG_HIVE_METASTORE_URI. Required when "
+            "--iceberg-writer-catalog-type=hive_metastore. Format: thrift://<host>:9083 "
+            "(standard Hive Metastore Thrift endpoint)."
         ),
     )
     publish_run_parser.add_argument(
@@ -1251,6 +1386,100 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # JDK autodiscover for mise/sdkman/asdf/jabba-managed installs.
+    # Subprocess-based tests spawn python -m elt_pipeline without the shell shim
+    # (which would normally export JAVA_HOME/PATH from mise). Run this once here
+    # so PySpark 4.1 (needs JDK≥17) and Trino 468 (needs JDK 23 class files v67)
+    # both find the same JDK regardless of whether CLI is invoked via interactive
+    # shell or from test runners / scheduled daemons that never source mise shims.
+    import glob as _glob
+    import os as _os
+    import shutil as _shutil
+    import subprocess as _sp
+    import sys as _sys
+    # PySpark executor subprocess default: SparkContext launches executor processes that on
+    # macOS ship with a different system python3 (e.g. 3.14) than the venv
+    # interpreter (e.g. 3.13) → [PYTHON_VERSION_MISMATCH] worker / driver error.
+    # Pin driver + worker to the SAME sys.executable that invoked `python -m elt_pipeline`
+    # unless the user has already set explicit overrides.  These vars are layout pins,
+    # not ELT_PIPELINE_* CONFIG vars, so setting them inside main() is allowed.
+    if not _os.environ.get("PYSPARK_PYTHON", "").strip():
+        _os.environ["PYSPARK_PYTHON"] = _sys.executable
+    if not _os.environ.get("PYSPARK_DRIVER_PYTHON", "").strip():
+        _os.environ["PYSPARK_DRIVER_PYTHON"] = _os.environ["PYSPARK_PYTHON"]
+    _java_on_path = _shutil.which("java")
+    _java_home = _os.environ.get("JAVA_HOME", "").strip()
+    _jdk_home_ok = bool(
+        _java_home
+        and Path(_java_home).is_dir()
+        and (Path(_java_home) / "bin" / "java").exists()
+    )
+    if (not _jdk_home_ok) or (not _java_on_path) or (
+        _java_on_path and "/usr/bin/java" in _java_on_path
+    ):
+        for _probe in (("mise", ["which", "java"]),):
+            try:
+                _probe_bin = _shutil.which(_probe[0])
+                if _probe_bin is None:
+                    continue
+                _out = _sp.run(
+                    [_probe_bin, *_probe[1]],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                ).stdout.strip()
+                if not _out:
+                    continue
+                _p = Path(_out).resolve()
+                if _probe[0] == "mise" and _p.name == "java" and _p.parent.name == "bin":
+                    _candidate_home = str(_p.parents[1])
+                else:
+                    continue
+                _bin_path = str(Path(_candidate_home) / "bin")
+                if not Path(_candidate_home).is_dir() or not Path(
+                    _bin_path / "java"
+                ).exists():
+                    continue
+                _os.environ["JAVA_HOME"] = _candidate_home
+                if Path(_bin_path).is_dir():
+                    _os.environ["PATH"] = _bin_path + _os.pathsep + _os.environ.get(
+                        "PATH", ""
+                    )
+                break
+            except Exception:
+                continue
+        if not _os.environ.get("JAVA_HOME", "").strip():
+            for _home_glob in (
+                str(Path.home() / ".local/share/mise/installs/java/*/bin/java"),
+                str(Path.home() / ".sdkman/candidates/java/current/bin/java"),
+                str(Path.home() / ".asdf/installs/java/*/bin/java"),
+                str(Path.home() / ".jabba/jdk/*/Contents/Home/bin/java"),
+            ):
+                try:
+                    _matches = sorted(_glob.glob(_home_glob))
+                except Exception:
+                    _matches = []
+                for _m_str in _matches:
+                    _m = Path(_m_str)
+                    try:
+                        _candidate_home = str(_m.parents[1])
+                    except Exception:
+                        continue
+                    if Path(_candidate_home).is_dir() and (
+                        Path(_candidate_home) / "bin" / "java"
+                    ).exists():
+                        _os.environ["JAVA_HOME"] = _candidate_home
+                        _bin_path = str(Path(_candidate_home) / "bin")
+                        if Path(_bin_path).is_dir():
+                            _os.environ["PATH"] = (
+                                _bin_path
+                                + _os.pathsep
+                                + _os.environ.get("PATH", "")
+                            )
+                        break
+                if _os.environ.get("JAVA_HOME", "").strip():
+                    break
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

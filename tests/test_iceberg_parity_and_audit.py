@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from elt_pipeline.config import runtime_context
 from elt_pipeline.shared.runtime import RunContext, StageName, TriggerType
 from elt_pipeline.sql.models import SqlModelStage
 from elt_pipeline.sql.parity_check import (
@@ -358,6 +359,10 @@ class TestSqlAuditContextServingEndpoint:
 
 
 class TestBuildServingEndpointDisabled:
+    @staticmethod
+    def setup_method(method):
+        runtime_context._reset_for_tests()
+
     def test_returns_none_when_iceberg_disabled(self):
         from elt_pipeline.cli import _build_serving_endpoint
         args = SimpleNamespace(
@@ -367,6 +372,8 @@ class TestBuildServingEndpointDisabled:
             iceberg_catalog_uri=None,
             iceberg_warehouse_dir=None,
             iceberg_glue_region=None,
+            iceberg_hive_metastore_uri=None,
+            iceberg_catalog_impl_override=None,
             warehouse_root=None,
         )
         with patch.dict(os.environ, {}, clear=True):
@@ -375,6 +382,10 @@ class TestBuildServingEndpointDisabled:
 
 
 class TestBuildServingEndpointEnabledShape:
+    @staticmethod
+    def setup_method(method):
+        runtime_context._reset_for_tests()
+
     @pytest.mark.parametrize(
         "catalog_type,uri_required,extra_kwargs",
         [
@@ -393,6 +404,8 @@ class TestBuildServingEndpointEnabledShape:
             iceberg_catalog_uri=None,
             iceberg_warehouse_dir="/tmp/wh/iceberg",
             warehouse_root="/tmp/wh",
+            iceberg_hive_metastore_uri=None,
+            iceberg_catalog_impl_override=None,
             **extra_kwargs,
         )
         with patch.dict(os.environ, {}, clear=True):
@@ -400,8 +413,14 @@ class TestBuildServingEndpointEnabledShape:
         assert ep is not None
         assert ep["table_format"] == "iceberg"
         assert ep["catalog_name"] == "iceberg"
-        assert ep["catalog_type"] == catalog_type
+        assert ep["writer_catalog_type"] == catalog_type
+        assert ep["serving_catalog_type"] == "jdbc"
         assert "catalog_type_note" in ep
+        assert "writer_catalog_type_note" in ep
+        assert "catalog_impl_override_provided" in ep
+        assert "catalog_impl_override_class" in ep
+        assert "catalog_impl_override_note" in ep
+        assert ep["catalog_impl_override_provided"] is False
         assert "warehouse_dir" in ep
         assert "engines" in ep
         engines = ep["engines"]
@@ -469,13 +488,14 @@ class TestCliPublishIcebergFlagParity:
                 if isinstance(a.dest, str) and a.dest.startswith("iceberg_")
             }
         )
-        assert len(iceberg_flag_names) == 8
+        assert len(iceberg_flag_names) == 9
         assert iceberg_flag_names == [
             "iceberg_catalog_name",
             "iceberg_catalog_type",
             "iceberg_catalog_uri",
             "iceberg_enabled",
             "iceberg_glue_region",
+            "iceberg_hive_metastore_uri",
             "iceberg_rest_token",
             "iceberg_rest_warehouse",
             "iceberg_warehouse_dir",
@@ -498,6 +518,7 @@ class TestCliPublishIcebergFlagParity:
             "iceberg_rest_token",
             "iceberg_rest_warehouse",
             "iceberg_glue_region",
+            "iceberg_hive_metastore_uri",
             "iceberg_warehouse_dir",
         ):
             sql_a = next(a for a in sql_run._actions if a.dest == dest)
@@ -509,11 +530,11 @@ class TestCliPublishIcebergFlagParity:
         src = inspect.getsource(__import__("elt_pipeline.cli", fromlist=[""]))
         publish_run_block_start = src.find("publish_run_parser = ")
         validation_callsite = src.find(
-            "_validate_iceberg_catalog_binding(args)",
+            "_validate_iceberg_catalog_binding(",
             publish_run_block_start,
         )
         assert validation_callsite > 0, (
-            "publish run command handler must call _validate_iceberg_catalog_binding(args)"
+            "publish run command handler must call _validate_iceberg_catalog_binding(...)"
         )
 
     def test_publish_run_uses_resolve_iceberg_session_kwargs(self):

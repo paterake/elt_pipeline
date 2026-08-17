@@ -358,6 +358,16 @@ def _materialize(
         ("iceberg_writer", "glue_region"),
         "",
     )
+    writer_conf["hive_metastore_uri"] = _final(
+        env.iceberg_hive_metastore_uri,
+        ("iceberg_writer", "hive_metastore_uri"),
+        "",
+    )
+    writer_conf["catalog_impl_override"] = _final(
+        None,
+        ("iceberg_writer", "catalog_impl_override"),
+        None,
+    )
     nested["iceberg_writer"] = writer_conf
 
     # --- iceberg_serving
@@ -382,6 +392,29 @@ def _materialize(
         env.iceberg_jdbc_driver,
         ("iceberg_serving", "jdbc_driver"),
         "org.sqlite.JDBC",
+    )
+    # Auto-derive sqlite JDBC URI when jdbc + driver is sqlite + uri empty.
+    # Prevents "catalog_uri required" validator errors for the zero-service
+    # workstation default binding.
+    _sct = str(serving_conf.get("catalog_type") or "").lower()
+    _uri = str(serving_conf.get("catalog_uri") or "").strip()
+    _drv = str(serving_conf.get("jdbc_driver") or "").lower()
+    if (
+        _sct == "jdbc"
+        and not _uri
+        and "sqlite" in _drv
+        and repo_run_dir is not None
+    ):
+        _elt_run = (repo_run_dir / paths.repo_run_results_elt_relpath).as_posix()
+        _tmpl = cat.workstation_default_serving_jdbc_sqlite_uri_template
+        try:
+            serving_conf["catalog_uri"] = _tmpl.format(repo_run_elt_dir=_elt_run)
+        except Exception:  # noqa: BLE001 — never crash materializer due to bad template
+            pass
+    serving_conf["catalog_impl_override"] = _final(
+        None,
+        ("iceberg_serving", "catalog_impl_override"),
+        None,
     )
     nested["iceberg_serving"] = serving_conf
 

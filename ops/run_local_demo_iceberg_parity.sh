@@ -53,7 +53,7 @@ START_DATE="${ELT_PIPELINE_PARITY_START_DATE:-2026-01-01}"
 END_DATE="${ELT_PIPELINE_PARITY_END_DATE:-2026-01-31}"
 SELECTION_DOMAIN="sales"
 
-ELT_CLI=("${VENV_PY}" -m elt_pipeline.cli)
+ELT_CLI=("${VENV_PY}" -m elt_pipeline)
 
 mkdir -p \
   "${PARITY_DIR}" \
@@ -106,7 +106,6 @@ run_parquet() {
   mkdir -p "${PARQUET_WH}"
   ELT_PIPELINE_ICEBERG_ENABLED=false \
   "${ELT_CLI[@]}" sql run \
-    --package-path "${PACKAGE_PATH}" \
     --environment parity_parquet \
     --include-deps \
     --start-date "${START_DATE}" \
@@ -115,6 +114,7 @@ run_parquet() {
     --root-path "${SHARED_ROOT}" \
     --warehouse-root "${PARQUET_WH}" \
     --job-name "parity-parquet-run" \
+    "${PACKAGE_PATH}" \
     2>&1 | tee "${PARITY_DIR}/parquet_run.log" | tail -20
   log "Writing parquet parity report -> ${PARQUET_REPORT_JSON}"
   "${VENV_PY}" - <<PY
@@ -126,7 +126,7 @@ from elt_pipeline.sql.discovery import discover_sql_models
 from elt_pipeline.sql import topologically_sort_sql_models, filter_sql_models, resolve_selected_model_ids
 from elt_pipeline.sql.parity_check import measure_model_parity, write_parity_report
 from elt_pipeline.sql.models import CompiledSqlModel
-spark = build_spark_session(app_name="eltp_parity_parquet")
+spark = build_spark_session(app_name="eltp_parity_parquet", iceberg_enabled=False)
 try:
     discovered = discover_sql_models("${PACKAGE_PATH}")
     ordered = topologically_sort_sql_models(discovered)
@@ -178,7 +178,6 @@ run_iceberg() {
   rm -rf "${ICEBERG_WH:?}"
   mkdir -p "${ICEBERG_WH}"
   "${ELT_CLI[@]}" sql run \
-    --package-path "${PACKAGE_PATH}" \
     --environment parity_iceberg \
     --include-deps \
     --start-date "${START_DATE}" \
@@ -189,6 +188,7 @@ run_iceberg() {
     --iceberg-warehouse-dir "${ICEBERG_WAREHOUSE_DIR}" \
     --job-name "parity-iceberg-run" \
     "${extra_iceberg[@]}" \
+    "${PACKAGE_PATH}" \
     2>&1 | tee "${PARITY_DIR}/iceberg_run.log" | tail -20
   log "Writing iceberg parity report -> ${ICEBERG_REPORT_JSON}"
   "${VENV_PY}" - <<PY
