@@ -64,6 +64,7 @@ Inside NEXT ACTIONS, every row carries a **Priority** column and an **Environmen
 #   (for tag in NEXT_ACTIONS_TABLE \
 #              FOLLOWUP_F1 FOLLOWUP_F2 FOLLOWUP_F3 FOLLOWUP_F4 \
 #              FOLLOWUP_F4_STEP2 FOLLOWUP_F4_STEP4 FOLLOWUP_F4_COMPLETION \
+#              FOLLOWUP_F5 FOLLOWUP_F5_HIVE_GAP FOLLOWUP_F5_IMPL_OVERRIDE_GAP FOLLOWUP_F5_NESSIE_ALIAS_GAP \
 #              WORKSTATION_PROOF_ITEMS \
 #              WORKSTATION_PROOF_ITEM1 WORKSTATION_PROOF_ITEM2 \
 #              WORKSTATION_PROOF_ITEM3 WORKSTATION_PROOF_ITEM4 \
@@ -71,12 +72,12 @@ Inside NEXT ACTIONS, every row carries a **Priority** column and an **Environmen
 #    do grep -q "<!-- ANCHOR:${tag} -->" docs/todo/TODO_L3_L4_ICEBERG_SERVING.md
 #       || echo "MISSING ANCHOR: $tag" ; done
 #    echo "ANCHORS OK" )
-# Exact expected unique ANCHOR tag count = 17. Rot = mismatch.
-# (Verification: grep -oE '<!-- ANCHOR:[A-Z0-9_]+ -->' <file> | sort -u | wc -l should print 17.)
-# Tag inventory (17): NEXT_ACTIONS_TABLE, FOLLOWUP_F1, FOLLOWUP_F2, FOLLOWUP_F3, FOLLOWUP_F4,
-#   FOLLOWUP_F4_STEP2, FOLLOWUP_F4_STEP4, FOLLOWUP_F4_COMPLETION,
-#   WORKSTATION_PROOF_ITEMS, WORKSTATION_PROOF_ITEM1..4 (4),
-#   DOD_GATE_I1, DOD_GATE_I3, DOD_GATE_I5, SEC_OD_I1.
+# Exact expected unique ANCHOR tag count = 21. Rot = mismatch.
+# (Verification: grep -oE '<!-- ANCHOR:[A-Z0-9_]+ -->' <file> | sort -u | wc -l should print 21.)
+# Tag inventory (21): NEXT_ACTIONS_TABLE, FOLLOWUP_F1..F5 (5),
+#   FOLLOWUP_F4_STEP2/STEP4/COMPLETION (3), FOLLOWUP_F5_HIVE_GAP / IMPL_OVERRIDE_GAP / NESSIE_ALIAS_GAP (3),
+#   WORKSTATION_PROOF_ITEMS + WORKSTATION_PROOF_ITEM1..4 (5),
+#   DOD_GATE_I1/3/5 (3) + SEC_OD_I1 (1).
 
 next_actions:
   - row: 1
@@ -145,6 +146,38 @@ next_actions:
     depends_on: [F4_STEP2_FACADE_SWEEP]
     acceptance:
       - "ruff 0 errors; 14-file non-JVM pytest subset stays at 165 PASS; no new circular imports"
+  - row: 8
+    id: I2_HIVE_METASTORE_WRITER
+    priority: P2
+    status: OPEN
+    env_class: SANDBOX
+    target_anchor: FOLLOWUP_F5_HIVE_GAP
+    detail: "Gate I2 gap: Hive Metastore ICEBERG writer catalog support (catalog_type = hive_metastore)"
+    acceptance:
+      - "hive_metastore added to writer_catalog_type_valid_values in runtime_manifest; elif branch in build_spark_session() mirroring jdbc pattern (type=hive_metastore + uri config)"
+      - "New CLI flag --iceberg-hive-metastore-uri + runtime_context key iceberg_writer.hive_metastore_uri; fail-fast in _validate_iceberg_catalog_binding when hive_metastore without URI"
+      - "3 new tests in test_iceberg_catalog_config.py: (a) hive_metastore valid when uri provided; (b) hive_metastore raises without uri; (c) serving_catalog_type accepts hive_metastore as alias for existing rest/jdbc serving path parity"
+  - row: 9
+    id: I2_CATALOG_IMPL_OVERRIDE
+    priority: P2
+    status: OPEN
+    env_class: SANDBOX
+    target_anchor: FOLLOWUP_F5_IMPL_OVERRIDE_GAP
+    detail: "Gate I2 gap: Generic catalog_impl_class_override hook (Gravitino / custom catalog classes)"
+    acceptance:
+      - "New kwarg iceberg_catalog_impl_override added to build_spark_session(); runtime_context key iceberg_writer.catalog_impl_override + iceberg_serving.catalog_impl_override (optional, default None)"
+      - "When set, overrides BOTH spark_catalog + named iceberg catalog SparkSessionCatalog/SparkCatalog class strings (generic; no if-branch per vendor). Gravitino example: catalog_type=rest + catalog_impl_override=org.apache.gravitino.iceberg.spark.SparkCatalog + URI."
+      - "2 new tests: (a) override applied to both catalog registries when set; (b) default built-in org.apache.iceberg.spark classes still used when unset (no regression)."
+  - row: 10
+    id: I2_NESSIE_WRITER_ALIAS
+    priority: P3
+    status: OPEN
+    env_class: SANDBOX
+    target_anchor: FOLLOWUP_F5_NESSIE_ALIAS_GAP
+    detail: "Gate I2 polish: catalog_type='nessie' as WRITER alias (for symmetry with nessie SERVING valid type)"
+    acceptance:
+      - "nessie added to writer_catalog_type_valid_values; build_spark_session() treats it as an alias of rest (same .type=rest dispatch plus optional nessie.ref + nessie.authorization extra config pulled from YAML)"
+      - "1 new test confirming nessie writer type accepted with uri + resolves same catalog class as rest; optional 2nd test for nessie.ref passthrough if implemented."
 ```
 
 ---
@@ -194,7 +227,8 @@ Before any gated work, prove the (brand-new) stack integrates end-to-end on **on
 
 ### Gate I2 — Pluggable catalog binding (config + dispatch)
 
-**Gate I2 status ✅ SIGNED OFF (env/CLI dispatch complete; 4-way catalog pluggable — 23/23 config tests GREEN):** `build_spark_session()` at [spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L56-L491) accepts 8 Iceberg kwargs + 5 Spark tuning kwargs, falls back to runtime_context singleton (zero os.environ reads here). 4-way full catalog dispatch: `hadoop` (default) / `jdbc` / `rest` / `glue`. Both `spark_catalog` (SparkSessionCatalog — for MERGE rewrite rules) + named `iceberg` catalog (SparkCatalog) registered for every type. Default set to `spark_catalog` (critical for Spark 4.1). `_validate_iceberg_catalog_binding()` fails fast (URI-required for jdbc/rest; unknown type → `PipelineError`) before JVM spawn. `_resolve_iceberg_session_kwargs()` resolver at [cli.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L716) called identically in both `sql run` and `publish run` command bodies for uniform CLI > ENV > YAML > manifest precedence. 23 tests PASS in [test_iceberg_catalog_config.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/tests/test_iceberg_catalog_config.py): URI-required checks, unknown type reject, arg precedence over env, rest_token/rest_warehouse/glue_region env fallback, all 4 serving-endpoint shape tests.
+**Gate I2 status ✅ SIGNED OFF base dispatch / 2 P2 GAPS + 1 P3 GAP STILL OPEN:** 4-way base dispatch (hadoop/jdbc/rest/glue) complete. 23/23 config tests GREEN. `build_spark_session()` at [spark/session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L56-L491) accepts 8 Iceberg kwargs + 5 Spark tuning kwargs, falls back to runtime_context singleton (zero os.environ reads here). Both `spark_catalog` (SparkSessionCatalog — for MERGE rewrite rules) + named `iceberg` catalog (SparkCatalog) registered for every type. Default set to `spark_catalog` (critical for Spark 4.1). `_validate_iceberg_catalog_binding()` fails fast before JVM spawn. `_resolve_iceberg_session_kwargs()` at [cli.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/cli.py#L716) called identically in both `sql run` and `publish run`.
+- **Open gaps → Rows 8 + 9 + 10 (SANDBOX-eligible P2/P3, follow-up F-5):** (1) P2 = Hive Metastore ICEBERG writer catalog (`catalog_type="hive_metastore"`); (2) P2 = generic `catalog_impl_class_override` hook for Gravitino / custom-class catalogs; (3) P3 = `catalog_type="nessie"` writer alias for symmetry with SERVING valid list.
 
 ### Gate I3 — Serving-engine binding + BI-connectivity proof (reference: Trino)
 
@@ -257,9 +291,9 @@ Before any gated work, prove the (brand-new) stack integrates end-to-end on **on
 **Do not re-read the entire file.** This is the complete exhaustive list of items that are actually still OPEN. Everything else is either SIGNED OFF or documented at [TODO_L3_L4_ICEBERG_SERVING_HISTORY_2026-08-17.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/TODO_L3_L4_ICEBERG_SERVING_HISTORY_2026-08-17.md). Jump straight to the item.
 
 **ENVIRONMENT SELF-CHECK (before picking a row — do this first):** Run `java -version 2>&1` in the repo shell.
-- If it reports `openjdk version "23"` or higher → start at **ROW 1 (P0 workstation sequence)**.
-- If missing / < 23 → jump straight to **ROW 6 (P2 sandbox architecture sequence)**.
-- No exceptions. The 5 P0/P1 rows below the line ALL require JDK 23; starting them without it produces hours of identical `JAVA_GATEWAY_EXITED` noise.
+- If it reports `openjdk version "23"` or higher → start at **ROW 1 (P0 workstation sequence, ordered 1→2→3→4→5 chained by dependency)**.
+- If missing / < 23 → SANDBOX. Pick **first OPEN SANDBOX row by priority**: Row 6 (P2 F-4 Step2) → then Row 8 (P2 F-5 Hive Metastore, independent) → then Row 9 (P2 F-5 impl override, independent) → then Row 10 (P3 F-5 nessie alias, polish only) → then only Row 7 (P2 F-4 Step4 — strictly gated on Row 6 file moves actually happening).
+- No exceptions. The 5 P0/P1 rows above ALL require JDK 23; starting them without it produces hours of identical `JAVA_GATEWAY_EXITED` noise.
 
 | Priority | Item | Category | Environment requirements | What "DONE" looks like |
 |---|---|---|---|---|
@@ -270,6 +304,9 @@ Before any gated work, prove the (brand-new) stack integrates end-to-end on **on
 | 🔴 **P1 — triggers only after Items 1-3 green** | **Workstation Proof Item 4 / OD-I1 step (a) Default flag flip** (anchor: `WORKSTATION_PROOF_ITEM4`, target: `SEC_OD_I1`) | Open Decisions activation timing | No JVM requirement (code-only change), but **logically depends on P0 proof items being green first** (cannot flip default to opt-out before proving Iceberg is 100% interchangeable). | Flip CLI `--iceberg-enabled` default from opt-in → opt-out in 3 places: argparse default, plus `_iceberg_effective_enabled()` + `_is_iceberg_enabled()` fallback floors (swap the "false" strings → "true"; require explicit `ELT_PIPELINE_ICEBERG_ENABLED=false` to disable). Update OD-I1 status line at anchor `SEC_OD_I1` to reflect step (a) complete. |
 | 🟠 **P2 — independent, pure refactor, no JVM, can run anywhere** | **F-4 Step 2 — Sub-module facade + single-responsibility sweep** (anchor: `FOLLOWUP_F4_STEP2`, completion table: `FOLLOWUP_F4_COMPLETION`) | Architecture cleanliness | **Sandbox-eligible. No JVM required.** Can run in any editor; budget 2–4 hours. Produces: Facade list table `submodule | facade_file | re_exports`. Flag list `file | current concerns | proposed split boundaries`. Update completion table rows 2+3 at anchor `FOLLOWUP_F4_COMPLETION` once Step 2 delivers. | (a) sweep every sub-module `__init__.py`; confirm single thin facade; (b) inspect each implementation file for multi-concern shape. Concrete examples to especially check: `shared/runtime.py` (likely aggregates RunContext + CLI exit handling + stage constants + disparate helpers) and `shared/logging.py` + `shared/errors.py` + `shared/audit.py` if any cross-coupling. |
 | 🟠 **P2 — conditional, runs immediately after Step 2 complete** | **F-4 Step 4 — Import graph sanity check** (anchor: `FOLLOWUP_F4_STEP4`) | Architecture regression only | Runs only IF Step 2 actually moved files/changed facade re-exports. No-op otherwise. | `uv run ruff check src/elt_pipeline/` → 0 errors; run 14-file non-JVM pytest subset → 165 PASS, no new `ImportError` / circular import failures. |
+| 🟠 **P2 — independent, pure config, zero JVM, can run anywhere (SANDBOX-eligible)** | **F-5 Gap #1 — Hive Metastore ICEBERG writer catalog** (anchor: `FOLLOWUP_F5_HIVE_GAP`) | Pluggable catalog completeness | **Sandbox-eligible. No JVM required.** 4/6 catalog types zero-code today; Hive Metastore still gap. Budget: ~20 lines (new elif branch mirroring jdbc pattern). | Add `"hive_metastore"` to writer_catalog_type_valid_values; elif branch in build_spark_session() (`type=hive_metastore` + `uri=thrift://…`); new CLI flag `--iceberg-hive-metastore-uri` + runtime_context key `iceberg_writer.hive_metastore_uri`; fail-fast in `_validate_iceberg_catalog_binding()` when hive_metastore without URI. 3 new tests in test_iceberg_catalog_config.py. |
+| 🟠 **P2 — independent, pure config, zero JVM** | **F-5 Gap #2 — Generic catalog_impl_class_override (Gravitino / custom catalog classes)** (anchor: `FOLLOWUP_F5_IMPL_OVERRIDE_GAP`) | Pluggable catalog completeness | No JVM required. Currently `catalog-impl` classes hardwired from manifest to `org.apache.iceberg.spark.*Catalog`; Gravitino and vendors need their own class strings, not just `.type` dispatch. | New kwarg `iceberg_catalog_impl_override` to `build_spark_session()` + runtime_context keys `iceberg_writer.catalog_impl_override` + `iceberg_serving.catalog_impl_override` (optional default None). When set, overrides BOTH spark_catalog + named iceberg catalog's SparkSessionCatalog/SparkCatalog class strings (generic; no vendor-specific if-branch). Gravitino example: catalog_type=rest + override=org.apache.gravitino.iceberg.spark.SparkCatalog + URI. 2 tests: override applied, default unchanged. |
+| 🔵 **P3 — polish / symmetry only; optional** | **F-5 Gap #3 — catalog_type=`nessie` writer alias (for symmetry with SERVING valid list)** (anchor: `FOLLOWUP_F5_NESSIE_ALIAS_GAP`) | Pluggable catalog polish | Sandbox-eligible. No JVM. Low priority (nessie write already works via catalog_type=rest + REST URI). Just writer valid set doesn't list it; SERVING valid set does. Symmetry gap. | Add `"nessie"` to writer_catalog_type_valid_values; `build_spark_session()` treats as alias of `rest` (same `.type=rest` dispatch + optional `nessie.ref` + `nessie.authorization` extra configs pulled from YAML). 1 test + optional extra for ref passthrough. |
 
 #### Status legend for the Follow-ups section (so you don't scan them blindly):
 ```
@@ -277,6 +314,7 @@ F-1   ✅ SIGNED OFF (Option A) — grep anchor: FOLLOWUP_F1 | Full proof at HIS
 F-2   ✅ SIGNED OFF — Lockdown grep target = 0 lines; grep anchor: FOLLOWUP_F2 | Full proof at HISTORY file S8 → S1–S5 + AUDIT_F2 block
 F-3   🟠 OPEN / WORKSTATION-ONLY (JDK 23+17 required) — grep anchor: FOLLOWUP_F3
 F-4   🟢 PARTIAL (Steps 1+3 DONE; Steps 2+4 still OPEN) — grep anchor: FOLLOWUP_F4 | Full Step 1/3 proof tables at HISTORY file S8 → SESSION_S8_F4 block
+F-5   🟢 PARTIAL (3 gaps all OPEN: Hive Metastore writer (P2) + catalog_impl override (P2) + nessie writer alias (P3)) — grep anchor: FOLLOWUP_F5
 ```
 To jump directly to any follow-up: `grep -n 'ANCHOR:<TAG>' docs/todo/TODO_L3_L4_ICEBERG_SERVING.md`
 
@@ -368,6 +406,73 @@ To jump directly to any follow-up: `grep -n 'ANCHOR:<TAG>' docs/todo/TODO_L3_L4_
 
 - **Full long-form write-up (Step 1 3-row root audit, Step 3 4-row god-file heuristic, VERIFY 165/0 evidence):** HISTORY S8 `SESSION_S8_F4` + `SESSION_S8_VERIFY` blocks.
 
+### Follow-up F-5: Gate I2 catalog dispatch gap closures (Hive Metastore ICEBERG writer + Gravitino custom-impl hook + Nessie writer alias symmetry)
+
+<!-- ANCHOR:FOLLOWUP_F5 -->
+- **Status:** 🟢 **PARTIAL / 3 GAPS ALL STILL OPEN.** Base 4-way dispatch SIGNED OFF; 3 gap sub-items below are all pure config/code changes with no JVM requirement (SANDBOX-eligible). Added 2026-08-17 after catalog audit surfaced the 2 P2 + 1 P3 asymmetry with the serving valid list and Gravitino use case.
+- **Motivation (from config contract audit):**
+  - 7 catalog names user reasonably expects to "just flip via config" = Hadoop/JDBC/REST/Hive Metastore/Nessie/Polaris/Gravitino + Glue. REST covers Polaris/Tabular/Lakekeeper/Snowflake REST. But 3 are currently missing: Hive Metastore (as ICEBERG writer catalog type, not plain-parquet external table) requires a code branch; Gravitino needs custom catalog-impl class override injection; Nessie writer valid set omits it (serving list has it → symmetry).
+  - These are NOT proof items or runtime tests. They are config/plugin architecture sweeps = pure code, runnable in any environment.
+
+<!-- ANCHOR:FOLLOWUP_F5_HIVE_GAP -->
+1. **Gap #1 (P2): Hive Metastore ICEBERG writer catalog support — `catalog_type = "hive_metastore"`**
+   - **Current behavior:** Valid writer list = only 4 (`hadoop/jdbc/rest/glue`). `hive_metastore` → `PipelineError: Unsupported iceberg_writer.catalog_type`. Plain-Parquet L2 can still point a Hive catalog at a location; this gap is specifically for the Iceberg writer registering tables natively in Hive Metastore.
+   - **Action plan:**
+     - Add `"hive_metastore"` to `CatalogBindings.writer_catalog_type_valid_values` in [runtime_manifest.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_manifest.py#L159-L183).
+     - Add new `elif catalog_type == "hive_metastore":` branch in [build_spark_session()](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L311-L450) mirroring the `jdbc` pattern: both `spark_catalog` AND named `iceberg` catalog get:
+       ```
+       spark.sql.catalog.<name>      = SparkSessionCatalog / SparkCatalog (same classes as rest)
+       spark.sql.catalog.<name>.type = hive_metastore
+       spark.sql.catalog.<name>.uri  = <hive_metastore_uri> (thrift://server:9083)
+       spark.sql.catalog.<name>.warehouse = resolved_warehouse
+       ```
+     - Add resolver `iceberg_hive_metastore_uri` kwarg to `build_spark_session()` → `_resolve(… singleton_key="iceberg_writer.hive_metastore_uri", override_path=("iceberg_serving", "catalog_uri"))` fallback pattern matching jdbc.
+     - Add CLI flag `--iceberg-hive-metastore-uri` to sql run + publish run argparse (mirror `--iceberg-catalog-uri`).
+     - Add URI-required fail-fast guard in `_validate_iceberg_catalog_binding()` mirroring the jdbc/rest pattern when writer_catalog_type = hive_metastore and URI missing; optionally accept `serving_catalog_type in {"jdbc","rest","nessie","snowflake","hive_metastore"}` or keep serving type separate (choose least-change: serving list already has 5 → don't expand unless user asks).
+   - **Test plan (3 new tests in test_iceberg_catalog_config.py):**
+     - `test_hive_metastore_accepts_when_uri_provided` → passes builder with uri = `thrift://localhost:9083`
+     - `test_hive_metastore_rejects_when_uri_missing` → raises ValueError or `PipelineError` (match fail-fast mechanism currently in use)
+     - `test_hive_metastore_serving_accepts_or_equivalent_alias` → confirm catalog binding behaves consistently at boundary.
+
+<!-- ANCHOR:FOLLOWUP_F5_IMPL_OVERRIDE_GAP -->
+2. **Gap #2 (P2): Generic catalog_impl_class_override hook — Gravitino and arbitrary custom catalog classes**
+   - **Current behavior:** `spark_catalog_class = runtime_manifest.classes.iceberg_spark_session_catalog` (frozen `org.apache.iceberg.spark.SparkSessionCatalog`) + `leaf_catalog_class = iceberg_spark_leaf_catalog` (frozen `org.apache.iceberg.spark.SparkCatalog`). These are HARD-CODED strings pulled from the manifest classes dataclass; no user-override path exists. Gravitino, Datastax, Snowflake, etc sometimes ship their own SparkCatalog subclass with different class names.
+   - **Action plan:**
+     - Add 2 new optional keys: `iceberg_writer.catalog_impl_override` + `iceberg_serving.catalog_impl_override` (to match the same writer/serving split pattern as every other iceberg key). Also accept a single top-level `catalog_impl_override` alias if writer/serving are the same.
+     - Add kwarg `iceberg_catalog_impl_override: str | None = None` to the `build_spark_session()` function signature, right after the 8 iceberg kwargs block.
+     - Inside the catalog-class assignment lines [293–294 of session.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/spark/session.py#L293-L294): resolve the override first, then:
+       ```
+       resolved_spark_catalog_class = (
+           _resolve(iceberg_catalog_impl_override,
+                    singleton_key="iceberg_writer.catalog_impl_override",
+                    override_path=("iceberg_serving", "catalog_impl_override"))
+           or spark_catalog_class  # fallback to manifest default
+       )
+       # Same for leaf_catalog_class
+       ```
+     - Then pass `resolved_*_catalog_class` instead of the manifest constants into every single `builder.config("spark.sql.catalog.*", <class>)` call. Pattern applies across all 5 branches (hadoop/jdbc/rest/glue + new hive_metastore). **Generic override, no new per-vendor branches.**
+     - Reference example for Gravitino (write this as inline comment/doc example):
+       ```
+       catalog_type = rest
+       catalog_uri  = http://gravitino-server:8090/api/iceberg
+       catalog_impl_override = org.apache.gravitino.iceberg.spark.SparkCatalog
+       ```
+       This should wire correctly with the override set; no other change needed.
+   - **Test plan (2 new tests):**
+     - `test_catalog_impl_override_applied_to_both_catalogs` → patch singleton override or pass kwarg; then after `builder.build()`, check `spark.conf.get("spark.sql.catalog.spark_catalog") == "<override class>"` AND same for named `iceberg` catalog.
+     - `test_catalog_impl_override_default_unchanged` → with no kwarg/env, both config keys still return the default `org.apache.iceberg.spark.SparkSessionCatalog` / `SparkCatalog`.
+
+<!-- ANCHOR:FOLLOWUP_F5_NESSIE_ALIAS_GAP -->
+3. **Gap #3 (P3 — polish, symmetry-only, optional):** `catalog_type="nessie"` WRITER alias (to match serving valid list)
+   - **Current behavior:** Writer valid list = 4. Serving valid list [runtime_manifest.py L162-171](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/config/runtime_manifest.py#L162-L171) = 5: includes `nessie`. A config author setting `iceberg_writer.catalog_type = nessie` today gets Unsupported type error even though serving accepts it AND the write is technically a REST dispatch.
+   - **Action plan:**
+     - Add `"nessie"` to `writer_catalog_type_valid_values`.
+     - In `build_spark_session()` if/elif chain: treat `catalog_type == "nessie"` as an **alias for `rest`** → i.e., run the exact same `elif catalog_type == "rest":` block (with the same URI required / catalog type=rest, because Nessie is a REST server under the hood).
+     - **Polish bonus (optional if trivial):** Optionally pass through two extra Nessie-specific config keys when present: `nessie.ref` (branch/tag name) → `.ref` config line on both catalogs; `nessie.authorization` / `nessie.authentication.type` → optional config on both. Pull these from a new YAML section `iceberg_writer.nessie_ref` / `iceberg_serving.nessie_ref` pattern; fall back to `override_path` like everything else.
+   - **Test plan (1 new test + optional 1 bonus):**
+     - 1: `test_nessie_writer_alias_accepted_with_uri` → passes builder with catalog_type=`nessie`, catalog_uri=`http://nessie:19120/api/v1` → builder resolves correctly; type under spark.sql.catalog.*.type is rest OR nessie (document which); no error.
+     - 2 (optional if ref bonus implemented): `test_nessie_ref_passthrough_config` → `nessie.ref = main` written correctly into both catalog configs.
+
 ### Dependency order for the four follow-ups
 
 ```
@@ -376,6 +481,10 @@ F-1 (bootstrap audit)
                      └─ feeds into ──▶ F-3 (zero-env Trino sign-off proof run)
 
 F-4 (architecture audit) = fully independent — can run anytime, in parallel with F-1/F-2
+
+F-5 (Gate I2 catalog pluggability gaps) = fully independent P2/P3 — can run immediately in any
+  sandbox; no prerequisites. Row 8 (Hive Metastore) + Row 9 (impl override) = independent;
+  execute either order. Row 10 (nessie alias) = always last of the 3 because it's polish.
 ```
 
 ---
