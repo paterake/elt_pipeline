@@ -72,7 +72,7 @@ s.stop()
 "
 ```
 
-Expected output includes `Spark version: 4.1.2` and `row check: 3`, with no `JAVA_HOME` / "Unable to locate a Java Runtime" errors. This exact check was run during provisioning and passed against Temurin 17.0.20 + PySpark 4.1.2.
+Expected output includes `Spark version: 4.1.2` and `row check: 3`, with no `JAVA_HOME` / "Unable to locate a Java Runtime" errors.
 
 ## Optional: pin the JDK to the repository
 
@@ -92,7 +92,3 @@ Commit the resulting `mise.toml` so everyone resolves to the same JDK. Until the
 | `java -version` shows 3.2 / system Java | mise not activated for the current shell, or an older Java earlier on `PATH`. Run `mise doctor` and `which -a java`. |
 | Wrong Java version picked up | A repo-local `mise.toml` or a different global pin. Check `mise ls java` and `mise current`. |
 | Spark starts but stage fails on JVM version | Spark 4.x needs Java 17 or 21. Ensure the active JDK is 17 (`java -version`). |
-
-## Provenance
-
-Established 2026-08-15 while making the pipeline all-Spark. Verified: `mise` 2026.8.6, Temurin 17.0.20, PySpark 4.1.2, macOS (Apple Silicon), zsh. No system-level Java or `sudo` integration installed.

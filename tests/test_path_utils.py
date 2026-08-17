@@ -10,7 +10,7 @@ from elt_pipeline.shared import path_utils as pu
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
 
 # ---------------------------------------------------------------------------
-# Scheme detection + root-is-string validation (Gate 0.c.i, 0.c.ii)
+# Scheme detection + root-is-string validation (module step: path_utils)
 # ---------------------------------------------------------------------------
 
 class TestDetectScheme:
@@ -72,7 +72,7 @@ class TestStripFileScheme:
 
 
 # ---------------------------------------------------------------------------
-# join_paths — the core contract (Gate 0.c.iii matrix)
+# join_paths — the core contract (cross-scheme matrix)
 # ---------------------------------------------------------------------------
 
 class TestJoinPaths:
@@ -182,7 +182,7 @@ class TestPathStringHelpers:
 
 
 # ---------------------------------------------------------------------------
-# Local POSIX round-trip (Gate 0.c.iv)
+# Local POSIX round-trip (local scheme)
 # ---------------------------------------------------------------------------
 
 class TestLocalPosixRoundTrip:
@@ -258,7 +258,7 @@ class TestLocalPosixRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# Mocked S3 branch — verify routing, call shape, and atomic path (Gate 0.c.v)
+# Mocked S3 branch — verify routing, call shape, and atomic path (s3 scheme)
 # ---------------------------------------------------------------------------
 
 class _FakeS3Client:
@@ -571,7 +571,7 @@ class TestMockedS3Routing:
 
 
 # ---------------------------------------------------------------------------
-# path_delete_tree — POSIX (Gate 4 hardening)
+# path_delete_tree — POSIX (full sweep hardening)
 # ---------------------------------------------------------------------------
 
 

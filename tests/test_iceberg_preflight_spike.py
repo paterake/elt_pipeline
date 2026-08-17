@@ -19,7 +19,7 @@ from elt_pipeline.spark.session import build_spark_session
 def test_iceberg_preflight_spike_l3_table_roundtrip(tmp_path: Path) -> None:
     """Preflight spike: Iceberg 1.11 + Spark 4.1.2 Hadoop catalog — L3 table lifecycle.
 
-    Validates every operation the platform uses (per Gate I1 spec mapping):
+    Validates every operation the platform uses:
       full_refresh      → REPLACE TABLE ... AS SELECT   (atomic table swap)
       append            → df.writeTo(...).append()
       partition_overwrite → overwritePartitions(dynamic)
@@ -33,13 +33,13 @@ def test_iceberg_preflight_spike_l3_table_roundtrip(tmp_path: Path) -> None:
       snapshot history + metadata + manifest files materialized
       apache/iceberg#15238 (CREATE VIEW) is irrelevant — platform never uses it.
 
-    SPIKE NOTE (2026-08-15): Columns named `_row_id` / `_parent_row_id` trigger
+    NOTE: Columns named `_row_id` / `_parent_row_id` trigger
     Iceberg 1.11 + Spark 4.1 reserved-metadata-column validation
     (SparkSchemaUtil.validateMetadataColumnReferences).  The spike uses `row_id`
     (no leading underscore) to exercise the rest of the stack; the
     canonical-synthetic-key naming collision is a design decision that must
-    be resolved before Gate I1 (rename canonical keys, disable via conf, or
-    upstream patch).
+    be resolved before Iceberg L3/L4 writes are enabled (rename canonical keys,
+    disable via conf, or upstream patch).
     """
 
     warehouse_dir = tmp_path / "iceberg_warehouse"

@@ -133,26 +133,25 @@ Notes:
 
 ## Normalize Engine Selection (Python Driver vs. Spark-Native Relationalization)
 
-The L1 → L2 normalize stage ships a **dual-engine gate** behind the programmatic
-`normalize_engine` parameter and the CLI `--normalize-engine` flag (values
-`"python"` or `"spark"`; **default `"spark"`** since the Gate 5 cutover). Both
-engines produce byte-identical L2 manifests, `mapping_version` hashes, table
-physical names, column layouts, and on-disk `level2/` directory layout — they
-differ only in where the per-row relationalization work executes.
+The L1 → L2 normalize stage ships a **dual-engine selector** behind the
+programmatic `normalize_engine` parameter and the CLI `--normalize-engine`
+flag (values `"python"` or `"spark"`; **default `"spark"`**). Both engines
+produce byte-identical L2 manifests, `mapping_version` hashes, table
+physical names, column layouts, and on-disk `level2/` directory layout —
+they differ only in where the per-row relationalization work executes.
 
 | Engine | Relationalizer location | When to use |
 |---|---|---|
-| `normalize_engine = "spark"` (**default**) | Spark-native `StructType` metadata walk on the driver **produces a `NormalizationPlan`**; `posexplode_outer` + struct-flatten + `uuid()` FK plumbing executes on Spark executors. Driver holds only schema + plan metadata (KBs), not data rows. | **Production default.** Recommended for all payload sizes. Eliminates the driver-memory ceiling described in the Known Limitations section below. `mapping_version`, table-name policy, and column naming are produced from the same shared `_policy.py` code as the legacy engine so L3 path lookups remain stable. |
-| `normalize_engine = "python"` (escape hatch) | Pure-Python driver walk over every dict/list/row value. Spark writes the finished list[dict] rows to parquet. | Reach for this **only** when triaging an edge payload the Spark planner has not yet reproduced. The Python engine is scheduled for removal (Gate C3) following an agreed soak window on Spark-default. |
+| `normalize_engine = "spark"` (**default**) | Spark-native `StructType` metadata walk on the driver **produces a `NormalizationPlan`**; `posexplode_outer` + struct-flatten + `uuid()` FK plumbing executes on Spark executors. Driver holds only schema + plan metadata (KBs), not data rows. | **Production default.** Recommended for all payload sizes. Eliminates the driver-memory ceiling described in the Known Limitations section below. `mapping_version`, table-name policy, and column naming are produced from the same shared `_policy.py` code on both engines so L3 path lookups remain stable. |
+| `normalize_engine = "python"` (escape hatch) | Pure-Python driver walk over every dict/list/row value. Spark writes the finished list[dict] rows to parquet. | Reach for this **only** when triaging an edge payload the Spark planner has not yet reproduced. The Python engine is scheduled for removal after a production window with zero fallbacks. |
 
 **Programmatic access:** the dual-engine switch is exposed via the
 `normalize_engine=` keyword of `normalize_level1_to_local_level2(...)` in
 [normalize/pipeline.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/pipeline.py#L106-L117).
 **CLI access:** `normalize run --normalize-engine spark|python` (default:
-`spark`). Row-level parity (Contract C1) was signed off on Temurin 17.0.20 +
-PySpark 4.1.2, unblocking the default flip.
+`spark`).
 
-**Parity guarantee (Contracts C1–C3, Gate 2 verified):**
+**Parity guarantee:**
 - `mapping_version` 16-hex SHA-256 prefix is byte-identical for the same
   logical schema (verified on a 3-deep nested-array fixture; metadata-only
   test runs without a JVM).
@@ -161,7 +160,7 @@ PySpark 4.1.2, unblocking the default flip.
 - Level2TableManifest `data_path` / `manifest_path` relative-layout semantics
   are preserved byte-identical.
 
-### Removal trigger (Gate C3): retire the `python` normalize engine
+### Removal trigger: retire the `python` normalize engine
 
 The `"python"` engine escape hatch is scheduled for removal. Do **not** extend
 it, add new relationalization rules to it, or adopt it for new sources. Keep it
@@ -169,9 +168,9 @@ only for emergency triage of an edge payload Spark cannot yet reproduce.
 
 **Trigger — open a PR to delete the Python engine branch when ALL of:**
 1. No new bug has required falling back to `normalize_engine="python"` for
-   **60 consecutive days** of production/soak use.
+   **60 consecutive days** of production use.
 2. `uv run pytest tests/test_normalize_engine_parity.py` — all Spark-native
-   fixtures still pass (Contracts C1–C3).
+   fixtures still pass.
 3. A maintainer grepped platform configs for `normalize_engine: python` and
    found **0** in-scope references (or all refs were migrated to `spark` and
    re-tested).
@@ -197,13 +196,12 @@ SQL model materialization for `load_mode: full_refresh` and
   atomic commit semantics. `full_refresh` → `createOrReplace`,
   `partition_overwrite` → `overwritePartitions(dynamic)`, `append` → `append`.
   Self-querying rebuilds work by construction because the snapshot at commit time
-  is pinned for the read, then the new commit replaces it atomically. Gate I4's
+  is pinned for the read, then the new commit replaces it atomically. The
   regression test `test_iceberg_same_path_rebuild_reads_via_self_query` in
   `tests/test_sql_iceberg_write.py` verifies this is hazard-free.
 
-The staging-swap path remains as a parity/soak escape hatch for plain-parquet
-comparison and is documented in full below. Iceberg-managed L3/L4 tables simply
-do not run through it.
+The staging-swap path remains as a plain-parquet escape hatch and is documented
+in full below. Iceberg-managed L3/L4 tables simply do not run through it.
 
 **Plain-parquet staging-swap (escape-hatch path):**
 This hazard occurs whenever a SQL model reads from the canonical table path and
@@ -216,14 +214,13 @@ deletes input files before the DAG recomputes, producing spurious
 
 `src/elt_pipeline/sql/_staging_swap.py` and the plain-parquet branch are
 already 100% bypassed by default (opt-out Iceberg). The module is retained
-only for: (a) parity comparison during the soak window, (b) teams that
-explicitly set `spark.enable_iceberg: false` in YAML/ENV and still need the
-Spark 4.x DAG hazard solved for plain-parquet.
+only for teams that explicitly set `spark.enable_iceberg: false` in YAML/ENV
+and still need the Spark 4.x DAG hazard solved for plain-parquet.
 
 **Trigger — open a PR to delete the L3/L4 staging-swap code path (module +
 call site) when ALL of:**
 1. No new bug has required falling back to `--no-iceberg-enabled` for
-   **60 consecutive days** of production/soak use.
+   **60 consecutive days** of production use.
 2. `uv run pytest tests/test_sql_iceberg_write.py` — all load-mode +
    same-path-rebuild regression tests still pass.
 3. A maintainer grepped platform configs and operator playbooks for
@@ -238,11 +235,9 @@ At deletion, remove: `_staging_swap.py`, the swap branch + error codes in
 `sql/spark_executor.py`, `tests/test_staging_swap.py` entries that cover
 L3/L4 paths, and the operator-steps sub-section below describing the swap
 write sequence. Keep the **Conceptual** hazard description so anyone reading
-history understands why the swap layer once existed. Do NOT delete references
-to the archived completion record in `docs/todo/archive/` — those are audit
-trail.
+history understands why the swap layer once existed.
 
-**Write sequence for overwrite modes (Track B, Gate 3):**
+**Write sequence for overwrite modes (plain-parquet path):**
 1. Compute staging path: `{staging_root}/stage={level}/table={table_name}/run_id={run_id}/`.
    Default staging root is `{warehouse_root}/_staging/`; per-model override via
    `SqlModelManifest.staging_root` (useful for teams with separate temp-vs-perm
@@ -383,7 +378,7 @@ uv run elt-pipeline publish run examples/publish/local_demo \
   --warehouse-root .ignore/warehouse
 ```
 
-### Pluggable catalog types (Gate I2 dispatch)
+### Pluggable catalog types (env/CLI dispatch)
 
 Six pluggable catalog types, dispatched the same way PRD 08 dispatches storage
 schemes — one seam, env-dispatched, CLI args override env vars, fail-fast
@@ -462,7 +457,7 @@ The block pins the Trino endpoint address through the
 (defaults: `127.0.0.1` and `8080`) that the operator intends to expose to BI
 tools.
 
-## Trino Reference Serving Engine (Gate I3)
+## Trino Reference Serving Engine
 
 The repository ships a zero-config Trino 468 bootstrap + launch script at
 [ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh)
@@ -535,7 +530,7 @@ will not see tables under `file:///...`.
 ### Catalog-type coverage in the script
 
 The Trino reference script dispatches to 6 catalog property writers mirroring
-the pipeline's Gate I2 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`,
+the pipeline's 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`,
 `hive_metastore`, `glue`. `nessie` and `hive_metastore` map to REST-style and
 Thrift-style Iceberg catalog connectors inside Trino with the same option
 set as their pipeline-side counterparts.
@@ -579,7 +574,7 @@ ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR="s3://my-lakehouse/warehouse/iceberg" \
   ops/trino_serving/run_trino.sh start
 ```
 
-## AWS Athena Binding (Gate I3, shared-access deployment path)
+## AWS Athena Binding (shared-access deployment path)
 
 Athena v3's built-in Iceberg support reads the exact same S3 warehouse + Glue
 Data Catalog metadata Spark writes when you use
@@ -1046,17 +1041,8 @@ root and bucket path before I/O or Spark starts. If you see an
 These are current, intentional constraints of the local-first Spark implementation. They are
 not bugs; know them before running at larger scale.
 
-- **`level1` -> `level2` relationalization defaults to driver-Python with a native-Spark
-  alternative behind a dual-engine gate.** The legacy path flattens each nested-structure
-  payload in the driver's Python process (`normalize/runner.py`); a parallel
-  `normalize_engine = "spark"` path moves relationalization into Spark executors via
-  `StructType` metadata walk → `posexplode_outer`/struct-flatten plan. Both paths emit
-  byte-identical manifests and `mapping_version` hashes (Contracts C1–C3). The legacy
-  `"python"` engine is the CLI default during the Gate 5 transition window; a single
-  very large or deeply nested source payload held under the default engine can exhaust
-  driver memory — keep per-artifact payload sizes bounded at ingest, or switch to the
-  `"spark"` engine for those sources. See **Normalize Engine Selection** above for the
-  full parity table and programmatic access.
+- **`level1` -> `level2` relationalization has a dual-engine selector.** The `"python"` engine flattens each nested-structure payload in the driver's Python process (`normalize/runner.py`); a parallel `normalize_engine = "spark"` path moves relationalization into Spark executors via `StructType` metadata walk → `posexplode_outer`/struct-flatten plan. Both paths emit byte-identical manifests and `mapping_version` hashes. **`"spark"` is the CLI default;** a single very large or deeply nested source payload held under the `"python"` fallback engine can exhaust driver memory — keep per-artifact payload sizes bounded at ingest, or use the `"spark"` engine for those sources. See **Normalize Engine Selection** above for the full parity table and programmatic access.
+
 - **`publish run` collects results to the driver.** The publish SQL result set is materialized
   in driver memory via `.collect()` so each delivery can be written as a single local file.
   This caps output size to driver memory. It matches the prior sqlite `fetchall()` behaviour
@@ -1068,8 +1054,13 @@ not bugs; know them before running at larger scale.
   genuine discovered partition columns and can appear in `WHERE` predicates for automatic
   partition pruning. Additionally, every `level2` row carries `source_name`, `ingest_date`,
   and `_run_id` as real in-data columns, so `level3` SQL models can also filter or project them
-  without relying on path metadata. See `docs/todo/archive/TODO_PATHING_COMPLETED.md` for the full pathing and
-  partition contract design record.
+  without relying on path metadata. The L2 structural layout and partition contract
+  design was finalized as part of PRD 08 (storage root URI dispatch) and PRD 10
+  (canonical platform architecture). The rules above — `source=`/`entity=`
+  structural roots, discovered partition columns for `table`/`run_id`/
+  `mapping_version`/`ingest_date`, `source_name` + `ingest_date` + `_run_id`
+  carried as in-data columns — are authoritative. See [08-prd-storage-root-uri-io-dispatch.md](../prd/08-prd-storage-root-uri-io-dispatch.md)
+  and [10-prd-architecture-and-lifecycle.md](../prd/10-prd-architecture-and-lifecycle.md).
 - **`--warehouse-root` isolation is per-environment by convention.** There is no `environment=`
   segment in `level3`/`level4` paths, so each environment (dev/staging/prod) MUST point at
   its own warehouse root pair. See the **Environment and Storage Root Convention** section

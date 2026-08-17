@@ -370,8 +370,8 @@ def _iceberg_effective_enabled(
     # Old opt-in: returned None (caller treated as "skip iceberg").  New opt-out:
     # Iceberg is the default write path for L3/L4; user must set
     # ELT_PIPELINE_ICEBERG_ENABLED=false or --no-iceberg-enabled or YAML
-    # spark.enable_iceberg: false to disable.  Gate I4 staging-swap retires
-    # after one soak cycle with this default in place.
+    # spark.enable_iceberg: false to disable.  The staging-swap plain-parquet
+    # escape hatch is retained for teams that explicitly opt out of Iceberg.
     return True
 
 

@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v1
+- Status: Draft
 - Product area: `elt_pipeline`
 - Scope: all runtime stages
 

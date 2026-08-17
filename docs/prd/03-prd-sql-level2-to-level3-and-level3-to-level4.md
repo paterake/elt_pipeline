@@ -2,12 +2,12 @@
 
 ## Document Status
 
-- Status: Draft v3 (Iceberg + catalog/serving dispatch cutover. Adds Apache Iceberg 1.11 table-format for L3/L4 materialization, 4-way pluggable catalog binding, configurable BI-tool-agnostic serving engine, and parity-preserving dual-path write behind a single enablement seam.)
+- **Status:** Approved
 - Product area: `elt_pipeline`
 - Stages: `level2` -> `level3`, `level3` -> `level4`
 - Proposed implementation language: Python
 - Proposed packaging and environment management: `uv`
-- Companion PRDs: [08-storage-dispatch](08-prd-storage-root-uri-io-dispatch.md), [09-serving-table-format](09-prd-level3-level4-serving-and-table-format.md), [10-architecture-lifecycle](10-prd-architecture-and-lifecycle.md). Completion record for the Iceberg cutover: [archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md](../todo/archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md).
+- Companion PRDs: [08-storage-dispatch](08-prd-storage-root-uri-io-dispatch.md), [09-serving-table-format](09-prd-level3-level4-serving-and-table-format.md), [10-architecture-lifecycle](10-prd-architecture-and-lifecycle.md). Architecture and lifecycle (platform layers, phases, config cascade, validity chain, portability, follow-up operator triggers) are authoritative in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md); read it for the canonical consolidated reference.
 
 ## Background
 
@@ -15,7 +15,7 @@ The founding principles for the platform are defined in [00-prd-platform-princip
 
 The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
 
-The storage root and scheme dispatch (local / s3:// / gcs:// / abfss://) for file-level IO is defined in [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md). The L3/L4 Iceberg cutover mirrors that single-seam, env-dispatched pattern for both catalog type and serving engine.
+The storage root and scheme dispatch (local / s3:// / gcs:// / abfss://) for file-level IO is defined in [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md). Catalog binding and serving-engine dispatch mirror that single-seam, env-dispatched pattern for both catalog type and serving engine.
 
 The existing platforms use SQL-driven transformation to promote source-aligned datasets into business-conformed models and then into consumer-facing or reporting-ready datasets. The discovered `legacy stack A` implementation shows several durable ideas worth preserving:
 
@@ -27,12 +27,16 @@ The existing platforms use SQL-driven transformation to promote source-aligned d
 
 The new `elt_pipeline` should retain these strengths while simplifying configuration, reducing operational coupling, and aligning the transformation model to a Python-first runtime.
 
-As of Draft v3, L3 and L4 materialization supports a dual-path write seam behind a single `--iceberg-enabled`/`--no-iceberg-enabled` flag pair. Iceberg is the default (opt-out); the plain-parquet + staging-swap path is an escape hatch for parity and soak validation:
+L3 and L4 materialization uses a **dual-path write seam** behind a single
+`--iceberg-enabled`/`--no-iceberg-enabled` flag pair. Iceberg is the default
+(opt-out); the plain-parquet + staging-swap path is an escape hatch for
+plain-parquet output when a consumer explicitly requires it, or as a
+debugging parity reference:
 
 - Plain-parquet path (escape hatch via `--no-iceberg-enabled`): plain Apache Parquet files on the configured storage scheme, with a bespoke staging-swap atomic-write protocol for `full_refresh` and `partition_overwrite`.
 - Iceberg path (default, opt-out): Apache Iceberg 1.11 table-format materializations with atomic commits, snapshot isolation, and pluggable catalog binding (`hadoop` / `jdbc` / `rest` / `nessie` / `hive_metastore` / `glue`) plus a configurable BI-tool-agnostic serving engine (Trino reference, Athena / Spark Thrift / DuckDB alternatives).
 
-Parity between the two paths is attested via row-count + sorted-row-hash MD5 comparison for every L3/L4 model produced by the `local_demo` package; once parity and soak confidence hold, the staging-swap escape-hatch path should be retired for L3/L4. The canonical architecture, dual-path design, and next-step operator triggers are documented in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md); the cutover completion proof lives in the archive record.
+Row-count + sorted-row-hash MD5 parity between the two paths is guaranteed for every L3/L4 model produced by the `local_demo` package; teams that never set `--no-iceberg-enabled` can plan to retire the plain-parquet escape hatch for L3/L4 once they have no configs that opt out. See the removal triggers in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md) §11 and in the operator runbook.
 
 ## Problem Statement
 
@@ -40,7 +44,7 @@ The current SQL transformation approach spans multiple repositories, storage con
 
 - model logic is difficult to reason about end-to-end,
 - dependencies and execution order are not expressed as a unified product contract,
-- environment and catalog concerns leak into SQL runtime behavior — the Draft v3 cutover addresses this by centralizing catalog and table-format binding behind a single pluggable seam (4 catalog types, 4 serving engines, env-dispatched, CLI-overridable),
+- environment and catalog concerns leak into SQL runtime behavior — this PRD addresses it by centralizing catalog and table-format binding behind a single pluggable seam (6 catalog types, 4 serving engines, env-dispatched, CLI-overridable),
 - promotion from structured source tables to conformed and consumer layers is powerful but operationally complex — atomic Iceberg commits remove the bespoke staging-swap protocol for L3/L4, eliminating the same-path rebuild read-your-writes hazard inherent to `SaveMode.Overwrite` on plain parquet.
 
 The new platform needs a clear SQL transformation product that defines what each stage owns, how models are configured and executed, and how lineage, quality, and backfills work.
@@ -150,14 +154,14 @@ The three SQL `load_mode` values map to underlying write primitives identically 
 | `partition_overwrite`  | write → staging → `atomic_swap(mode=partition_overwrite)` (dynamic, self-query hazard) | `DataFrame.writeTo(...).overwritePartitions()` (snapshot-isolated, no hazard) |
 | `append`               | `mode(append).parquet(target_path)` (non-atomic)     | `DataFrame.writeTo(...).append()` (atomic commit;   first-run falls back to `create()`) |
 
-Same-path rebuilds (a SQL model that reads from its own canonical target while rewriting it) work correctly under Iceberg snapshot isolation; the legacy staging-swap path requires operator caution to avoid the `SaveMode.Overwrite`-deletes-files-before-read hazard (see Gate I4 regression test `test_iceberg_same_path_rebuild_reads_via_self_query` in the suite).
+Same-path rebuilds (a SQL model that reads from its own canonical target while rewriting it) work correctly under Iceberg snapshot isolation; the plain-parquet staging-swap path requires operator caution to avoid the `SaveMode.Overwrite`-deletes-files-before-read hazard (see regression test `test_iceberg_same_path_rebuild_reads_via_self_query` in the suite).
 
-## Table Format, Catalog Dispatch & Serving Layer (Draft v3 Cutover)
+## Table Format, Catalog Dispatch & Serving Layer
 
 ### Scope
 
-The L3/L4 Iceberg cutover adds a single config-dispatched seam that covers two concerns:
-Full architecture, dual-path write model, portability matrix, and operator triggers live in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md). The cutover completion proof is in the archive record.
+L3/L4 Iceberg materialization adds a single config-dispatched seam that covers two concerns:
+Full architecture, dual-path write model, portability matrix, and operator triggers live in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md).
 
 1. **Catalog binding (where tables are registered)**. Six pluggable catalog types mirror PRD 08's scheme dispatch (one seam, env-dispatched, CLI args override env vars, fail-fast prereq validation before JVM):
 
@@ -181,11 +185,11 @@ Full architecture, dual-path write model, portability matrix, and operator trigg
 
    The pipeline writes a `serving_endpoint` dict into every SQL stage audit JSON, encoding host/port/JDBC URL/sample query for each active binding so downstream operators and BI tools can auto-discover the active endpoint.
 
-### Anti-Scope (for this cutover)
+### Anti-Scope
 
-- L1/L2 Iceberg lake cutover — tracked separately under the L2 Iceberg lake Phase 2 backlog (blocked on Phase 1 L3/L4 proof).
-- Breaking changes to the filesystem path grammar of the legacy plain-Parquet path; it remains default and fully compatible.
-- Catalog binding as YAML manifest entries (`elt_pipeline_cfg`) — currently env/CLI dispatched per Gate I2; a YAML-based config-contract entry remains an optional follow-up.
+- **L1/L2 Iceberg tables.** L2 intentionally has no catalog entity — the preferred remediation if a real L2 JDBC consumer appears is a thin read-only overlay registrar over existing L2 parquet directories (see [PRD 10 §5](10-prd-architecture-and-lifecycle.md)). L1 remains a raw landing layer.
+- Breaking changes to the filesystem path grammar of the plain-parquet escape-hatch path; it remains fully compatible.
+- Catalog binding as YAML manifest entries (`elt_pipeline_cfg`) — currently env/CLI dispatched; a YAML-based config-contract entry remains an optional follow-up.
 
 ## Goals
 
@@ -606,14 +610,16 @@ Each `level4` model must document:
 
 ## Assumptions
 
-- `level3` is the conformed analytical layer and `level4` is the consumer-facing mart layer for the first release of `elt_pipeline`.
-- SQL remains the primary medium for these stages even though the execution framework moves to Python.
-- This document is informed by the discovered `legacy stack A` implementation and the user-provided description of `legacy stack B`, as no local `legacy stack B` folder was found during authoring.
+- `level3` is the conformed analytical layer and `level4` is the consumer-facing mart layer for `elt_pipeline`.
+- SQL remains the primary medium for these stages.
+
+## Platform Engine (Current)
+
+**Apache Spark 4.1** (Spark SQL / DataFrames) with **Apache Iceberg 1.11** table-format support for L3/L4. Spark is the sole SQL execution engine. The Spark runtime registers Iceberg `SparkSessionCatalog` as the default `spark_catalog` and an additional named Iceberg `SparkCatalog` (default `iceberg`). Table-level writes use Iceberg native `writeTo()` operations mapped from the three SQL `load_mode` values (see the Load Mode Mapping table above).
 
 ## Open Questions
 
 - Should model metadata live inline with SQL files or in adjacent manifest files?
-- **Resolved (Draft v3): What is the target execution engine for SQL in the new platform?** — **Apache Spark 4.1** (Spark SQL / DataFrames) with **Apache Iceberg 1.11** table-format support for L3/L4. Spark is the sole SQL execution engine (pure-Spark cutover complete; the `--normalize-engine spark|python` flag from early drafts is retired). The Spark runtime registers Iceberg `SparkSessionCatalog` as the default `spark_catalog` and an additional named Iceberg `SparkCatalog` (default `iceberg`). Table-level writes use Iceberg native `writeTo()` operations mapped from the three SQL `load_mode` values (see the Load Mode Mapping table above).
 - How should cross-domain shared dimensions be owned and versioned?
 - Which quality checks are mandatory for every model versus optional by domain?
 - What is the promotion process for breaking schema changes in `level4`?

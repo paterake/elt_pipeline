@@ -47,9 +47,7 @@ This repository must remain client-neutral.
 ## Docs
 
 PRDs live in `docs/prd/` and define the target-state architecture.
-
-The implementation continuity backlog is tracked in `docs/todo/archive/IMPLEMENTATION_BACKLOG.md`.
-The completed backlog snapshot is archived in `docs/todo/archive/IMPLEMENTATION_BACKLOG_COMPLETED.md`.
+The canonical architecture, 4-phase lifecycle, config cascade, SQL validity chain, portability matrix, and next-cycle operator triggers are consolidated in the top-level PRD reference [docs/prd/10-prd-architecture-and-lifecycle.md](docs/prd/10-prd-architecture-and-lifecycle.md) — start there.
 
 Recommended starting points:
 

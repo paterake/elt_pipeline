@@ -56,7 +56,7 @@ class PublishSource(BaseModel):
     def validate_stage(cls, value: str) -> str:
         cleaned = value.strip()
         if cleaned != "level4":
-            raise ValueError("source.stage must be 'level4' for the approved v1 publish contract")
+            raise ValueError("source.stage must be 'level4' for the publish contract")
         return cleaned
 
     @field_validator("dataset")

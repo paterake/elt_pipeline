@@ -2,9 +2,9 @@
 
 ## Document Status
 
-- **Status:** Approved v1.1 (L3/L4 Iceberg cutover clarifications: catalog dispatch and serving engine dispatch now explicitly mirror the single-seam scheme-dispatch pattern in this PRD. Catalog binding + BI-engine serving for L3/L4 no longer anti-scoped; they track under [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md) and [PRD 09](09-prd-level3-level4-serving-and-table-format.md) with the canonical architecture in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md), and follow this PRD's exact architectural pattern. Iceberg cutover completion record: [archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md](../todo/archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md).)
+- **Status:** Approved (catalog dispatch and serving engine dispatch mirror the single-seam scheme-dispatch pattern in this PRD. Catalog binding + BI-engine serving for L3/L4 follow this PRD's exact architectural pattern.)
 - **Product area:** `elt_pipeline` / cross-stage (ingest → level1 → level2 → sql → publish)
-- **Scope:** Platform-wide storage contract and I/O dispatch for stage root paths, object paths, bucket paths, and (as of v1.1) the mirrored catalog + serving-engine dispatch seams for L3/L4.
+- **Scope:** Platform-wide storage contract and I/O dispatch for stage root paths, object paths, bucket paths, plus the mirrored catalog + serving-engine dispatch seams for L3/L4.
 - **Design precedence:** This PRD codifies approved conventions for URI-aware storage-root handling. It is a **correction** to the earlier local-POSIX-only implementation in `elt_pipeline`, which incorrectly assumed `pathlib.Path` for all path operations.
 
 ## Purpose
@@ -32,7 +32,7 @@ The non-negotiable rules set by this PRD are:
 
 This PRD restores the correct design that was incorrectly descoped earlier (as "object storage URIs for level2+") and brings `elt_pipeline` into the correct operating model.
 
-This document is **normative.** Any stage PRD, TODO backlog item, or implementation that conflicts with this document must be updated to conform.
+This document is **normative.** Any stage PRD or implementation that conflicts with this document must be updated to conform.
 
 ## Background
 
@@ -106,7 +106,7 @@ This does not mean the L1 manifest `data_path` is always a global URI. The exist
 
 - **Support for schemes beyond `s3://` and POSIX local.** GCS, Azure Blob, HDFS native URI, ADLS Gen2, and any others are out of scope. The hard stop on unsupported schemes preserves correctness without artificially expanding scope. (They can be added later with a tiny 2-line change to the scheme check, following exactly the same pattern.)
 - **A plugin/registry system for new schemes.** Not needed. Add a branch in the dispatcher when/if required. Simplicity over extensibility.
-- **Catalog, metastore, or table-format changes (as implementation work) are NOT in this PRD.** Delta Lake, Iceberg, Hive Metastore, and AWS Glue catalog integration for L3/L4 are tracked under the [L3/L4 Iceberg backlog](../todo/TODO_L3_L4_ICEBERG_SERVING.md) and [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md). HOWEVER: this PRD is the architectural pattern that catalog dispatch and serving-engine dispatch mirror. Both use a single seam (catalog type `hadoop`/`jdbc`/`rest`/`glue`, serving engine `trino`/`athena`/`spark_thrift`/`duckdb`) dispatched by env vars, overridden by CLI args, with fail-fast prereq validation before expensive JVM or network operations — exactly the same as scheme dispatch here. Any future catalog or serving-engine change MUST adhere to this single-seam pattern rather than adding bespoke environment switches or hard-coded catalog choices.
+- **Catalog, metastore, or table-format changes (as implementation work) are NOT in this PRD.** Delta Lake, Iceberg, Hive Metastore, and AWS Glue catalog integration for L3/L4 are tracked under [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md) and [PRD 10](10-prd-architecture-and-lifecycle.md). HOWEVER: this PRD is the architectural pattern that catalog dispatch and serving-engine dispatch mirror. Both use a single seam (catalog type `hadoop`/`jdbc`/`rest`/`nessie`/`hive_metastore`/`glue`, serving engine `trino`/`athena`/`spark_thrift`/`duckdb`) dispatched by env vars, overridden by CLI args, with fail-fast prereq validation before expensive JVM or network operations — exactly the same as scheme dispatch here. Any future catalog or serving-engine change MUST adhere to this single-seam pattern rather than adding bespoke environment switches or hard-coded catalog choices.
 - **Changes to SQL model semantics, partition conventions, lineage column rules, load modes, or quality/lineage backend behavior.** All of those remain as approved and are unaffected by this PRD. They operate on dataframes once Spark has read them; this PRD is only about locating the bytes that feed into Spark and writing out the non-parquet metadata/audit artifacts.
 - **Mount products.** Mountpoint-S3, s3fs-fuse, HDFS NFS gateway, EMRFS-at-local-path, or any other FUSE-style POSIX-over-object-storage product are explicitly **not required** for this PRD to pass. The user's declared operating model is "no mounts, pure URI flags."
 - **`elt_pipeline_cfg` centralized config service.** Still out of scope / separate future PRD. This PRD works the same way as today with per-pipeline YAML files passed as CLI args or as `s3://…` URIs to `load_pipeline_config`.
@@ -213,21 +213,19 @@ For each of the 23 files:
    - L3 canonical model and L4 summary model parquet files land in `warehouse_root` prefix with correct `partitionBy` layout.
    - Level5 publish exports (CSV) land correctly and are readable via `aws s3 cp` + standard `cat`/`head`.
 5. **Lint + IDE diagnostics clean:** `ruff check` passes on all touched files; `GetDiagnostics` returns zero errors.
-6. **Cross-ref update:** Top-level tracker at `docs/todo/TODO.md` lists this TODO as active implementation backlog. Archived prior TODOs' descoped-object-URI notes cross-reference this PRD as the approved-scope restoration (not descoped anymore).
+6. **Cross-ref update:** New follow-up work against this PRD (if any) is triggered in-line from PRD 10 §11 / [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) follow-up operator-trigger sections. Descoped-object-URI handling was historically flagged as deferred in a prior design record; with this PRD's approval those URIs are restored to approved scope (see [PRD 10 §6](10-prd-architecture-and-lifecycle.md)).
 7. **Operator documentation:** [LOCAL_OPERATOR_RUNBOOK.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/operator/LOCAL_OPERATOR_RUNBOOK.md) gets a new § *Cloud Native (No-Mounts) EMR Execution Pattern* describing the root-path convention, scheme routing, IAM-role credential note, and the 4-stage CLI invocation pattern with `s3://` URIs.
 
-## Implementation Order (Gates)
+## Implementation Order (recommended ordering)
 
-The implementation must follow this gated order. Each gate is a complete, independently reviewable + testable increment:
+This order ensures at no point is the repo in a "half-broken" state: each step moves one concern over to the new string contract without touching others.
 
-1. **Gate 0 (path_utils module + tests):** Deliverable 0 plus the unit tests. All dispatch functions defined; local POSIX branch passes 100% on filesystem fixtures; S3 branch mocked and exercised. No other files touched yet.
-2. **Gate 1 (CLI typing only):** Deliverable 1. Change only CLI arg types, root resolution, and signatures of the top-level runner entry points. All root flow-ins must be `str` by the end of this gate. No behavior change yet because downstream call sites are still updated next.
-3. **Gate 2 (connector + storage modules):** Deliverables 3+4. Object-storage connector plus all shared storage write paths.
-4. **Gate 3 (SQL + Publish stages):** Deliverables 5+6.
-5. **Gate 4 (Full sweep + hardening):** Audit every remaining `from pathlib import Path` in the 23 files. Any stray `root_path / "X"` joins are fixed. Add scheme-validation guard, optional extras, docs/runbook.
-6. **Gate 5 (Verification):** Run success criteria 1–5 locally + on EMR.
-
-This order ensures at no point is the repo in a "half-broken" state: each gate moves one concern over to the new string contract without touching others.
+1. **Module step (path_utils + tests):** Deliverable 0 plus the unit tests. All dispatch functions defined; local POSIX branch passes 100% on filesystem fixtures; S3 branch mocked and exercised. No other files touched yet.
+2. **CLI typing step:** Deliverable 1. Change only CLI arg types, root resolution, and signatures of the top-level runner entry points. All root flow-ins must be `str` by the end of this step. No behavior change yet because downstream call sites are still updated next.
+3. **Connector + storage modules step:** Deliverables 3+4. Object-storage connector plus all shared storage write paths.
+4. **SQL + Publish stages step:** Deliverables 5+6.
+5. **Full sweep + hardening step:** Audit every remaining `from pathlib import Path` in the 23 files. Any stray `root_path / "X"` joins are fixed. Add scheme-validation guard, optional extras, docs/runbook.
+6. **Verification step:** Run success criteria 1–5 locally + on EMR.
 
 ## Operator Consequences and Rollback
 
@@ -237,9 +235,8 @@ Rollback strategy is trivial since the change is internal I/O dispatch without c
 
 ## References and Precedents
 
-- Existing PRDs in `docs/prd/`: [00-prd-platform-principles.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/00-prd-platform-principles.md) (Client Neutrality, Layered as Contract), [01-prd-ingestion-raw-to-level1.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/01-prd-ingestion-raw-to-level1.md), [02-prd-level1-to-level2.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/02-prd-level1-to-level2.md), [03-prd-sql-level2-to-level3-and-level3-to-level4.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/03-prd-sql-level2-to-level3-and-level3-to-level4.md), [06-prd-level4-to-level5-publish-and-export.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/06-prd-level4-to-level5-publish-and-export.md).
-- Archived backlog [TODO_PATHING_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_PATHING_COMPLETED.md) previously marked object-store URIs as "descoped deferred." With this PRD's approval they are restored to approved scope.
+- Existing PRDs in `docs/prd/`: [00-prd-platform-principles.md](00-prd-platform-principles.md) (Client Neutrality, Layered as Contract), [01-prd-ingestion-raw-to-level1.md](01-prd-ingestion-raw-to-level1.md), [02-prd-level1-to-level2.md](02-prd-level1-to-level2.md), [03-prd-sql-level2-to-level3-and-level3-to-level4.md](03-prd-sql-level2-to-level3-and-level3-to-level4.md), [06-prd-level4-to-level5-publish-and-export.md](06-prd-level4-to-level5-publish-and-export.md), [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md). Descoped-object-URI handling was historically flagged as deferred in a prior completed design record; with this PRD's approval those URIs are restored to approved scope (see [PRD 10](10-prd-architecture-and-lifecycle.md) §6 Portability for all supported storage/catalog schemes).
 
 ## Document Control
 
-- Approved v1, 2026-08-13: Initial version. Restores correct storage-root convention from sibling repos; replaces prior descoped-item note with active approved scope.
+- Approved: Initial version. Restores correct storage-root convention; replaces prior descoped-item note with approved scope.

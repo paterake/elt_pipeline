@@ -319,8 +319,7 @@ def test_csv_header_produces_valid_plan() -> None:
 
 # ---------------------------------------------------------------------------
 # 5. Row-level output validity (Spark-required — needs JVM).
-#    For C3 cutover this asserts known expected row counts and values signed
-#    off in Gate C1 parity tests against the legacy runner.
+#    Asserts known expected row counts and values for both normalize engines.
 # ---------------------------------------------------------------------------
 
 def _expected_nested_orders_row_counts() -> dict[str, int]:
@@ -337,10 +336,10 @@ def _expected_nested_orders_row_counts() -> dict[str, int]:
 def test_spark_relationalizer_row_level_outputs_for_3_deep_nested_arrays(
     spark_session_fixture: SparkSession,
 ) -> None:
-    """Row-level structural assertion against Gate C1 signed-off known values.
+    """Row-level structural assertion against known expected values.
 
     Verifies for every logical path:
-      - row counts match the signed-off parity counts
+      - row counts match the expected parity counts
       - scalar values match the known fixture data
       - _array_index values are 0..N-1 for child rows
     """

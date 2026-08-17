@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v2 (pathing revision: governance-by-path on L3 partitions, per-env roots)
+- Status: Draft
 - Product area: `elt_pipeline`
 - Scope: all stages and levels
 

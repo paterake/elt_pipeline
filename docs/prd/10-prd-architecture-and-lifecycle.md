@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v1 (canonical reference)
+- Status: Canonical reference
 - Product area: `elt_pipeline`
 - Scope: platform-wide architecture, execution lifecycle, configuration, validity chain, portability, serving
 
@@ -153,24 +153,24 @@ Write mode (`load_mode` = `append` | `overwrite` | `partition_overwrite`) is res
 
 ## 4. Four-Tier SQL Validity Chain
 
-Every L3/L4 SQL model passes through four progressively stronger validation gates before any write occurs. `--validate-only` runs all four gates and exits.
+Every L3/L4 SQL model passes through four progressively stronger validation tiers before any write occurs. `--validate-only` runs all four tiers and exits.
 
-### Gate 1 — Token Compile
+### Tier 1 — Token Compile
 
 Jinja-style `{{ token }}` substitution with strict resolve validation. Every referenced token must have a value in the composed context; missing tokens fail immediately with file+line attribution.
 
-### Gate 2 — Partition-Requirement Validation
+### Tier 2 — Partition-Requirement Validation
 
 For `overwrite` mode: the model's output partition columns must be present and typed correctly; for `partition_overwrite` mode: the dynamic partition key set must match Iceberg's `write.distribution-mode` requirements. Missing partition keys fail before Spark submit.
 
-### Gate 3 — Catalyst EXPLAIN FORMATTED
+### Tier 3 — Catalyst EXPLAIN FORMATTED
 
 The final resolved DataFrame is passed to `df.explain("formatted")`. The planner walks:
 - parse → analyze → resolve → optimize.
 - L2 tables referenced by the SQL are registered as temporary views via the L2 glob-reader (this is how L2 participates in EXPLAIN without a catalog entity).
 - Any unresolved column, missing relation, or type mismatch is surfaced with plan line attribution.
 
-### Gate 4 — Post-Write Quality Hooks
+### Tier 4 — Post-Write Quality Hooks
 
 After successful write, the model's `manifest.yaml` quality hooks execute:
 - `row_count_min` — fail if output row count below threshold,
@@ -179,7 +179,7 @@ After successful write, the model's `manifest.yaml` quality hooks execute:
 
 ### Validate-Only Contract
 
-`elt {sql|publish} run --validate-only` runs gates 1-2-3-4 on the output sample without committing a write transaction. This guarantees CI parity for SQL pull requests.
+`elt {sql|publish} run --validate-only` runs tiers 1-2-3-4 on the output sample without committing a write transaction. This guarantees CI parity for SQL pull requests.
 
 ---
 
@@ -199,6 +199,40 @@ A catalog at L2 is explicitly rejected because:
 - Table-format value accrues for downstream consumers at L3/L4. Adding Iceberg to L2 is second-system uniformity, not value.
 
 If a real L2 JDBC consumer appears later, the preferred remediation is a thin external catalog overlay over the existing L2 parquet directories — zero data migration required.
+
+#### Trigger for Adding the L2 Thin Catalog Overlay (Not for Uniformity)
+
+Do **not** build the overlay proactively. Build it (or adopt an off-the-shelf
+catalog overlay component such as a DuckDB / Trino view registrar script)
+**only when all of the following are true simultaneously**:
+
+1. A downstream consumer has a concrete requirement to **query L2 directly over
+   JDBC/ODBC** (e.g. a BI tool ad-hoc drill, a compliance audit query, or a
+   data-scientist workflow where the 2-line Jupyter `L2TableReader` helper is
+   not sufficient).
+2. The same requirement **cannot be satisfied by promoting the query to an L3
+   canonical or L4 mart model** with quality-hook coverage. L3/L4 is where
+   table-format value accrues; L2 JDBC access is explicitly a last-resort
+   escape hatch.
+3. Platform owners have confirmed that **no L2 pipeline ownership model
+   changes are required** for the overlay — the overlay is a read-only
+   registerer of already-committed run_id directories and **must never**
+   mutate L2 parquet files, directory layouts, or `mapping_version`
+   semantics.
+4. The consumer accepts that the overlay is a **thin registrar only**, not a
+   table-format:
+   - No L2 ACID / time-travel / snapshot semantics.
+   - No DDL against L2 tables via the overlay.
+   - No schema-write path — the overlay re-reads L2 `mergeSchema` semantics
+     on every registration call.
+
+If all 4 conditions are met, the recommended implementation scope is ~60–120
+LOC: iterate `**/table=X/run_id=*` roots, call `SparkSession.read.parquet(...,
+mergeSchema=True)`, infer the current effective schema, then `CREATE OR REPLACE
+VIEW <overlay_namespace>.<table>` in the chosen registrar (Trino views, DuckDB
+ATTACH'd catalog, Glue external-table registrar, or Hive Metastore external
+table). **No L2→L2 Iceberg conversion, no schema-write path, no data migration,
+and no mapping_version mutation are permitted in this scope.**
 
 ---
 
@@ -343,6 +377,51 @@ Atomic swap → target location
 | L2→L3 SQL model manifest format, quality hooks, partition contracts | [03-prd-sql-level2-to-level3-and-level3-to-level4.md](03-prd-sql-level2-to-level3-and-level3-to-level4.md) |
 | Storage URI dispatch (string URIs, scheme routing, no pathlib roots) | [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md) |
 | L3/L4 serving & table-format trade-offs | [09-prd-level3-level4-serving-and-table-format.md](09-prd-level3-level4-serving-and-table-format.md) |
-| Operator runbook (Trino launch, CLI examples) | [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) |
+| Operator runbook (Trino launch, CLI examples, removal triggers) | [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) |
 | Troubleshooting (JDK, Spark, staging-swap) | [TROUBLESHOOTING.md](../operator/TROUBLESHOOTING.md) |
 | Release & smoke-test checklist | [LOCAL_DEVELOPMENT_AND_RELEASE.md](../maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md) |
+| JDK / JVM toolchain & JDK 23 workarounds | [JVM_TOOLCHAIN_SETUP.md](../maintainer/JVM_TOOLCHAIN_SETUP.md) |
+
+---
+
+## 11. Follow-Up Operator Triggers (No Backlog File Required)
+
+All workstream decisions are folded into the canonical PRDs (03, 08, 09, 10) and operator/maintainer docs in this directory. No separate backlog, tracker, or historical audit-trail folder is maintained inside canonical `docs/` as part of the public repo surface.
+New follow-up work is triggered **in-line by the conditions below**, not by a backlog file. Open a ticket / PR when, and only when, the stated condition is met.
+
+### 11.1 Retire the `python` normalize engine (escape hatch)
+
+Trigger — open a PR to delete when **all** hold:
+1. No new bug required falling back to `normalize_engine="python"` for 60
+   consecutive days of production use.
+2. `uv run pytest tests/test_normalize_engine_parity.py` — all Spark-native
+   fixtures still pass.
+3. Grep for `normalize_engine: python` across platform configs returns 0
+   in-scope references (or all refs were migrated to `spark` and re-tested).
+4. Troubleshooting for `normalize run` driver OOM points solely at ingest
+   payload splitting + Spark engine.
+
+Also documented in [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) under "Removal trigger: retire the `python` normalize engine".
+
+### 11.2 Retire the staging-swap write escape hatch for L3/L4
+
+Trigger — open a PR to delete when **all** hold:
+1. No new bug required `--no-iceberg-enabled` for 60 consecutive days of
+   production use.
+2. `uv run pytest tests/test_sql_iceberg_write.py` — all load-mode +
+   same-path-rebuild regression tests still pass.
+3. Grep for `spark.enable_iceberg:\s*false`,
+   `ELT_PIPELINE_ICEBERG_ENABLED=0`, and `--no-iceberg-enabled` across
+   platform configs + operator playbooks returns **0** in-scope references
+   (or all refs were migrated to Iceberg and re-tested).
+4. This PRD, the runbook, and troubleshooting no longer mention swap-layer
+   operator steps for L3/L4.
+
+Also documented in [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) under "Removal trigger: retire the staging-swap escape hatch for L3/L4".
+
+### 11.3 Build the thin L2 external catalog overlay
+
+Trigger — open a scoping PR only when **all 4** L2 overlay conditions in
+§5 hold simultaneously (concrete JDBC consumer, not solvable at L3/L4, no
+ownership-model changes, thin-only scope accepted). Otherwise do nothing —
+L2 intentionally has no catalog.

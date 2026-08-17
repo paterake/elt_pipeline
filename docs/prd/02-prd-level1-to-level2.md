@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v2 (pathing revision: lineage columns, per-env roots, parent-directory reads)
+- Status: Draft
 - Product area: `elt_pipeline`
 - Stage: `level1` -> `level2`
 - Proposed implementation language: Python

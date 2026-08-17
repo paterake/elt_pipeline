@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Gate I5 end-to-end parity proof: run shared ingest+normalize to seed L2,
+# Iceberg end-to-end parity: run shared ingest+normalize to seed L2,
 # then materialize the local_demo SQL project once with plain-parquet
 # staging-swap (legacy default) and once with Iceberg table-format
 # (--iceberg-enabled) then compare row-counts + md5 checksums per model.

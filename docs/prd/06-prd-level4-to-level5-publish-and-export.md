@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Approved v1
+- Status: Approved
 - Product area: `elt_pipeline`
 - Stages: `level4` -> `level5`
 - Proposed implementation language: Python

@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: **Accepted v1 (ratified 2026-08-15)** — Option B (Apache Iceberg at `level3`/`level4`) confirmed as the serving-layer direction. Delta Lake (Option C) retained only as a documented fallback for a future provably Spark/Databricks-only deployment.
+- Status: **Accepted** — Apache Iceberg at `level3`/`level4` is the serving-layer contract. Delta Lake is retained as a documented fallback for a future provably Spark/Databricks-only deployment.
 - Product area: `elt_pipeline`
 - Scope: `level3`, `level4`, and the serving contract to downstream consumers
 - Depends on: [00-prd-platform-principles.md](00-prd-platform-principles.md), [00-prd-oss-adoption-strategy.md](00-prd-oss-adoption-strategy.md), [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md), [03-prd-sql-level2-to-level3-and-level3-to-level4.md](03-prd-sql-level2-to-level3-and-level3-to-level4.md), [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md)
@@ -72,7 +72,7 @@ The staging-swap protocol is **custom platform code re-implementing a commodity 
 Rationale, mapped to principles:
 
 - **Closes the serving gap** (Req 1): Iceberg tables are natively queryable by Athena/Trino/Spark SQL, which is how Qlik/Tableau/Quicksight connect. This is the usable end state.
-- **Deletes custom code** (Req 5 + OSS Strategy): Iceberg's atomic commits, partition overwrite (`overwrite`/`MERGE`/`replaceWhere`-equivalent), and snapshot isolation **replace [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the manual partition merge.** Net custom-code *reduction* — advancing "library purity" further than the normalize cutover did.
+- **Deletes custom code** (Req 5 + OSS Strategy): Iceberg's atomic commits, partition overwrite (`overwrite`/`MERGE`/`replaceWhere`-equivalent), and snapshot isolation **replace [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the manual partition merge.** Net custom-code *reduction* — advancing "library purity" further than the dual-engine normalize selection does.
 - **Preserves portability** (Req 3): open Apache format on any Spark; catalog is env-dispatched (Hadoop/JDBC local, Glue/REST cloud) exactly like storage scheme in PRD 08. No AWS in business logic.
 - **Keeps the model owned** (Req 4): the level contract, mapping catalog, audit/lineage, and SQL authoring model are unchanged. Iceberg is wrapped behind the L3/L4 write/read layer — it is the commodity substrate, not the architecture.
 - **No change to the user contract** (Req 2): transforms stay SQL, engine stays Spark. The change is in *how the result is materialized*, invisible to config authors.
@@ -125,16 +125,29 @@ Iceberg at L2 is chosen for **platform consistency and custom-code deletion** (o
 ## Impact and Migration
 
 - **Write path:** L3/L4 materialization switches from `writer.parquet(target_path)` to Iceberg table writes behind the same abstraction. `load_mode` (`full_refresh`, `partition_overwrite`, `append`) maps to Iceberg native operations.
-- **Staging-swap:** [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the Track B same-path-overwrite handling become **obsolete** for L3/L4 (Iceberg commits are atomic and read-consistent). Removal is in scope once parity is verified. This also dissolves the Spark 4.x same-path overwrite DAG hazard by construction.
-- **Catalog config:** a new catalog binding enters the config contract (`elt_pipeline_cfg`) — env-scoped, defaulting to a local filesystem/JDBC catalog so local-first dev keeps working with no cloud account.
-- **PRD 03** (SQL L2→L3→L4) and **PRD 08** (storage dispatch) need follow-up revisions to reference the table-format materialization and catalog dispatch.
-- **L2:** **target-state in scope, delivered as a second phase.** L2 is defined as the first SQL-consumable layer, and adopting Iceberg there additionally retires the bespoke L2 discovery glob + `mergeSchema` hack in [sql/level2_source.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/level2_source.py) (parity Finding 5) — replacing driver-side `path_rglob("**/table=…/run_id=*")` enumeration with a catalog table lookup and native schema evolution. Sequencing: L3/L4 first (closes the BI-serving gap, lower blast radius), L2 second (uniform table format across all SQL-consumable layers, tracked in `TODO_L2_ICEBERG_LAKE.md`). **L1 remains raw** immutable landing — no table format. The catalog thus spans L2–L4; Trino/serving exposes L3/L4 as the governed BI surface and L2 for power-user/lineage exploration.
+- **Staging-swap:** [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the plain-parquet same-path-overwrite handling become **obsolete** for L3/L4 (Iceberg commits are atomic and read-consistent). Removal is in scope once 60 consecutive days of production use show zero `--no-iceberg-enabled` opt-outs, all L3/L4 load-mode + same-path-rebuild tests pass green, and the operator runbook no longer describes swap-layer steps for L3/L4. This also dissolves the Spark 4.x same-path overwrite DAG hazard by construction.
+- **Catalog config:** a catalog binding enters the config contract (`elt_pipeline_cfg`) — env-scoped, defaulting to a local filesystem/JDBC catalog so local-first dev keeps working with no cloud account.
+- **L2:** **No catalog entity — explicitly rejected.** L2 is a transient,
+source-aligned staging layer. Value accrues for downstream consumers at L3/L4;
+adding Iceberg to L2 is second-system uniformity, not value. The common pain
+point (L2 deletion by table glob) is solvable with a thin external catalog
+overlay over existing parquet directories if a real L2 JDBC consumer appears
+later; L2 itself remains plain parquet with `mergeSchema` read semantics
+(see [PRD 10 §5](10-prd-architecture-and-lifecycle.md) for full rationale
+and 4-condition trigger for the overlay). The discovery glob + `mergeSchema`
+pattern in [sql/level2_source.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/level2_source.py)
+is the canonical L2 read mechanism (parity Finding 5). **L1 remains raw**
+immutable landing — no table format. Trino / the serving binding exposes
+**L3/L4** as the governed BI surface; L2 is accessed either via the 2-line
+Jupyter `L2TableReader` helper (developer flow) or, if the 4-condition
+overlay trigger is met, via a thin read-only registrar.
+
 
 ## Open Questions
 
 - **OQ-1 (catalog binding) — RESOLVED 2026-08-15:** the catalog is a **configurable binding on the Iceberg REST Catalog spec**, env-dispatched like storage scheme (PRD 08). Defaults: **Hadoop/filesystem catalog** local (zero infra, keeps local-first dev working with no cloud account); **JDBC** as the portable cross-env option; **Glue** as the AWS binding; a **REST catalog server** (Polaris/Nessie/Lakekeeper) supported for teams that want a shared standalone catalog. No catalog implementation is hard-wired.
 - **OQ-2 (serving engine / BI target) — RESOLVED 2026-08-15:** the platform stays **BI-tool-agnostic** (Requirement 6). It does **not** select a BI tool. The **serving engine is a configurable binding** exposing ANSI SQL over JDBC/ODBC — `trino` (portable reference) · `athena` (AWS) · `spark_thrift` · `duckdb`. **Trino is the reference binding for connectivity validation** because it is the vendor-neutral engine and Athena is managed Trino/Presto — proving Trino+JDBC demonstrates that any JDBC/ODBC BI tool (Quicksight, Qlik, Tableau, Power BI, Superset) can connect. Reasoning: the platform exists to avoid hard-wired BI coupling; selecting a single BI tool would defeat the neutrality principle.
-- **OQ-3 (staging-swap removal timing):** delete on L3/L4 Iceberg parity sign-off, or keep behind a flag for one soak cycle (mirroring the normalize cutover's C2→C3 pattern).
+- **OQ-3 (staging-swap removal timing):** delete when no config opts out of Iceberg for 60 consecutive days of production use, all L3/L4 load-mode + same-path-rebuild regression tests pass, and the operator runbook no longer describes swap-layer steps for L3/L4.
 - **OQ-4 (migration of existing L3/L4 Parquet):** re-materialize from L2 via existing SQL models (clean, preferred) vs. in-place register. Re-materialize is simpler and audit-clean.
 
 ## Consequences
@@ -146,5 +159,5 @@ Iceberg at L2 is chosen for **platform consistency and custom-code deletion** (o
 ## Cross-References
 
 - Serving gap identified in the 2026-08-15 platform assessment (all-Spark alignment review).
-- Custom table-management code targeted for removal: [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) (built under the now-archived Custom-Code Parity Track B).
+- Custom table-management code targeted for removal: [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) once the plain-parquet escape hatch is no longer used for L3/L4.
 - Storage/scheme dispatch pattern to mirror for catalog dispatch: [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md).

@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- Status: Draft v2 (pathing revision: per-environment roots, no `environment=` in paths)
+- Status: Draft
 - Product area: `elt_pipeline`
 - Stage: Source systems -> `level1`
 - Proposed implementation language: Python
