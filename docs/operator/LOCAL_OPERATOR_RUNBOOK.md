@@ -901,14 +901,14 @@ Use environment-scoped buckets. Do not put dev/staging/prod on one bucket with
 prefixes — use peer buckets. Example:
 
 ```text
-s3://corp-elt-dev-runtime-us-east-1/       # --root-path for dev (L1/L2 raw)
-s3://corp-elt-dev-warehouse-us-east-1/     # --warehouse-root for dev (L3/L4 curated)
+s3://<org>-elt-dev-runtime-<region>/       # --root-path for dev (L1/L2 raw)
+s3://<org>-elt-dev-warehouse-<region>/     # --warehouse-root for dev (L3/L4 curated)
 
-s3://corp-elt-staging-runtime-us-east-1/   # --root-path for staging
-s3://corp-elt-staging-warehouse-us-east-1/ # --warehouse-root for staging
+s3://<org>-elt-staging-runtime-<region>/   # --root-path for staging
+s3://<org>-elt-staging-warehouse-<region>/ # --warehouse-root for staging
 
-s3://corp-elt-prod-runtime-us-east-1/      # --root-path for prod
-s3://corp-elt-prod-warehouse-us-east-1/    # --warehouse-root for prod
+s3://<org>-elt-prod-runtime-<region>/      # --root-path for prod
+s3://<org>-elt-prod-warehouse-<region>/    # --warehouse-root for prod
 ```
 
 Attach the following as an **instance profile** on the EMR primary/core nodes
@@ -928,10 +928,10 @@ env/buckets above. **Never use long-lived credentials inside the Spark job.**
         "s3:ListBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::corp-elt-dev-runtime-us-east-1",
-        "arn:aws:s3:::corp-elt-dev-runtime-us-east-1/*",
-        "arn:aws:s3:::corp-elt-dev-warehouse-us-east-1",
-        "arn:aws:s3:::corp-elt-dev-warehouse-us-east-1/*"
+        "arn:aws:s3:::<org>-elt-dev-runtime-<region>",
+        "arn:aws:s3:::<org>-elt-dev-runtime-<region>/*",
+        "arn:aws:s3:::<org>-elt-dev-warehouse-<region>",
+        "arn:aws:s3:::<org>-elt-dev-warehouse-<region>/*"
       ]
     }
   ]
@@ -953,24 +953,24 @@ boundaries.
 # Stage 0 — validate config + package shapes (single-process, negligible CPU)
 spark-submit --deploy-mode client \
   --packages org.apache.hadoop:hadoop-aws:3.3.6 \
-  -m elt_pipeline validate-config s3://corp-elt-dev-runtime-us-east-1/configs/local_object_storage_orders.yaml \
+  -m elt_pipeline validate-config s3://<org>-elt-dev-runtime-<region>/configs/local_object_storage_orders.yaml \
   --environment dev --source local_files --entity orders
 
 # Stage 1 — ingest (connector reads → L1 raw files on s3 runtime bucket)
 spark-submit --deploy-mode cluster \
   --packages org.apache.hadoop:hadoop-aws:3.3.6 \
   -m elt_pipeline ingest run \
-    s3://corp-elt-dev-runtime-us-east-1/configs/local_object_storage_orders.yaml \
+    s3://<org>-elt-dev-runtime-<region>/configs/local_object_storage_orders.yaml \
     --environment dev \
-    --root-path s3://corp-elt-dev-runtime-us-east-1/
+    --root-path s3://<org>-elt-dev-runtime-<region>/
 
 # Stage 2 — normalize (L1 raw → L2 parquet tables on s3 runtime bucket)
 spark-submit --deploy-mode cluster \
   --packages org.apache.hadoop:hadoop-aws:3.3.6 \
   -m elt_pipeline normalize run \
-    s3://corp-elt-dev-runtime-us-east-1/configs/local_object_storage_orders.yaml \
+    s3://<org>-elt-dev-runtime-<region>/configs/local_object_storage_orders.yaml \
     --environment dev \
-    --root-path s3://corp-elt-dev-runtime-us-east-1/ \
+    --root-path s3://<org>-elt-dev-runtime-<region>/ \
     --window-start 2026-08-13T00:00:00+00:00 \
     --window-end   2026-08-13T23:59:59+00:00
 
@@ -979,20 +979,20 @@ spark-submit --deploy-mode cluster \
   --conf spark.sql.sources.partitionOverwriteMode=DYNAMIC \
   --packages org.apache.hadoop:hadoop-aws:3.3.6 \
   -m elt_pipeline sql run \
-    s3://corp-elt-dev-runtime-us-east-1/sql_packages/local_demo \
+    s3://<org>-elt-dev-runtime-<region>/sql_packages/local_demo \
     --environment dev \
-    --root-path     s3://corp-elt-dev-runtime-us-east-1/ \
-    --warehouse-root s3://corp-elt-dev-warehouse-us-east-1/ \
+    --root-path     s3://<org>-elt-dev-runtime-<region>/ \
+    --warehouse-root s3://<org>-elt-dev-warehouse-<region>/ \
     --start-date 2026-08-13 --end-date 2026-08-13
 
 # Stage 4 — publish (L4 reads → level5 CSV/TSV/ZIP delivery artifacts)
 spark-submit --deploy-mode cluster \
   --packages org.apache.hadoop:hadoop-aws:3.3.6 \
   -m elt_pipeline publish run \
-    s3://corp-elt-dev-runtime-us-east-1/publish_packages/local_demo \
+    s3://<org>-elt-dev-runtime-<region>/publish_packages/local_demo \
     --environment dev \
-    --root-path     s3://corp-elt-dev-runtime-us-east-1/ \
-    --warehouse-root s3://corp-elt-dev-warehouse-us-east-1/ \
+    --root-path     s3://<org>-elt-dev-runtime-<region>/ \
+    --warehouse-root s3://<org>-elt-dev-warehouse-<region>/ \
     --start-date 2026-08-13 --end-date 2026-08-13
 ```
 

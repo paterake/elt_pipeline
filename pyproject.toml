@@ -1,13 +1,52 @@
 [project]
 name = "elt-pipeline"
 version = "0.1.0"
-description = "Shared runtime for a configuration-driven ELT pipeline."
+description = "Shared runtime for a configuration-driven ELT pipeline with explicit architectural levels (L1 raw → L2 source-aligned → L3 canonical Iceberg → L4 consumer marts → L5 static exports), a 4-phase execution lifecycle, a 4-tier SQL validity chain, and a portable Trino 468 JDBC serving endpoint."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "paterake" },
+]
+keywords = [
+  "elt",
+  "etl",
+  "data-pipeline",
+  "data-engineering",
+  "spark",
+  "iceberg",
+  "trino",
+  "data-lakehouse",
+  "datalake",
+  "data-warehouse",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dependencies = [
   "pydantic>=2.8,<3.0",
   "pyyaml>=6.0,<7.0",
 ]
+
+[project.urls]
+Homepage       = "https://github.com/paterake/elt_pipeline"
+Repository     = "https://github.com/paterake/elt_pipeline"
+Documentation  = "https://github.com/paterake/elt_pipeline/tree/main/docs"
+Issues         = "https://github.com/paterake/elt_pipeline/issues"
 
 [project.optional-dependencies]
 spark = [

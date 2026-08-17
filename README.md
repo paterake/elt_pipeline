@@ -35,7 +35,7 @@ Consumers may either:
 - analyze queryable `level4` datamarts directly, or
 - consume static `level5` outputs when a file-based handoff is preferred.
 
-At the current repository state, implementation includes the first local `level5` publish/export slice described in `docs/prd/06-prd-level4-to-level5-publish-and-export.md`.
+The `level5` publish/export contract is defined in [docs/prd/06-prd-level4-to-level5-publish-and-export.md](docs/prd/06-prd-level4-to-level5-publish-and-export.md).
 
 ## Client Neutrality
 
