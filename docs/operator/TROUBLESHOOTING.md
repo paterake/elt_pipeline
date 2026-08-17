@@ -93,7 +93,7 @@ python3 -m http.server 8000 --directory examples/data/rest_api
 
 ### Spark fails to start / `JAVA_HOME` errors
 
-- `normalize`, `sql`, and `publish` require a local JVM. Install Java 17+ and set `JAVA_HOME`.
+- `normalize`, `sql`, and `publish` require a local JVM. Install **Java 23 (Temurin)** (required by Trino 468) and set `JAVA_HOME`.
 - Confirm `pyspark` is installed: `uv sync --extra dev --extra spark`.
 - Override the Spark master with `ELT_PIPELINE_SPARK_MASTER` if `local[*]` is unsuitable for the environment.
 

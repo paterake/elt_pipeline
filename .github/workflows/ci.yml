@@ -18,11 +18,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Java for Spark
+      - name: Install Java for Spark and Trino
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "23"
 
       - name: Sync development dependencies
         run: uv sync --extra dev

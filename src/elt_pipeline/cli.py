@@ -1389,9 +1389,10 @@ def main(argv: list[str] | None = None) -> int:
     # JDK autodiscover for mise/sdkman/asdf/jabba-managed installs.
     # Subprocess-based tests spawn python -m elt_pipeline without the shell shim
     # (which would normally export JAVA_HOME/PATH from mise). Run this once here
-    # so PySpark 4.1 (needs JDK≥17) and Trino 468 (needs JDK 23 class files v67)
-    # both find the same JDK regardless of whether CLI is invoked via interactive
-    # shell or from test runners / scheduled daemons that never source mise shims.
+    # so PySpark 4.1 (Spark 4.x JDK requirement) and Trino 468 (requires JDK 23
+    # class files v67) both find the same Temurin 23 JDK regardless of whether
+    # the CLI is invoked via an interactive shell or from test runners /
+    # scheduled daemons that never source mise shims.
     import glob as _glob
     import os as _os
     import shutil as _shutil

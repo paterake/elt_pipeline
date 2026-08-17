@@ -1,21 +1,31 @@
 # JVM Toolchain Setup (macOS)
 
-This guide sets up the Java runtime that Apache Spark requires, using a version manager that keeps the OS clean and stays out of the way of `uv` (which owns Python).
+This guide sets up the Java runtime that Apache Spark and Trino require, using a version manager that keeps the OS clean and stays out of the way of `uv` (which owns Python).
 
-Platform documented here: **macOS (Apple Silicon)**. The `normalize`, `sql`, and `publish` stages run on Spark and will not start without a JVM — see the prerequisite note in [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md).
+Platform documented here: **macOS (Apple Silicon)**. The `normalize`, `sql`, and `publish` stages run on Spark and will not start without a JVM — see the prerequisite note in [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md). The reference Trino serving endpoint also runs on the JVM and requires the same JDK major version.
 
 ## Why a JVM is required at all
 
-PySpark is not a Python reimplementation of Spark — it is a thin Python wrapper over Spark's engine, which is written in Scala/Java and runs on the JVM. Your Python process (managed by `uv`) issues commands across a Py4J bridge to a JVM process that does all query planning, execution, shuffles, and I/O. **The JVM is Spark; Python is how you talk to it.** No JVM ⇒ Spark cannot start.
+PySpark is not a Python reimplementation of Spark — it is a thin Python wrapper over Spark's engine, which is written in Scala/Java and runs on the JVM. Your Python process (managed by `uv`) issues commands across a Py4J bridge to a JVM process that does all query planning, execution, shuffles, and I/O. **The JVM is Spark; Python is how you talk to it.** No JVM ⇒ Spark cannot start. The same JDK also boots the Trino 468 JDBC serving engine.
 
 ## Version requirement
 
 | Component | Version | Source |
 | --- | --- | --- |
 | PySpark | `4.1.2` | pinned in [pyproject.toml](../../pyproject.toml) |
-| JDK | **Java 17** (Temurin) | required by Spark 4.x (supports 17 or 21; 17 is the default here) |
+| JDK | **Java 23** (Temurin) | required by **Trino 468** (the platform's reference JDBC/BI serving engine). Spark 4.x supports 17 / 21 / 23, but Trino pins the combined stack to 23. |
 
-Spark discovers the JVM through the `JAVA_HOME` environment variable. If Spark ever reports "Unable to locate a Java Runtime" or a `JAVA_HOME` error, that variable is almost always the cause.
+Spark discovers the JDK through the `JAVA_HOME` environment variable. If Spark ever reports "Unable to locate a Java Runtime" or a `JAVA_HOME` error, that variable is almost always the cause.
+
+### Why JDK 23 and not 17 or 21
+
+Trino 468 requires JDK 23. Because the platform's design-point serving path (Trino JDBC → Iceberg catalog) runs side-by-side with Spark on the same workstation, the whole toolchain (Spark driver JVM, Spark executors, Trino server JVM) converges on a single Temurin 23 install so operators only manage one JDK. JDK 23 removed the `SecurityManager`; the pipeline compensates by injecting these flags into the Spark driver and executor `extraJavaOptions` and into Trino's `jvm.config`:
+
+```
+-Djava.security.manager=allow -Djdk.security.allowAllPermissions=true
+```
+
+See [spark/session.py](../../src/elt_pipeline/spark/session.py) for the Spark-side injection, and the Trino bootstrap in `ops/trino_serving/` for the Trino-side injection. CI validates on Temurin 23 (see `.github/workflows/ci.yml`).
 
 ## Tool choice: `mise` (and why)
 
@@ -32,11 +42,9 @@ SDKMAN! is the JVM-world standard and equally clean *once installed*, but its in
 
 ### Absolute-minimum alternative (not used)
 
-The theoretically purest option is no manager at all: download the Temurin 17 `.tar.gz`, extract into `~/`, and point `JAVA_HOME` at it — zero OS package footprint. Rejected because it loses clean version switching and repo pinning for negligible additional purity over `mise`.
+The theoretically purest option is no manager at all: download the Temurin 23 `.tar.gz`, extract into `~/`, and point `JAVA_HOME` at it — zero OS package footprint. Rejected because it loses clean version switching and repo pinning for negligible additional purity over `mise`.
 
 ## Setup steps
-
-These are the exact steps used to provision this workstation.
 
 ```bash
 # 1. Install the version manager (one Homebrew binary)
@@ -46,12 +54,12 @@ brew install mise
 echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
 exec zsh
 
-# 3. Install Temurin 17 globally
-mise use -g java@temurin-17
+# 3. Install Temurin 23 globally
+mise use -g java@temurin-23
 
 # 4. Verify the JDK and JAVA_HOME
-java -version          # -> openjdk version "17.0.x" ... Temurin
-echo "$JAVA_HOME"      # -> ~/.local/share/mise/installs/java/temurin-17.0.x
+java -version          # -> openjdk version "23"  ... Temurin-23.x+y
+echo "$JAVA_HOME"      # -> ~/.local/share/mise/installs/java/temurin-23.x.y
 ```
 
 ### Deliberately skipped: macOS system integration
@@ -72,14 +80,14 @@ s.stop()
 "
 ```
 
-Expected output includes `Spark version: 4.1.2` and `row check: 3`, with no `JAVA_HOME` / "Unable to locate a Java Runtime" errors.
+Expected output includes `Spark version: 4.1.2` and `row check: 3`, with no `JAVA_HOME` / "Unable to locate a Java Runtime" errors and no `SecurityManager` deprecation crashes.
 
 ## Optional: pin the JDK to the repository
 
 To make the Java version explicit for teammates, CI, and other tools (the `uv`/`.python-version` equivalent), run **in the repo root**:
 
 ```bash
-mise use java@temurin-17     # writes ./mise.toml, auto-switches on cd into the repo
+mise use java@temurin-23     # writes ./mise.toml, auto-switches on cd into the repo
 ```
 
 Commit the resulting `mise.toml` so everyone resolves to the same JDK. Until then, the global install from step 3 covers local development.
@@ -91,4 +99,4 @@ Commit the resulting `mise.toml` so everyone resolves to the same JDK. Until the
 | `Unable to locate a Java Runtime` | `JAVA_HOME` unset in this shell. Confirm `mise activate zsh` is in `~/.zshrc` and the shell was restarted; check `echo "$JAVA_HOME"`. |
 | `java -version` shows 3.2 / system Java | mise not activated for the current shell, or an older Java earlier on `PATH`. Run `mise doctor` and `which -a java`. |
 | Wrong Java version picked up | A repo-local `mise.toml` or a different global pin. Check `mise ls java` and `mise current`. |
-| Spark starts but stage fails on JVM version | Spark 4.x needs Java 17 or 21. Ensure the active JDK is 17 (`java -version`). |
+| Spark or Trino fails with `SecurityManager` / policy error | You are on JDK 23 but the startup flags are missing. Spark: confirm `spark.driver.extraJavaOptions` contains `-Djava.security.manager=allow -Djdk.security.allowAllPermissions=true` (injected by the session builder). Trino: confirm the same two flags are in `jvm.config`. |

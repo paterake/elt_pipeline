@@ -60,7 +60,7 @@ Recommended starting points:
 
 This project uses `uv` for environment management.
 
-`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM. Install a Java runtime (Java 17+, e.g. via `sdk install java` or your platform's package manager) and ensure `JAVA_HOME` is set before running any command that touches `normalize`, `sql`, or `publish`.
+`level2` through `level5` execute on Apache Spark (`pyspark`), and the reference JDBC serving endpoint runs on Trino 468. Both require a **Temurin 23** JDK with `JAVA_HOME` set before running any command that touches `normalize`, `sql`, or `publish`. See [docs/maintainer/JVM_TOOLCHAIN_SETUP.md](docs/maintainer/JVM_TOOLCHAIN_SETUP.md) for a clean workstation install.
 
 ```bash
 uv sync --extra dev --extra spark

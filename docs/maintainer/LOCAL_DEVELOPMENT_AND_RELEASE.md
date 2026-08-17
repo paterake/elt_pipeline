@@ -4,7 +4,7 @@ This repository uses `uv` for local development, test execution, and packaging.
 
 ## Local Development
 
-`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM (Java 17+) with `JAVA_HOME` set. The `dev` extra already pulls in `pyspark`; only the JVM itself is an external prerequisite. To provision that JVM cleanly (without polluting the OS), see [JVM_TOOLCHAIN_SETUP.md](JVM_TOOLCHAIN_SETUP.md).
+`level2` through `level5` execute on Apache Spark (`pyspark`), which requires a local JVM (**Java 23 Temurin**, required by the Trino 468 serving engine) with `JAVA_HOME` set. The `dev` extra already pulls in `pyspark`; only the JVM itself is an external prerequisite. To provision that JVM cleanly (without polluting the OS), see [JVM_TOOLCHAIN_SETUP.md](JVM_TOOLCHAIN_SETUP.md).
 
 Sync the locked development environment from the repository root:
 
@@ -60,7 +60,7 @@ GitHub Actions runs the repository checks defined in `.github/workflows/ci.yml`.
 
 The workflow currently enforces:
 
-- a Temurin JDK 17 install (required for `pyspark`)
+- a Temurin JDK 23 install (required for `pyspark` + Trino 468 serving)
 - `uv sync --extra dev`
 - `uv run ruff check .`
 - `uv run pytest`
