@@ -1,14 +1,14 @@
-# Ingestion Inventory: Legacy Baseline
+# Ingestion Inventory — Pattern Reference Model
 
 ## Purpose
 
-This document complements the ingestion PRDs by listing the ingestion patterns and capabilities observed in two mature legacy ELT stacks.
+This document complements the ingestion PRDs by listing mature ELT ingestion patterns and capabilities. It maps every observed pattern onto one of the required `elt_pipeline` connector families, so that connector scope and capability scope can be reviewed independently.
 
-This repository remains client-neutral: the legacy stacks are used only as an internal baseline to derive a generic superset of ingestion patterns.
+This repository remains client-neutral: pattern names and family assignments are generic.
 
 ## Future-State Mapping
 
-All legacy ingestion behavior should map into one of these required `elt_pipeline` connector families:
+All ingestion behavior should map into one of these required `elt_pipeline` connector families:
 
 - `rest`
 - `sql`
@@ -19,7 +19,7 @@ Cross-cutting behaviors such as pagination, envelope handling, delta logic, repl
 
 ## Pattern Inventory
 
-| Legacy pattern archetype | Future family | Execution mode | Notable capabilities |
+| Pattern archetype | Future family | Execution mode | Notable capabilities |
 |---|---|---|---|
 | REST API, date-windowed extraction | `rest` | scheduled batch | request templating, auth, date-window tokenization |
 | REST API, async redirect + polling | `rest` | scheduled batch | redirect handling, retries, timeouts |

@@ -99,7 +99,7 @@ _MODULE_MANIFEST_WH_PATH_DEFAULT: str = runtime_manifest.paths.cli_default_wareh
 
 @dataclass(frozen=True)
 class _RuntimeContext:
-    """Composed once at the CLI entry point (Mercell/Camellos runner pattern).
+    """Composed once at the CLI entry point (single-runner pattern).
 
     Captures every runtime decision *explicitly* so downstream helpers never
     have to re-discover repo roots, re-read config YAML, or rely on ENV-only
@@ -226,13 +226,13 @@ def _compose_runtime_context(
     config_path_arg: Path | str | None = None,
     environment_arg: str | None = None,
 ) -> _RuntimeContext:
-    """Entry-point runner (Mercell/Camellos pattern) — compose once, pass everywhere.
+    """Entry-point runner (single-runner pattern) — compose once, pass everywhere.
 
     Composes the entire runtime decision matrix *explicitly* at the top of
     ``main()`` before any subcommand branch runs.  Resulting ``_RuntimeContext``
     is the single immutable source of truth for the invocation.  **No downstream
     helper ever re-reads the YAML or re-discovers repo roots via side-channel
-    heuristics** (closes the drift gap identified vs Mercell/Camellos pattern).
+    heuristics.**
 
     Returns:
         Frozen _RuntimeContext populated with every decision needed downstream:
@@ -332,10 +332,10 @@ def _iceberg_effective_enabled(
 ) -> bool | None:
     """Return True if Iceberg is enabled, None if no tier matched.
 
-    3-tier precedence (Mercell/Camellos):
+    4-tier precedence:
       1. CLI/args (explicit --iceberg-enabled flag)            — highest
       2. runtime_context singleton (final materialized value)  — primary
-      3. runtime_overrides explicit-pass (legacy)              — transition
+      3. runtime_overrides explicit-pass                       — transition
       4. manifest frozen default = None → caller decides
 
     **Zero os.environ reads.**  The singleton materializer at main() is the
@@ -347,7 +347,7 @@ def _iceberg_effective_enabled(
     if explicit is False:
         return False
 
-    # Singleton — single source of truth (Mercell/Camellos)
+    # Singleton — single source of truth
     if runtime_context.is_initialized():
         final_val = runtime_context.get("spark.enable_iceberg")
         if final_val is True:
@@ -401,7 +401,7 @@ def _validate_iceberg_catalog_binding(
 ) -> None:
     """Validate Iceberg writer/serving catalog binding.
 
-    Uses the Mercell/Camellos runtime_context singleton as the single source
+    Uses the runtime_context singleton as the single source
     of truth for FINAL values — zero ``os.environ`` reads here.  The
     materializer in :mod:`runtime_context` is the only place that reads
     ``ELT_PIPELINE_*``.
@@ -545,10 +545,10 @@ def _build_serving_endpoint(
 ) -> dict[str, Any] | None:
     """Build the Iceberg serving endpoint descriptor.
 
-    Mercell/Camellos pattern — zero ``os.environ`` reads; all final values
+    Single-cascade pattern — zero ``os.environ`` reads; all final values
     come from the runtime_context singleton (materialized once at entry).
 
-    Explicit fallback: explicit CLI args > singleton final > ro dict (legacy) > manifest.
+    Explicit fallback: explicit CLI args > singleton final > ro dict > manifest.
     """
     ro: dict[str, Any] = (
         runtime_overrides if isinstance(runtime_overrides, dict) else {}
@@ -1484,13 +1484,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     # ================================================================
-    # Entry-point runner pattern (Mercell/Camellos):
+    # Entry-point runner pattern (single-runner):
     #  - FIRST → runtime_context SINGLETON.initialize() — materializes
     #    EVERY final config value via the 4-tier cascade.
     #  - From this point on, NO framework component reads os.environ
     #    or re-reads pipeline.yaml on its own.  Everything reads via
     #    runtime_context.get(dotted_key) — simple key-value lookup.
-    #  - ALSO compose the legacy _RuntimeContext frozen dataclass into
+    #  - ALSO compose the _RuntimeContext frozen dataclass into
     #    a LOCAL VARIABLE renamed to `composed_ctx` (to avoid name
     #    collision with the runtime_context singleton module).  This
     #    feeds callers still waiting to be migrated from the explicit
@@ -1501,7 +1501,7 @@ def main(argv: list[str] | None = None) -> int:
     _config_path_str = str(_config_path_arg) if _config_path_arg is not None else None
     _environment_arg = getattr(args, "environment", None)
 
-    # (1) New singleton (Mercell/Camellos) — ONE source of truth for framework.
+    # (1) New singleton — ONE source of truth for framework.
     runtime_context.initialize(
         config_path_arg=_config_path_str,
         environment_arg=_environment_arg,

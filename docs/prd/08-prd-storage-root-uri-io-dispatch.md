@@ -5,7 +5,7 @@
 - **Status:** Approved v1.1 (L3/L4 Iceberg cutover clarifications: catalog dispatch and serving engine dispatch now explicitly mirror the single-seam scheme-dispatch pattern in this PRD. Catalog binding + BI-engine serving for L3/L4 no longer anti-scoped; they track under [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md) and the [Iceberg backlog](../todo/TODO_L3_L4_ICEBERG_SERVING.md) and follow this PRD's exact architectural pattern.)
 - **Product area:** `elt_pipeline` / cross-stage (ingest → level1 → level2 → sql → publish)
 - **Scope:** Platform-wide storage contract and I/O dispatch for stage root paths, object paths, bucket paths, and (as of v1.1) the mirrored catalog + serving-engine dispatch seams for L3/L4.
-- **Design precedence:** This PRD codifies the conventions already used in `mercell` and `camelot` repositories. It is a **correction** to the earlier local-POSIX-only implementation in `elt_pipeline`, which incorrectly assumed `pathlib.Path` for all path operations.
+- **Design precedence:** This PRD codifies approved conventions for URI-aware storage-root handling. It is a **correction** to the earlier local-POSIX-only implementation in `elt_pipeline`, which incorrectly assumed `pathlib.Path` for all path operations.
 
 ## Purpose
 
@@ -25,18 +25,18 @@ The non-negotiable rules set by this PRD are:
    - `file:///abs/path` or any bare POSIX path (starts with `/`, `./`, or a relative non-URI string) → use `pathlib.Path` *at the leaf I/O call site only*, after stripping the optional `file://` scheme.
 5. **Level-to-level handoff paths always contain the full explicit URI, including the scheme and root prefix.**
    - Example: `s3://bucket/data/elt/prod/level1/source=orders/entity=line_items/ingest_date=20260813/run_id=.../data.json` is passed verbatim and handled as-is.
-   - No re-writing, no stripping, no prefixing. Sharp and direct, exactly matching the convention used in `mercell` / `camelot` for level-1 → level-2 file handoff.
+   - No re-writing, no stripping, no prefixing. Sharp and direct — level-1 → level-2 file handoff uses full absolute URIs with no re-prefixing required.
 6. **We do not implement cloud I/O primitives ourselves where Spark or Hadoop SDKs already ship them.**
    - Spark `read.parquet("s3://…")` / `write.parquet("s3://…")` is the authority for parquet R/W on object storage. On EMR, this uses EMRFS natively with IAM role credentials.
    - Python-level metadata, audit, manifest, and small-object writes use `boto3` (standard on EMR) directly, not a re-implementation of S3 multipart logic.
 
-This PRD restores the correct design that was incorrectly descoped earlier (as "object storage URIs for level2+") and brings `elt_pipeline` into alignment with its sibling repos.
+This PRD restores the correct design that was incorrectly descoped earlier (as "object storage URIs for level2+") and brings `elt_pipeline` into the correct operating model.
 
 This document is **normative.** Any stage PRD, TODO backlog item, or implementation that conflicts with this document must be updated to conform.
 
 ## Background
 
-In sibling repositories `mercell` and `camelot`, the storage contract is sharp and explicit:
+The approved storage contract is sharp and explicit:
 - Every pipeline config defines one or more root URIs (typically `s3://<bucket>/<prefix>` for cloud runs, `file:///<absolute-path>` for local development).
 - The execution engine concatenates segments onto that root string for every path it builds.
 - Leaf operations dispatch based on the prefix string.
@@ -50,7 +50,7 @@ The initial `elt_pipeline` implementation landed with `pathlib.Path` used univer
 
 This PRD is the correction scope: make the root path contract match the sibling repo conventions. The change is architecture-level (string path semantics, not code features) but the implementation is mechanical.
 
-## Non-Negotiable Design Principles (inherited from `mercell` / `camelot`)
+## Non-Negotiable Design Principles
 
 ### P1: No Inference, Ever
 Given a pipeline that runs correctly on a laptop:
@@ -96,7 +96,7 @@ Never silently reinterpret. Never coerce `s3a://` to `s3://` automatically. If a
 - On EMR, S3 credential handling is the responsibility of the EMR instance profile / step role: **do not require or read `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars by default.** The default `boto3` client uses the standard credential chain (which on EMR picks up the role automatically). If a user is running outside EMR on their laptop and wants to test S3, they configure credentials via `aws configure` or env vars as normal.
 
 ### P5: Level-to-Level Handoffs Always Carry Full Absolute URI
-Where a prior stage writes an output file reference to a manifest (L1 manifest → L2 reader; L2 table catalog → L3 SQL source; L4 dataset path → publish read), the reference must be the **full absolute URI including scheme and root prefix**. The consumer must not be forced to "re-prefix" it relative to a root. Matching the Mercell/Camelot pattern.
+Where a prior stage writes an output file reference to a manifest (L1 manifest → L2 reader; L2 table catalog → L3 SQL source; L4 dataset path → publish read), the reference must be the **full absolute URI including scheme and root prefix**. The consumer must not be forced to "re-prefix" it relative to a root. This is a platform-wide contract.
 
 For L3/L4 SQL-to-SQL and SQL-to-publish handoffs in Iceberg mode (see [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md)), handoffs MAY also use Iceberg fully-qualified catalog table names of the form `{catalog_name}.{stage}.{domain}.{table_name}` as an alternative to the file URI. The dual-path rule applies: file URI handoffs remain the default for the plain-parquet legacy path; Iceberg FQ names are the handoff form when `--iceberg-enabled` is on. Downstream readers dispatch on the presence of the `spark_catalog` / named Iceberg catalog in the Spark session (treating an identifier matching the `{a}.{b}.{c}.{d}` 4-part form as a catalog table lookup, and anything else as a URI path string).
 
@@ -237,8 +237,6 @@ Rollback strategy is trivial since the change is internal I/O dispatch without c
 
 ## References and Precedents
 
-- `mercell` repository: config-driven root URI string + scheme-dispatch pattern (source of truth for this PRD's conventions).
-- `camelot` repository: identical conventions, specifically full-URI level-object handoff between stage 1 and stage 2.
 - Existing PRDs in `docs/prd/`: [00-prd-platform-principles.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/00-prd-platform-principles.md) (Client Neutrality, Layered as Contract), [01-prd-ingestion-raw-to-level1.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/01-prd-ingestion-raw-to-level1.md), [02-prd-level1-to-level2.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/02-prd-level1-to-level2.md), [03-prd-sql-level2-to-level3-and-level3-to-level4.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/03-prd-sql-level2-to-level3-and-level3-to-level4.md), [06-prd-level4-to-level5-publish-and-export.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/prd/06-prd-level4-to-level5-publish-and-export.md).
 - Archived backlog [TODO_PATHING_COMPLETED.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/TODO_PATHING_COMPLETED.md) previously marked object-store URIs as "descoped deferred." With this PRD's approval they are restored to approved scope.
 

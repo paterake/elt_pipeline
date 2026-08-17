@@ -1,4 +1,4 @@
--- Canonical orders: Camelot late-arrival repartitioning pattern.
+-- Canonical orders: late-arrival repartitioning pattern.
 --
 -- Why this works:
 --  1. We filter L2 rows by ingest_date = when the data ARRIVED (the run window). This is always ingest_date,

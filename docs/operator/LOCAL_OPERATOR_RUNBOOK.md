@@ -161,13 +161,13 @@ PySpark 4.1.2, unblocking the default flip.
 - Level2TableManifest `data_path` / `manifest_path` relative-layout semantics
   are preserved byte-identical.
 
-## SQL Overwrite Protocol (Mercell/Camelot Staging-Swap, plus Iceberg-native path)
+## SQL Overwrite Protocol (Staging-Swap Write Protocol, plus Iceberg-native path)
 
 SQL model materialization for `load_mode: full_refresh` and
 `load_mode: partition_overwrite` has two write paths, selected at
 `sql run` time:
 
-- **Plain-parquet (default):** the **Mercell/Camelot staging-swap write protocol**
+- **Plain-parquet (default):** the **staging-swap write protocol**
   described below is used to eliminate the Spark 4.x same-path overwrite DAG hazard.
 - **`--iceberg-enabled`:** the swap layer is **bypassed entirely**; Spark writes
   directly against the target Iceberg table through Iceberg's snapshot-isolated
@@ -278,7 +278,7 @@ Pass `--iceberg-enabled` on the CLI or set the environment variable
 
 - Spark writes go through `SparkCatalog` + `SparkSessionCatalog` registered under
   the configured catalog name (default: `iceberg`).
-- L3/L4 writes bypass the Mercell/Camelot staging-swap layer — Iceberg's own
+- L3/L4 writes bypass the staging-swap layer — Iceberg's own
   snapshot-isolated atomic commits are used instead (see "SQL Overwrite Protocol"
   above).
 - The audit JSON / `serving_endpoint` block reports the catalog type, warehouse
@@ -712,7 +712,7 @@ Operator guidance:
 
 ## Late-Arriving Data Recovery
 
-Canonical `level3` tables follow the **Camelot late-arrival repartitioning pattern**: L2 rows carry both `ingest_date` (arrival day, for filtering the read window) and `business_date` (event day from the payload, for output partitioning). This means a row that arrived late (e.g. received on 2026-08-10 but describing an event that happened on 2026-07-31) is correctly written into the `business_date=2026-07-31` partition when the L3 model reads the `ingest_date=2026-08-10` window.
+Canonical `level3` tables follow the **late-arrival repartitioning pattern**: L2 rows carry both `ingest_date` (arrival day, for filtering the read window) and `business_date` (event day from the payload, for output partitioning). This means a row that arrived late (e.g. received on 2026-08-10 but describing an event that happened on 2026-07-31) is correctly written into the `business_date=2026-07-31` partition when the L3 model reads the `ingest_date=2026-08-10` window.
 
 The `level3` default partition convention (`partitionBy(source_name, business_date)`) combined with Spark's `partitionOverwriteMode=dynamic` ensures that re-running a window **only overwrites the exact `(source_name, business_date)` tuples present in the incoming batch** — all other dates and sources are left untouched. The replay is safe and idempotent.
 
@@ -914,10 +914,10 @@ root and bucket path before I/O or Spark starts. If you see an
 
 - **Do not introduce FUSE / Mountpoint for S3 at any point.** The code contract
   explicitly avoids mounts. Adding a mount layer after the platform already
-  handles `s3://` natively is double-indirection and breaks the Mercell/Camelot
-  sharp-root convention.
+  handles `s3://` natively is double-indirection and breaks the sharp-root
+  convention.
 - `spark.sql.sources.partitionOverwriteMode=DYNAMIC` on the Stage 3 SQL submit
-  is **required** for the Mercell re-co-location + Camelot late-arrival
+  is **required** for the multi-source side-by-side re-co-location + late-arrival
   pattern. Without it, `partition_overwrite` load modes behave like
   full-refresh and destroy sibling `(source_name, business_date)` partitions.
 - **Late-arrival replays on EMR** are identical in form to the local recovery

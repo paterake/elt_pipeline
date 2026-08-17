@@ -37,7 +37,7 @@ _DEFAULT_ICEBERG_CATALOG_NAME = runtime_manifest.catalogs.default_catalog_name
 def _is_iceberg_enabled(spark: SparkSession) -> bool:
     """Return True if Iceberg is active for the given Spark session.
 
-    Mercell/Camellos 3-tier resolution (single cascade through singleton):
+    3-tier resolution (single cascade through singleton):
       1. Spark session conf (builder already applied CLI arg > ENV > YAML > manifest)
          → If ``spark.sql.extensions`` contains the Iceberg extension class, it's ON.
       2. runtime_context singleton (``spark.enable_iceberg``) — explicit boolean
@@ -63,7 +63,7 @@ def _is_iceberg_enabled(spark: SparkSession) -> bool:
 def _iceberg_catalog_name(spark: SparkSession | None = None) -> str:
     """Resolve the active Iceberg catalog name.
 
-    Mercell/Camellos precedence (single cascade):
+    Precedence (single cascade):
       1. ``spark.sql.defaultCatalog`` — *actually* active in the session
          (build_spark_session applies CLI arg > ENV > YAML > manifest here).
       2. runtime_context singleton (``iceberg_writer.catalog_name``, fallback

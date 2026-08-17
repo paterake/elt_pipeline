@@ -70,7 +70,7 @@ def build_spark_session(
 ) -> SparkSession:
     """Build a SparkSession, wiring the Iceberg V2 DataSource when iceberg_enabled.
 
-    Mercell/Camellos 3-tier precedence (highest to lowest, single cascade):
+    4-tier precedence (highest to lowest, single cascade):
       1. Explicit function parameters (caller-injected).
       2. runtime_context singleton — materialized ONCE at main() entry point.
          This singleton materializer is the ONLY place env/YAML/manifest
@@ -97,7 +97,7 @@ def build_spark_session(
         singleton_key: str,
         override_path: tuple[str, ...] | None = None,
     ):
-        """Mercell/Camellos precedence:
+        """Single-cascade precedence:
         param > SINGLETON (final via runtime_context) > ro dict > None.
 
         The singleton's lazy bootstrap (``_ensure()``) handles the full

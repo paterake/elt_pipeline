@@ -99,7 +99,7 @@ level3/<table_name>/source_name=<src>/<date_col>=<date>/*.parquet
 
 - `date_col` is `business_date` by default (event day from the payload). This is the late-arrival-correct convention: data received on `ingest_date=2026-08-10` whose business date is `2026-07-31` correctly lands in partition `business_date=2026-07-31/`.
 - `date_col` may be explicitly overridden to `ingest_date` for snapshot/audit tables where "what did the data look like on arrival day?" is the semantic question.
-- `source_name=<src>` partitions are the Mercell re-co-location pattern: one canonical Spark table, multiple sources co-located side-by-side as peer partitions. Each source's L3 pipeline independently overwrites only its own `(source_name, date_col)` tuple.
+- `source_name=<src>` partitions enable multi-source side-by-side re-co-location: one canonical Spark table, multiple sources co-located as peer partitions. Each source's L3 pipeline independently overwrites only its own `(source_name, date_col)` tuple.
 
 ### Level 4 (Consumer Mart) Path Grammar
 
@@ -304,7 +304,7 @@ Previously, `partitionBy` was applied only for `load_mode: partition_overwrite`.
 
 **Default rationale:**
 - L3 default `["source_name", "business_date"]`:
-  - `source_name` enables Mercell re-co-location (multiple sources side-by-side in one canonical table), per-source independent replay, and governance-by-path (IAM prefix controls per source).
+  - `source_name` enables multi-source side-by-side re-co-location (multiple sources co-located in one canonical table), per-source independent replay, and governance-by-path (IAM prefix controls per source).
   - `business_date` is the late-arrival-correct default. Data received on `ingest_date=2026-08-10` with payload date `business_date=2026-07-31` correctly lands in the `business_date=2026-07-31` partition. Spark dynamic partition overwrite replaces only the matching `(source_name, business_date)` tuple.
 - L3 override `["source_name", "ingest_date"]`: Use for snapshot/audit tables where "what did the data look like on the day we received it?" is the semantic question. Arrival-day semantics, not event-day semantics.
 - L4 default `["business_date"]`: Consumer marts are typically already conformed, so `source_name` is no longer a required path-level partition. Date partitioning still provides query pruning and governance-by-time-window.
@@ -358,9 +358,9 @@ The platform shall support:
 
 The runtime must preserve a record of what dates, partitions, and model versions were executed.
 
-### FR6a. Late-Arriving Data Repartitioning (Camelot Capability, Preserved by Design)
+### FR6a. Late-Arriving Data Repartitioning (Preserved by Design)
 
-The platform SHALL preserve and improve upon the Camelot late-arriving data repartitioning capability. This is not a separate "repartition job" — it is the default behavior of any L3 model that selects `business_date` in its output.
+The platform SHALL implement a late-arriving data repartitioning capability as a default, non-optional behavior of L3 models. This is not a separate "repartition job" — it is the default behavior of any L3 model that selects `business_date` in its output.
 
 **Standard 4-step flow for late arrivals:**
 1. **L2 write (arrival day).** Data for a `business_date=2026-07-31` event arrives late on `ingest_date=2026-08-10`. The normalization step writes it to L2 under `level2/source=X/entity=Y/.../ingest_date=2026-08-10/...`. The L2 parquet row carries both:
@@ -384,7 +384,7 @@ The platform SHALL preserve and improve upon the Camelot late-arriving data repa
    replacing **only** the `(source_name=X, business_date=2026-07-31)` partition. Other date partitions and other sources are untouched.
 4. **Idempotent replay.** Re-running the same L3 model for `ingest_date=2026-08-10` produces the same output and overwrites the same `(source_name, business_date)` partition — safe and deterministic.
 
-**Why this is better than the Camelot implementation:**
+**Why this design is superior to a dedicated repartition step:**
 - No separate explicit "repartition" step or job needed. It's the default behavior of every L3 model that selects `business_date`.
 - `ingest_date` is preserved as a queryable data column at L3, so auditors can answer: "Which ingest_date run wrote these rows into business_date=2026-07-31?"
 - Dynamic partition overwrite + the fact that Spark restricts overwrite to partition values present in the output dataframe = zero risk of accidentally overwriting unrelated source or date partitions, even if the WHERE clause in the SELECT is wrong. This is a correctness guardrail.
@@ -551,7 +551,7 @@ Each `level3` model must document:
 - The SQL model's SELECT MUST produce the effective partition columns as real output columns (Spark enforces this at write time with a readable error)
 - `business_date` (default date partition) = event day from the payload, enables late-arrival repartitioning per FR6a
 - `ingest_date` (override) = arrival day, for snapshot/audit semantics
-- `source_name` = the source this data came from, enables Mercell re-co-location (multiple sources side-by-side in one canonical table) and governance-by-path
+- `source_name` = the source this data came from, enables multi-source side-by-side re-co-location (multiple sources co-located in one canonical table) and governance-by-path
 
 ## Data Contract for Level 4
 

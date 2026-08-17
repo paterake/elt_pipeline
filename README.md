@@ -17,15 +17,8 @@ The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` t
 
 ## Source Code references
 
-**Baseline legacy archives (workstation reference, 2026-08-14 session):**
-- Camelot (main): `/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt` → *now also accessible on current session workstation at* `~/Documents/__code/archive/camelot/__code/bi-bdp-elt`
-- Camelot (cfg): `/Users/rpatel/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg` → *now also accessible at* `~/Documents/__code/archive/camelot/__code/bi-bdp-elt-cfg`
-- Mercell (main): `/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main` → *now also accessible at* `~/Documents/__code/archive/mercell/__code/edp-elt-ingestion-main`
-- Mercell (transformation cfg): `/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main` → *now also accessible at* `~/Documents/__code/archive/mercell/__code/edp-elt-transformation-cfg-main`
-- Mercell (ingestion cfg): `/Users/rpatel/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main` → *now also accessible at* `~/Documents/__code/archive/mercell/__code/edp-elt-ingestion-cfg-main`
-
-**Location governance note:**
-Workstation-specific paths for the baseline reference archives are formally tracked in [IMPLEMENTATION_SOURCE_PROVENANCE.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/todo/archive/IMPLEMENTATION_SOURCE_PROVENANCE.md) § *Local Machine Source Map (Not Committed)* — for any future workstation path change, update that provenance doc first (and if the change applies to a new workstation only, prefer the gitignored local override `docs/todo/IMPLEMENTATION_SOURCE_PROVENANCE.local.md` rather than editing README paths). Client-neutral guardrails apply: no proprietary code or config is copied from these archives into `elt_pipeline`; they are design baselines only.
+**Architecture & lifecycle overview (canonical):**
+- See [10-prd-architecture-and-lifecycle.md](docs/prd/10-prd-architecture-and-lifecycle.md) for the authoritative architecture, four-phase lifecycle, four-tier config cascade, four-tier SQL validity chain, schema evolution, portability, catalog bindings, and JDBC serving endpoint model.
 
 ## Platform Model
 
@@ -48,9 +41,8 @@ At the current repository state, implementation includes the first local `level5
 
 This repository must remain client-neutral.
 
-- do not include client names, vendor names, or legacy repository names
-- do not copy code or configuration verbatim from any archived codebase
-- use legacy implementations only as an internal baseline to derive a generic superset of ingestion patterns
+- do not include client names or vendor names in product contracts, examples, or defaults
+- use generic and non-identifying configuration examples
 
 ## Docs
 
@@ -61,6 +53,7 @@ The completed backlog snapshot is archived in `docs/todo/archive/IMPLEMENTATION_
 
 Recommended starting points:
 
+- `docs/prd/10-prd-architecture-and-lifecycle.md`: canonical architecture, four-phase lifecycle, four-tier config, validity chain, portability, serving endpoint model
 - `docs/prd/00-prd-platform-principles.md`: product positioning and DAMA-DMBOK v2 alignment
 - `docs/prd/00-prd-architecture-levels-and-governance.md`: level model and governance boundaries
 - `docs/prd/06-prd-level4-to-level5-publish-and-export.md`: approved `level5` publish/export contract

@@ -120,7 +120,7 @@ python3 -m http.server 8000 --directory examples/data/rest_api
 ### SQL overwrite staging-swap failures
 
 When a SQL model runs under `full_refresh` or `partition_overwrite`, the
-execution now follows the **Mercell/Camelot staging-swap protocol** (see
+execution now follows the **staging-swap write protocol** (see
 `LOCAL_OPERATOR_RUNBOOK.md` → **SQL Overwrite Protocol**). Three new runtime
 error codes can appear in the SQL audit `errors.jsonl` or in CLI output:
 

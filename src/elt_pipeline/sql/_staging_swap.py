@@ -26,7 +26,7 @@ def build_staging_path(
     target_table_name: str,
     run_id: str,
 ) -> str:
-    """Build Mercell/Camelot staging directory path.
+    """Build staging directory path.
 
     Layout contract:  ``{staging_root}/{stage}/{table}/run_id={run_id}``
 

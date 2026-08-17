@@ -1,4 +1,4 @@
--- Canonical shipments: late-arrival repartitioning pattern (Camelot by-design).
+-- Canonical shipments: late-arrival repartitioning pattern (by design).
 --
 -- Late-arrival flow (4 steps, by design not bolt-on):
 --   1. Read L2 by INGEST_DATE: filter the source-aligned level2 table on when the data

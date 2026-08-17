@@ -1,6 +1,6 @@
-"""Runtime configuration SINGLETON (Mercell/Camellos pattern).
+"""Runtime configuration SINGLETON (config-cascade pattern).
 
-This module implements the exact config pattern from Mercell/Camellos:
+This module implements the canonical runtime config pattern:
 
 1. **One-shot materialization at entry point**
    :func:`initialize` is called exactly ONCE from the top of
@@ -578,7 +578,7 @@ def initialize(
         raise RuntimeError(
             "runtime_context.initialize() called a second time — singleton must "
             "be initialized exactly once from the single framework entry point "
-            "(Mercell/Camellos pattern).  If you are testing, call "
+            "(config-cascade pattern).  If you are testing, call "
             "runtime_context._reset_for_tests() first."
         )
     _SINGLETON = _materialize(
@@ -638,10 +638,10 @@ def get(dotted_key: str, default: Any = None) -> Any:
         runtime_context.get("iceberg_writer.catalog_type")  # "hadoop" | "rest" | …
         runtime_context.get("trino_serving.port")  # 8080
 
-    This is the canonical interface in the Mercell/Camellos pattern: flat
-    dotted keys, simple lookups.  The value returned has ALREADY been through
-    the full 4-tier cascade (arg > ENV > YAML > manifest) — consumers should
-    NEVER apply additional tiers.
+    This is the canonical interface: flat dotted keys, simple lookups.
+    The value returned has ALREADY been through the full 4-tier cascade
+    (arg > ENV > YAML > manifest) — consumers should NEVER apply
+    additional tiers.
     """
     return _ensure().values.get(dotted_key, default)
 

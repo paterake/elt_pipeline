@@ -205,12 +205,12 @@ class TestValidateSwapScheme:
 
 
 # ---------------------------------------------------------------------------
-# build_staging_path — Mercell/Camelot layout contract
+# build_staging_path — layout contract
 # ---------------------------------------------------------------------------
 
 
 class TestBuildStagingPath:
-    def test_layout_matches_mercell_camelot_contract(self) -> None:
+    def test_layout_contract(self) -> None:
         path = build_staging_path(
             staging_root="/warehouse/_staging",
             stage=StageName.sql,

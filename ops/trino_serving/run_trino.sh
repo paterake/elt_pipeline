@@ -15,7 +15,7 @@
 # Usage:
 #   ops/trino_serving/run_trino.sh (start|stop|status|restart|cli|write-configs|env)
 #
-# Optional env (honored through the Mercell/Camellos singleton — ONE cascade,
+# Optional env (honored through the runtime_context singleton — ONE cascade,
 # CLI arg > ELT_PIPELINE_* ENV > pipeline.yaml YAML > frozen manifest defaults):
 #   ELT_PIPELINE_CONFIG_PATH             Override root YAML config location.
 #   ELT_PIPELINE_ENVIRONMENT             YAML environment layer.
@@ -70,7 +70,7 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." >/dev/null 2>&1 && 
 
 # ==============================================================================
 # BOOTSTRAP: load every default, env-var name, path, version, and boolean flag
-#   ONE TIME through the Mercell/Camellos runtime_context singleton:
+#   ONE TIME through the runtime_context singleton:
 #
 #     SINGLE cascade (materialized exactly ONCE):
 #       1. CLI / function args (passed into runtime_context.initialize)
