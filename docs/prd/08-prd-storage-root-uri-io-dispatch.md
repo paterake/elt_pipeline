@@ -2,7 +2,7 @@
 
 ## Document Status
 
-- **Status:** Approved v1.1 (L3/L4 Iceberg cutover clarifications: catalog dispatch and serving engine dispatch now explicitly mirror the single-seam scheme-dispatch pattern in this PRD. Catalog binding + BI-engine serving for L3/L4 no longer anti-scoped; they track under [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md) and the [Iceberg backlog](../todo/TODO_L3_L4_ICEBERG_SERVING.md) and follow this PRD's exact architectural pattern.)
+- **Status:** Approved v1.1 (L3/L4 Iceberg cutover clarifications: catalog dispatch and serving engine dispatch now explicitly mirror the single-seam scheme-dispatch pattern in this PRD. Catalog binding + BI-engine serving for L3/L4 no longer anti-scoped; they track under [PRD 03](03-prd-sql-level2-to-level3-and-level3-to-level4.md) and [PRD 09](09-prd-level3-level4-serving-and-table-format.md) with the canonical architecture in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md), and follow this PRD's exact architectural pattern. Iceberg cutover completion record: [archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md](../todo/archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md).)
 - **Product area:** `elt_pipeline` / cross-stage (ingest → level1 → level2 → sql → publish)
 - **Scope:** Platform-wide storage contract and I/O dispatch for stage root paths, object paths, bucket paths, and (as of v1.1) the mirrored catalog + serving-engine dispatch seams for L3/L4.
 - **Design precedence:** This PRD codifies approved conventions for URI-aware storage-root handling. It is a **correction** to the earlier local-POSIX-only implementation in `elt_pipeline`, which incorrectly assumed `pathlib.Path` for all path operations.

@@ -345,4 +345,4 @@ Atomic swap → target location
 | L3/L4 serving & table-format trade-offs | [09-prd-level3-level4-serving-and-table-format.md](09-prd-level3-level4-serving-and-table-format.md) |
 | Operator runbook (Trino launch, CLI examples) | [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) |
 | Troubleshooting (JDK, Spark, staging-swap) | [TROUBLESHOOTING.md](../operator/TROUBLESHOOTING.md) |
-| Release & smoke-test checklist | [RELEASE.md](../maintainer/RELEASE.md) |
+| Release & smoke-test checklist | [LOCAL_DEVELOPMENT_AND_RELEASE.md](../maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md) |

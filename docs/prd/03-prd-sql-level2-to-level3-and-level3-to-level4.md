@@ -7,7 +7,7 @@
 - Stages: `level2` -> `level3`, `level3` -> `level4`
 - Proposed implementation language: Python
 - Proposed packaging and environment management: `uv`
-- Companion PRDs: [08-storage-dispatch](08-prd-storage-root-uri-io-dispatch.md), [TODO_L3_L4_ICEBERG_SERVING.md](../todo/TODO_L3_L4_ICEBERG_SERVING.md)
+- Companion PRDs: [08-storage-dispatch](08-prd-storage-root-uri-io-dispatch.md), [09-serving-table-format](09-prd-level3-level4-serving-and-table-format.md), [10-architecture-lifecycle](10-prd-architecture-and-lifecycle.md). Completion record for the Iceberg cutover: [archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md](../todo/archive/TODO_L3_L4_ICEBERG_SERVING_COMPLETED.md).
 
 ## Background
 
@@ -27,12 +27,12 @@ The existing platforms use SQL-driven transformation to promote source-aligned d
 
 The new `elt_pipeline` should retain these strengths while simplifying configuration, reducing operational coupling, and aligning the transformation model to a Python-first runtime.
 
-As of Draft v3, L3 and L4 materialization supports a dual-path write seam behind a single `--iceberg-enabled` flag:
+As of Draft v3, L3 and L4 materialization supports a dual-path write seam behind a single `--iceberg-enabled`/`--no-iceberg-enabled` flag pair. Iceberg is the default (opt-out); the plain-parquet + staging-swap path is an escape hatch for parity and soak validation:
 
-- Legacy path (default): plain Apache Parquet files on the configured storage scheme, with a bespoke staging-swap atomic-write protocol for `full_refresh` and `partition_overwrite`.
-- Iceberg path (opt-in): Apache Iceberg 1.11 table-format materializations with atomic commits, snapshot isolation, and 4-way pluggable catalog binding (`hadoop` / `jdbc` / `rest` / `glue`) plus a configurable BI-tool-agnostic serving engine (Trino reference, Athena / Spark Thrift / DuckDB alternatives).
+- Plain-parquet path (escape hatch via `--no-iceberg-enabled`): plain Apache Parquet files on the configured storage scheme, with a bespoke staging-swap atomic-write protocol for `full_refresh` and `partition_overwrite`.
+- Iceberg path (default, opt-out): Apache Iceberg 1.11 table-format materializations with atomic commits, snapshot isolation, and pluggable catalog binding (`hadoop` / `jdbc` / `rest` / `nessie` / `hive_metastore` / `glue`) plus a configurable BI-tool-agnostic serving engine (Trino reference, Athena / Spark Thrift / DuckDB alternatives).
 
-Parity between the two paths is attested via row-count + sorted-row-hash MD5 comparison for every L3/L4 model produced by the `local_demo` package; once parity and soak confidence hold, the staging-swap legacy path can be retired for L3/L4 (see the backlog [TODO_L3_L4_ICEBERG_SERVING.md](../todo/TODO_L3_L4_ICEBERG_SERVING.md)).
+Parity between the two paths is attested via row-count + sorted-row-hash MD5 comparison for every L3/L4 model produced by the `local_demo` package; once parity and soak confidence hold, the staging-swap escape-hatch path should be retired for L3/L4. The canonical architecture, dual-path design, and next-step operator triggers are documented in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md); the cutover completion proof lives in the archive record.
 
 ## Problem Statement
 
@@ -156,16 +156,19 @@ Same-path rebuilds (a SQL model that reads from its own canonical target while r
 
 ### Scope
 
-The L3/L4 Iceberg cutover (see [TODO_L3_L4_ICEBERG_SERVING.md](../todo/TODO_L3_L4_ICEBERG_SERVING.md)) adds a single config-dispatched seam that covers two concerns:
+The L3/L4 Iceberg cutover adds a single config-dispatched seam that covers two concerns:
+Full architecture, dual-path write model, portability matrix, and operator triggers live in [10-prd-architecture-and-lifecycle.md](10-prd-architecture-and-lifecycle.md). The cutover completion proof is in the archive record.
 
-1. **Catalog binding (where tables are registered)**. Four pluggable catalog types mirror PRD 08's scheme dispatch (one seam, env-dispatched, CLI args override env vars, fail-fast prereq validation before JVM):
+1. **Catalog binding (where tables are registered)**. Six pluggable catalog types mirror PRD 08's scheme dispatch (one seam, env-dispatched, CLI args override env vars, fail-fast prereq validation before JVM):
 
-   | Catalog type | Key env / CLI                                             | Use case                                                          |
-   |--------------|-----------------------------------------------------------|-------------------------------------------------------------------|
-   | `hadoop`     | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop` (default)      | Local-first zero-infra dev. No URI. Warehouse dir = FS root.      |
-   | `jdbc`       | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=jdbc` + URI            | H2 (dev) / Postgres (on-prem). Requires JDBC URI.                 |
-   | `rest`       | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=rest` + URI + token    | Polaris / Nessie / Lakekeeper / Tabular. REST endpoint + token.   |
-   | `glue`       | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue` + region         | AWS Glue Data Catalog. Region via env or CLI; standard AWS SDK cred chain. |
+   | Catalog type       | Key env / CLI                                             | Use case                                                          |
+   |--------------------|-----------------------------------------------------------|-------------------------------------------------------------------|
+   | `hadoop`           | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop` (default)      | Local-first zero-infra dev. No URI. Warehouse dir = FS root.      |
+   | `jdbc`             | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=jdbc` + URI            | H2 (dev) / Postgres (on-prem). Portable shared metastore.         |
+   | `rest`             | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=rest` + URI + token    | Polaris / Nessie / Lakekeeper / Tabular. REST endpoint + token.   |
+   | `nessie`           | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=nessie` + URI + token  | Apache Nessie git-style catalog. REST variant via Nessie server.  |
+   | `hive_metastore`   | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hive_metastore` + URI  | Existing Apache Hive Metastore (on-prem / Databricks / EMR).      |
+   | `glue`             | `ELT_PIPELINE_ICEBERG_CATALOG_TYPE=glue` + region         | AWS Glue Data Catalog. Region via env or CLI; standard AWS SDK cred chain. |
 
    `--iceberg-enabled` flips the whole subsystem on. Validation (`_validate_iceberg_catalog_binding` in the CLI) rejects unknown types and requires URIs for `jdbc` / `rest` types *before* the SparkSession is created, giving fast, pre-JVM failure.
 

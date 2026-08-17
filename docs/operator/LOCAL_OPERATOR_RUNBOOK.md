@@ -161,15 +161,38 @@ PySpark 4.1.2, unblocking the default flip.
 - Level2TableManifest `data_path` / `manifest_path` relative-layout semantics
   are preserved byte-identical.
 
+### Removal trigger (Gate C3): retire the `python` normalize engine
+
+The `"python"` engine escape hatch is scheduled for removal. Do **not** extend
+it, add new relationalization rules to it, or adopt it for new sources. Keep it
+only for emergency triage of an edge payload Spark cannot yet reproduce.
+
+**Trigger — open a PR to delete the Python engine branch when ALL of:**
+1. No new bug has required falling back to `normalize_engine="python"` for
+   **60 consecutive days** of production/soak use.
+2. `uv run pytest tests/test_normalize_engine_parity.py` — all Spark-native
+   fixtures still pass (Contracts C1–C3).
+3. A maintainer grepped platform configs for `normalize_engine: python` and
+   found **0** in-scope references (or all refs were migrated to `spark` and
+   re-tested).
+4. Operator guidance below (Troubleshooting) for `normalize run` driver OOM
+   points solely at ingest payload splitting + Spark engine (no "switch to
+   python engine" recommendation remains).
+
+At deletion, remove: the `--normalize-engine` CLI flag, the
+`normalize_engine=` keyword from `normalize/pipeline.py`, the Python relationalizer,
+and the engine-selection table above.
+
 ## SQL Overwrite Protocol (Staging-Swap Write Protocol, plus Iceberg-native path)
 
 SQL model materialization for `load_mode: full_refresh` and
 `load_mode: partition_overwrite` has two write paths, selected at
 `sql run` time:
 
-- **Plain-parquet (default):** the **staging-swap write protocol**
-  described below is used to eliminate the Spark 4.x same-path overwrite DAG hazard.
-- **`--iceberg-enabled`:** the swap layer is **bypassed entirely**; Spark writes
+- **`--no-iceberg-enabled` (escape hatch, plain-parquet):** the
+  **staging-swap write protocol** described below is used to eliminate the
+  Spark 4.x same-path overwrite DAG hazard.
+- **Default (Iceberg):** the swap layer is **bypassed entirely**; Spark writes
   directly against the target Iceberg table through Iceberg's snapshot-isolated
   atomic commit semantics. `full_refresh` → `createOrReplace`,
   `partition_overwrite` → `overwritePartitions(dynamic)`, `append` → `append`.
@@ -178,16 +201,46 @@ SQL model materialization for `load_mode: full_refresh` and
   regression test `test_iceberg_same_path_rebuild_reads_via_self_query` in
   `tests/test_sql_iceberg_write.py` verifies this is hazard-free.
 
-The staging-swap path remains authoritative for the legacy plain-parquet route
-and is documented in full below. Iceberg-managed L3/L4 tables simply do not
-run through it.
+The staging-swap path remains as a parity/soak escape hatch for plain-parquet
+comparison and is documented in full below. Iceberg-managed L3/L4 tables simply
+do not run through it.
 
-**Plain-parquet staging-swap (legacy path):**
+**Plain-parquet staging-swap (escape-hatch path):**
 This hazard occurs whenever a SQL model reads from the canonical table path and
 writes back into it (a "self-querying rebuild" such as a canonical table that
 unions prior rows with new rows): Spark's plain-parquet `SaveMode.Overwrite`
 deletes input files before the DAG recomputes, producing spurious
 `No such file or directory` errors mid-execution.
+
+### Removal trigger: retire the staging-swap escape hatch for L3/L4
+
+`src/elt_pipeline/sql/_staging_swap.py` and the plain-parquet branch are
+already 100% bypassed by default (opt-out Iceberg). The module is retained
+only for: (a) parity comparison during the soak window, (b) teams that
+explicitly set `spark.enable_iceberg: false` in YAML/ENV and still need the
+Spark 4.x DAG hazard solved for plain-parquet.
+
+**Trigger — open a PR to delete the L3/L4 staging-swap code path (module +
+call site) when ALL of:**
+1. No new bug has required falling back to `--no-iceberg-enabled` for
+   **60 consecutive days** of production/soak use.
+2. `uv run pytest tests/test_sql_iceberg_write.py` — all load-mode +
+   same-path-rebuild regression tests still pass.
+3. A maintainer grepped platform configs and operator playbooks for
+   `spark.enable_iceberg:\s*false` or `ELT_PIPELINE_ICEBERG_ENABLED=0` or
+   `--no-iceberg-enabled` and found **0** in-scope references (or all refs
+   were migrated to Iceberg and re-tested).
+4. `README.md`, this runbook, and `TROUBLESHOOTING.md` were updated to remove
+   any mention of the swap layer's operator steps for L3/L4 (L2 plain-parquet
+   staging-swap handling, if added later, is a separate decision).
+
+At deletion, remove: `_staging_swap.py`, the swap branch + error codes in
+`sql/spark_executor.py`, `tests/test_staging_swap.py` entries that cover
+L3/L4 paths, and the operator-steps sub-section below describing the swap
+write sequence. Keep the **Conceptual** hazard description so anyone reading
+history understands why the swap layer once existed. Do NOT delete references
+to the archived completion record in `docs/todo/archive/` — those are audit
+trail.
 
 **Write sequence for overwrite modes (Track B, Gate 3):**
 1. Compute staging path: `{staging_root}/stage={level}/table={table_name}/run_id={run_id}/`.
@@ -273,8 +326,24 @@ snapshot time-travel, or atomic in-place schema evolution.
 
 ### Enable Iceberg
 
-Pass `--iceberg-enabled` on the CLI or set the environment variable
-`ELT_PIPELINE_ICEBERG_ENABLED=1`. When enabled:
+Iceberg is **opt-out by default**, not opt-in. The runtime enables Iceberg
+automatically whenever the Iceberg Spark extensions load successfully. You only
+need to act explicitly when you want to **short-circuit OFF** back to the
+parity plain-parquet + staging-swap path.
+
+- **Iceberg ON (default):** do nothing. No flag, no env var required.
+- **Iceberg ON (explicit):** pass `--iceberg-enabled` on the CLI or set the
+  environment variable `ELT_PIPELINE_ICEBERG_ENABLED=1`.
+- **Iceberg OFF (escape hatch):** pass `--no-iceberg-enabled` on the CLI or
+  set `ELT_PIPELINE_ICEBERG_ENABLED=0` or set `spark.enable_iceberg: false`
+  in `pipeline.yaml`.
+
+The effective vote is decided by `_iceberg_effective_enabled()` in the CLI:
+a YAML/ENV `true` is **non-binding** — if `IcebergSparkSessionExtensions` is
+not actually loaded into the Spark session the platform falls back to
+plain-parquet, preventing a wrong-branch parity run when the JAR is missing.
+
+When Iceberg is enabled:
 
 - Spark writes go through `SparkCatalog` + `SparkSessionCatalog` registered under
   the configured catalog name (default: `iceberg`).
@@ -285,10 +354,30 @@ Pass `--iceberg-enabled` on the CLI or set the environment variable
   path, JDBC-ready Trino endpoint, and a sample BI query.
 
 Minimal example against the local-demo package with the zero-infra
-`hadoop` (filesystem) catalog:
+`hadoop` (filesystem) catalog (takes the default; no explicit iceberg flag
+required):
 
 ```bash
 uv run elt-pipeline sql run examples/sql/local_demo \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse
+```
+
+Force the parity plain-parquet path (useful when comparing Iceberg vs legacy
+outputs):
+
+```bash
+uv run elt-pipeline sql run examples/sql/local_demo \
+  --no-iceberg-enabled \
+  --root-path .ignore/runtime-demo \
+  --warehouse-root .ignore/warehouse
+```
+
+Force the Iceberg path explicitly for the publish stage too (Iceberg is still
+the default for publish — the explicit flag just documents intent):
+
+```bash
+uv run elt-pipeline publish run examples/publish/local_demo \
   --iceberg-enabled \
   --root-path .ignore/runtime-demo \
   --warehouse-root .ignore/warehouse
@@ -296,22 +385,28 @@ uv run elt-pipeline sql run examples/sql/local_demo \
 
 ### Pluggable catalog types (Gate I2 dispatch)
 
-| Type       | Catalog flag / env                 | When to use                                 |
-|------------|------------------------------------|---------------------------------------------|
-| `hadoop`   | `--iceberg-catalog-type hadoop`    | Local zero-infra default; filesystem-based metastore persisted under `iceberg-warehouse-dir`. |
-| `jdbc`     | `--iceberg-catalog-type jdbc --iceberg-catalog-url <jdbc-url>` | Portable shared metastore (H2 file, Postgres, Derby, etc.). URI required. |
-| `rest`     | `--iceberg-catalog-type rest --iceberg-catalog-uri <http-uri>` | Polaris / Nessie / Lakekeeper / Tabular / any REST Iceberg catalog. URI required. Optional `--iceberg-rest-token` + `--iceberg-rest-warehouse`. |
-| `glue`     | `--iceberg-catalog-type glue`      | AWS Glue Data Catalog shared-metastore path. Optional `--iceberg-glue-region`; credentials follow standard AWS SDK credential chain. |
+Six pluggable catalog types, dispatched the same way PRD 08 dispatches storage
+schemes — one seam, env-dispatched, CLI args override env vars, fail-fast
+before SparkSession creation if the binding is incomplete:
+
+| Type             | Catalog flag / env                                           | When to use                                                                   |
+|------------------|--------------------------------------------------------------|-------------------------------------------------------------------------------|
+| `hadoop`         | `--iceberg-catalog-type hadoop`                              | Local zero-infra default; filesystem-based metastore persisted under `iceberg-warehouse-dir`. |
+| `jdbc`           | `--iceberg-catalog-type jdbc --iceberg-catalog-url <jdbc-url>` | Portable shared metastore (H2 file, Postgres, Derby, etc.). URI required.     |
+| `rest`           | `--iceberg-catalog-type rest --iceberg-catalog-uri <http-uri>` | Snowflake Polaris / Lakekeeper / Tabular / any generic REST catalog. URI required. Optional `--iceberg-rest-token` + `--iceberg-rest-warehouse`. |
+| `nessie`         | `--iceberg-catalog-type nessie --iceberg-catalog-uri <nessie-uri>` | Apache Nessie (git-style versioned catalog). Effectively a REST variant with Nessie-specific semantics; same token/warehouse option set. |
+| `hive_metastore` | `--iceberg-catalog-type hive_metastore --iceberg-catalog-uri <thrift-uri>` | Existing Apache Hive Metastore (on-prem Hadoop, Databricks-compatible, EMR HMS). Thrift URI required (`thrift://hms-host:9083`). |
+| `glue`           | `--iceberg-catalog-type glue`                                | AWS Glue Data Catalog shared-metastore path. Optional `--iceberg-glue-region`; credentials follow standard AWS SDK credential chain. |
 
 Equivalent environment variables (CLI args take precedence):
 
 ```bash
 export ELT_PIPELINE_ICEBERG_ENABLED=1
 export ELT_PIPELINE_ICEBERG_CATALOG_NAME=iceberg
-export ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop          # hadoop | jdbc | rest | glue
-export ELT_PIPELINE_ICEBERG_CATALOG_URI=                 # required for jdbc + rest
-export ELT_PIPELINE_ICEBERG_REST_TOKEN=                  # optional, rest auth
-export ELT_PIPELINE_ICEBERG_REST_WAREHOUSE=              # optional, rest multi-warehouse
+export ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hadoop          # hadoop | jdbc | rest | nessie | hive_metastore | glue
+export ELT_PIPELINE_ICEBERG_CATALOG_URI=                 # required for jdbc + rest + nessie + hive_metastore
+export ELT_PIPELINE_ICEBERG_REST_TOKEN=                  # optional, rest/nessie auth
+export ELT_PIPELINE_ICEBERG_REST_WAREHOUSE=              # optional, rest/nessie multi-warehouse
 export ELT_PIPELINE_ICEBERG_GLUE_REGION=                 # optional, glue region
 export ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR=.ignore/warehouse/iceberg
 ```
@@ -439,8 +534,13 @@ will not see tables under `file:///...`.
 
 ### Catalog-type coverage in the script
 
-The Trino script dispatches to 4 catalog property writers mirroring the
-pipeline's Gate I2 dispatch: `hadoop`, `jdbc`, `rest`, `glue`. Env overrides:
+The Trino reference script dispatches to 6 catalog property writers mirroring
+the pipeline's Gate I2 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`,
+`hive_metastore`, `glue`. `nessie` and `hive_metastore` map to REST-style and
+Thrift-style Iceberg catalog connectors inside Trino with the same option
+set as their pipeline-side counterparts.
+
+Env overrides for every supported type:
 
 ```bash
 # hadoop (default) — requires no extra env beyond warehouse dir
@@ -451,11 +551,24 @@ ELT_PIPELINE_ICEBERG_CATALOG_TYPE=jdbc \
 ELT_PIPELINE_ICEBERG_CATALOG_URI="jdbc:postgresql://pg:5432/iceberg?user=x&password=y" \
   ops/trino_serving/run_trino.sh start
 
-# rest — Polaris / Nessie / Lakekeeper / Tabular
+# rest — Snowflake Polaris / Lakekeeper / Tabular
 ELT_PIPELINE_ICEBERG_CATALOG_TYPE=rest \
 ELT_PIPELINE_ICEBERG_CATALOG_URI="http://polaris:8181/api/v1" \
 ELT_PIPELINE_ICEBERG_REST_TOKEN="<polaris-token>" \
 ELT_PIPELINE_ICEBERG_REST_WAREHOUSE="analytics_warehouse" \
+  ops/trino_serving/run_trino.sh start
+
+# nessie — Apache Nessie git-style catalog (REST variant with Nessie semantics)
+ELT_PIPELINE_ICEBERG_CATALOG_TYPE=nessie \
+ELT_PIPELINE_ICEBERG_CATALOG_URI="http://nessie:19120/api/v1" \
+ELT_PIPELINE_ICEBERG_REST_TOKEN="<nessie-token>" \
+ELT_PIPELINE_ICEBERG_REST_WAREHOUSE="main" \
+  ops/trino_serving/run_trino.sh start
+
+# hive_metastore — existing Apache Hive Metastore / Databricks / EMR HMS
+ELT_PIPELINE_ICEBERG_CATALOG_TYPE=hive_metastore \
+ELT_PIPELINE_ICEBERG_CATALOG_URI="thrift://hms-host:9083" \
+ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR="s3://my-lakehouse/warehouse/iceberg" \
   ops/trino_serving/run_trino.sh start
 
 # glue — AWS Glue Data Catalog (region defaults to SDK chain)
