@@ -1,5 +1,18 @@
 # Ingestion Inventory — Pattern Reference Model
 
+## Current Implementation Status (v1 — Honest Scope)
+
+This document describes the *pattern inventory*: the future-state mapping of observed real-world ingest patterns onto the platform's four connector families. It is **not** a claim that every pattern below is already implemented in v1. For current-v1 concrete status see [PRD 01 § Current Implementation Status](01-prd-ingestion-raw-to-level1.md#current-implementation-status-v1--honest-scope). The high-level mapping is:
+
+| Pattern archetype | Future family | v1 implementation status |
+|---|---|---|
+| REST API patterns (date-windowed, paginated, envelope) | `rest` | ✅ Implemented (production-usable) |
+| REST API, async redirect + polling | `rest` | ⏳ Roadmap (shared retry/timeout primitives exist) |
+| SQL JDBC patterns (snapshot, delta, multi-table, failover) | `sql` | 🟠 Demo-only: SQLite replay only. JDBC = roadmap. |
+| Object storage, scheduled sync | `object_storage` | ✅ Implemented (local POSIX + `s3://` only). GCS/ADLS = roadmap. |
+| Object storage, event-driven landing | `object_storage` | ⏳ Roadmap (discovery + replay primitives exist) |
+| Kafka patterns (raw landing, schema-aware decode) | `kafka` | 🟠 Demo-only: local JSONL replay only. Real broker = roadmap. |
+
 ## Purpose
 
 This document complements the ingestion PRDs by listing mature ELT ingestion patterns and capabilities. It maps every observed pattern onto one of the required `elt_pipeline` connector families, so that connector scope and capability scope can be reviewed independently.

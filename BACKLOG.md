@@ -10,10 +10,11 @@
 ## Resume (start here)
 
 - **D-0 is DECIDED (owner, 2026-08-18): Path A now — publish honestly; Path B (multi-cloud) is
-  roadmap.** So **do TRANCHE 1 first**, in order: **D-1 ✅ Done** → **I-1 *doc pass only***
+  roadmap.** So **do TRANCHE 1 first**, in order: **D-1 ✅ Done** → **I-1 ✅ Done (doc pass only)**
   (state the real ingest surface in README/PRD: real REST + sqlite-replay demo + local/s3 object
-  storage; do **not** implement Kafka/JDBC now) → **D-2** (publish the capability maturity matrix).
-  Completing those three = the repo can go public with accurate scope.
+  storage; Kafka/JDBC left as roadmap, not implemented) → **D-2 next** (publish the capability
+  maturity matrix — storage backends, ingest mechanisms, catalogs, serving, platinum items as
+  Production / Demo / Roadmap). Completing those three = the repo can go public with accurate scope.
 - **Everything else is roadmap (tranche 2), do NOT start it in this pass:** `B-*` (multi-cloud
   storage — prefer B-6 the facade when pulled forward), `I-1` implementation (real Kafka/JDBC), and
   `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment, secrets, governance,
@@ -38,13 +39,15 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 - **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311 passed / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-18. Origin: a portability + platinum review. Storage IO implements
-  **`s3://` + local `file://` only** (D-1 closed: PRD 10 §6 + README now state the implemented scope
-  and carry an explicit multi-cloud roadmap subsection; PRD 08 was already consistent); ingest is
-  local-demo-grade (real REST, sqlite-only SQL, Kafka file-replay); and the operational surface
-  (Iceberg maintenance, observability, orchestration, deployment, secrets, governance, OpenLineage,
-  DQ quarantine) is bronze→silver. **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
-  The backlog + this decision are committed. **Active: tranche 1 → start at I-1 (doc pass only).**
+- **Captured:** 2026-08-18 (re-stamped after I-1 doc pass). Origin: a portability + platinum review.
+  Storage IO implements **`s3://` + local `file://` only** (D-1 closed: PRD 10 §6 + README state the
+  implemented scope with explicit multi-cloud roadmap; PRD 08 was already consistent); ingest surface
+  is now explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
+  object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
+  marked roadmap); and the operational surface (Iceberg maintenance, observability, orchestration,
+  deployment, secrets, governance, OpenLineage, DQ quarantine) is bronze→silver.
+  **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.** Backlog + decision committed.
+  **Active: tranche 1 → next at D-2 (publish capability maturity matrix).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -344,9 +347,26 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   then per-backend unit tests (fakes/emulators, mirroring the S3 fake in
   [tests/test_path_utils.py](tests/test_path_utils.py)) + B-5 integration tests for GCS/ADLS; PRD 08 updated.
 
-#### I-1 — Ingest connector production readiness (beyond local demo)  ⏳
-- **Symptom:** the ingest layer is **local-demo-grade**, not production. The four "production"
-  connector base classes ([rest.py](src/elt_pipeline/ingest/connectors/rest.py),
+#### I-1 — Ingest connector production readiness (beyond local demo)  ✅ Done (2026-08-18, doc pass only)
+- **Decision (doc pass only, per D-0 Path A):** do NOT implement Kafka/JDBC now; document the
+  honest v1 ingest surface explicitly so no reader infers production Kafka/JDBC. Implementation
+  work (real JDBC, real broker) is tranche-2 roadmap behind existing seams. Concrete doc changes made:
+  - **README.md** "Current Scope and Capabilities § Ingest mechanisms" expanded from 4 bullets
+    to a framework-vs-concrete breakdown: REST = Production-usable (auth/pagination/retry all real);
+    Object storage = Production-usable (local + S3 via path_utils, GCS/ADLS roadmap);
+    SQL = 🟠 Demo-only: SQLite replay only, **no JDBC, no Postgres/MySQL/MSSQL/Oracle**;
+    Kafka = 🟠 Demo-only: local JSONL file replay only, real broker = roadmap.
+    Added explicit "Ingest roadmap (not in v1)" bullets.
+  - **[PRD 01](docs/prd/01-prd-ingestion-raw-to-level1.md)** (Draft target-state PRD) new
+    leading section "Current Implementation Status (v1 — Honest Scope)" with a 4-family table
+    (Target scope vs v1 status + Notes) plus the 3-item roadmap + the enterprise streaming-note
+    (object storage is the universal ingress; Kafka-connect-first over direct-broker).
+  - **[PRD 04](docs/prd/04-prd-ingestion-inventory-pattern-reference.md)** (Pattern Inventory) new
+    leading section "Current Implementation Status (v1 — Honest Scope)" with a per-pattern-archetype
+    v1 status table, and a cross-link to PRD 01 for the detailed breakdown.
+- **Symptom & root-cause retained for the eventual implementation tranche (below unchanged):**
+  The four "production" connector base classes
+  ([rest.py](src/elt_pipeline/ingest/connectors/rest.py),
   [sql.py](src/elt_pipeline/ingest/connectors/sql.py),
   [kafka.py](src/elt_pipeline/ingest/connectors/kafka.py),
   [object_storage.py](src/elt_pipeline/ingest/connectors/object_storage.py)) are **abstract (`ABC`)**;
@@ -369,24 +389,34 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   - **REST — real.** `LocalRestConnector` uses `urllib.request` against any URL (auth + pagination
     modes exist). This one is genuinely usable.
   - **Object storage — s3 + local dir only** (source read via `path_utils`; same scheme limit as B-6).
-- **Design note — object storage is the universal ingress; don't over-invest in streaming.** In
-  enterprise deployments, streaming ingest (Kafka/Kinesis/Event Hubs) is normally owned by
-  cloud-native infra built for it — AWS Lambda event-source mapping, Kafka Connect S3 sink, Kinesis
-  Firehose, Flink, Event Hubs Capture — which **lands raw files into object storage**; this pipeline
-  then picks them up via the object-storage connector. So a rock-solid, multi-cloud **object-storage
-  path (B-6) is the high-value work**, and a real Kafka broker consumer is a *low-priority
-  convenience* (demos, small no-infra deployments), not a blocker. Prioritise B-6 over a real Kafka
-  consumer.
-- **Decision needed (owner), per mechanism:** which are in scope for v1 vs roadmap? Suggested:
-  **(high)** multi-DB SQL ingest (JDBC via Spark `spark.read.jdbc`, or a Python driver matrix) +
-  cloud object-storage sources (falls out of B-6); **(low)** a real Kafka consumer (basic capability
-  only — enterprises use infra to land to object storage). At minimum, **the README/PRD must state
-  the real ingest surface** (real REST + sqlite-replay demo + local/s3 object storage) rather than
-  imply production Kafka/JDBC.
-- **Files:** [ingest/connectors/](src/elt_pipeline/ingest/connectors/),
-  [config/models.py](src/elt_pipeline/config/models.py), README/PRD.
-- **Verification:** each claimed mechanism has a concrete connector + a test against a real/emulated
-  endpoint; docs match the shipped surface.
+- **Design note (unchanged; applies when implementation is pulled forward):** object storage is
+  the universal ingress; don't over-invest in streaming. In enterprise deployments, streaming
+  ingest (Kafka/Kinesis/Event Hubs) is normally owned by cloud-native infra built for it —
+  AWS Lambda event-source mapping, Kafka Connect S3 sink, Kinesis Firehose, Flink, Event Hubs Capture
+  — which **lands raw files into object storage**; this pipeline then picks them up via the
+  object-storage connector. So a rock-solid, multi-cloud **object-storage path (B-6) is the
+  high-value work**, and a real Kafka broker consumer is a *low-priority convenience* (demos,
+  small no-infra deployments), not a blocker. Prioritise B-6 over a real Kafka consumer.
+- **Files changed (doc pass only):** [README.md](README.md),
+  [docs/prd/01-prd-ingestion-raw-to-level1.md](docs/prd/01-prd-ingestion-raw-to-level1.md),
+  [docs/prd/04-prd-ingestion-inventory-pattern-reference.md](docs/prd/04-prd-ingestion-inventory-pattern-reference.md).
+- **Verification (I-1 doc pass):**
+  1. **Cross-doc ingest claim alignment review:**
+     - README Honest Boundary § Ingest mechanisms: REST=Prod / ObjectStorage(local+S3)=Prod /
+       SQL=SQLite-only-demo / Kafka=JSONL-replay-demo; roadmap lists JDBC-multiDB + real-Kafka +
+       GCS/ADLS object-storage. ✓
+     - PRD 01 § Current Implementation Status (v1 — Honest Scope): 4-row table matches README's
+       classifications + the roadmap list + enterprise-streaming note. Intro paragraph explicitly
+       warns readers this Draft PRD = target scope, not v1 claims. ✓
+     - PRD 04 § Current Implementation Status (v1 — Honest Scope): per-archetype table (REST=✅,
+       SQL-JDBC=🟠, Kafka=🟠, object-storage=✅/⏳) + links back to PRD 01. Intro warns that the
+       pattern inventory is future-state mapping, not v1 implementation claims. ✓
+     - No other document in `docs/prd/` or `docs/operator/` implies production JDBC/Kafka without
+       the qualifier. ✓
+  2. **Gate:** `bash scripts/run_tests.sh` → TEST GATE: PASS (all files green) — 311 passed / 0 failed.
+     TOTAL_PASSES: 311. EXITCODE: 0. (Doc-only edits; zero code touched.)
+  3. **Lint:** `uv run ruff check .` → All checks passed! RUFF_EXIT: 0.
+- **Owner:** maintainer (per D-0 decided Path A; doc-only reconciliation in this session. Next item: D-2.
 
 ### Platinum / production-hardening (operational, governance, reliability)
 
@@ -496,6 +526,29 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
 ### Done
 
 <!-- Move closed items here with their decision + pasted verification result. -->
+
+- **D-0 — Portability direction (2026-08-18).** ✅ DECIDED: **Path A now** (publish honestly
+  with S3+local scope; Path B multi-cloud = tranche-2 roadmap). When B is pulled forward,
+  prefer B-6 (pluggable storage-backend facade) over B-0 (delegate to Spark Hadoop FS) or
+  B1/B2/B3 (per-backend scattered branches across ~18 `path_utils` functions).
+  Verification: decision only.
+
+- **D-1 — PRD 08/10 + README consistency (2026-08-18).** ✅ Done. Path A doc pass: rewrote
+  PRD 10 §Positioning + §6 to state implemented scope (S3+local/bare-POSIX) with explicit
+  §6.3 Roadmap for GCP/Azure/Databricks/Polaris; README added "Current Scope and Capabilities
+  (Honest Boundary)" + corrected test-gate command; PRD 08 unchanged (already consistent
+  with code). Verification: cross-doc scheme alignment review + `bash scripts/run_tests.sh`
+  → 311/0 green + `uv run ruff check .` clean.
+
+- **I-1 — Ingest doc pass (2026-08-18).** ✅ Done (doc pass only; implementation = roadmap).
+  README Honest Boundary § Ingest mechanisms expanded to framework-vs-concrete breakdown
+  (REST=Prod / ObjStore-local+S3=Prod / SQL=SQLite-only-demo / Kafka=JSONL-replay-demo) with
+  explicit roadmap bullets (JDBC-multiDB, real Kafka broker, GCS/ADLS object-storage).
+  PRD 01 + PRD 04 each gained a leading "Current Implementation Status (v1 — Honest Scope)"
+  section warning readers that the Draft PRDs describe target scope, not v1 concrete
+  capabilities, with matching tables + cross-links. Verification: 4-point cross-doc ingest
+  claim alignment review + `bash scripts/run_tests.sh` → 311/0 green +
+  `uv run ruff check .` clean.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

@@ -26,11 +26,19 @@ This section states what the code actually ships, so no reader infers more than 
 **Storage backends — not yet implemented (roadmap):**
 - GCS (`gs://`), ADLS Gen2 (`abfss://`), Azure Blob (`wasbs://`), Databricks DBFS (`dbfs://`), HDFS (`hdfs://`) — these schemes are hard-rejected with a clear error. Adding them requires per-scheme branches in `src/elt_pipeline/shared/path_utils.py`, Spark Hadoop FS credential wiring, and emulator-backed integration tests.
 
-**Ingest mechanisms — implemented:**
-- **REST** (real `urllib.request`-based connector: auth, pagination modes). Production-usable.
-- **Object storage source read** (local dirs + `s3://` buckets via `path_utils` scheme dispatch).
-- **SQL (SQLite only)** — Python `sqlite3` driver; the connector base class is abstract for other DBs.
-- **Kafka (local JSONL file replay only)** — the real broker consumer is not implemented; the `KafkaConnectorBase` abstraction is in place and a concrete broker client is a small, well-scoped add.
+**Ingest mechanisms — honest v1 surface (framework abstractions vs. concrete implementations):**
+
+The platform defines four first-class connector *families* (`rest`, `sql`, `kafka`, `object_storage`) as shared abstractions — each with a validated lifecycle (config → secrets → client → extract → persist → audit → checkpoint). Their concrete v1 implementations vary by readiness:
+
+- **REST — Production-usable.** Real `urllib.request`-based connector with authentication (basic, API key, static bearer, client-credential token flows), request templating, date-window tokenization, page/offset pagination, envelope+inner-payload extraction, retry/backoff/timeout controls.
+- **Object storage — Production-usable (local + S3 only).** Source discovery and read via `path_utils` scheme dispatch across local POSIX dirs and `s3://` buckets. GCS/ADLS object-storage sources are roadmap and tied to the multi-cloud storage B-* items.
+- **SQL — Demo-only: SQLite replay.** `SqlConnectionDriver` enum = `{sqlite}` only. Uses Python `sqlite3` against a local DB file for the bundled example. There is **no JDBC** and **no Postgres/MySQL/MSSQL/Oracle source extraction** in v1. The `sql.py` connector base class is abstract and JDBC-capable extraction is roadmap (a well-scoped add behind the existing seam).
+- **Kafka — Demo-only: local JSONL file replay.** The `KafkaConnectorBase` abstraction is broker-shaped and in place (offsets, partitions, headers, checkpoints, run loop). The **only** concrete subclass reads a local JSONL event log for the bundled example. A real broker consumer over `confluent-kafka`/`kafka-python` with `bootstrap.servers` config is roadmap. Enterprise deployments normally land streams to object storage via Kafka Connect/Firehose/Event Hubs Capture and use the `object_storage` connector to pick them up, so a rock-solid multi-cloud object-storage path is the higher-value ingress work.
+
+**Ingest roadmap (not in v1, tracked for later tranches):**
+- Multi-DB SQL ingest via JDBC or a Python driver matrix (Postgres, MySQL, MSSQL, Oracle, …)
+- Real Kafka broker consumer (basic offset-based streaming)
+- GCS / ADLS object-storage source read (tied to storage B-* multi-cloud work)
 
 **Serving / catalogs — implemented:**
 - Iceberg L3/L4 tables with a 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`, `hive_metastore`, `glue`.

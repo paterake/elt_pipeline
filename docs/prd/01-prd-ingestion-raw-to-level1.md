@@ -8,6 +8,23 @@
 - Proposed implementation language: Python
 - Proposed packaging and environment management: `uv`
 
+## Current Implementation Status (v1 — Honest Scope)
+
+This PRD is in **Draft** status and defines the framework's *target-state* ingestion contract. The current v1 release ships a concrete subset of the four required connector families. Do not interpret "required connector families" as "already fully implemented" — the table below states what is actually shippable today:
+
+| Connector family | Target scope (this PRD) | v1 implementation status | Notes |
+|---|---|---|---|
+| `rest` | Production: request templating, all auth flows, pagination, envelope, retries | ✅ **Production-usable** | Real `urllib.request` connector; all listed auth + pagination + retry semantics implemented. |
+| `sql` | Production: JDBC, snapshot + delta, multi-table, watermark resolution | 🟠 **Demo-only: SQLite replay** | `SqlConnectionDriver = {sqlite}` only. **No JDBC, no Postgres/MySQL/MSSQL/Oracle.** Base class is abstract; JDBC-capable extraction is roadmap (behind existing seam). |
+| `kafka` | Production: broker offset consumption, micro-batch landing, checkpointing | 🟠 **Demo-only: local JSONL replay** | `KafkaConnectorBase` abstraction is broker-shaped and complete. Only concrete subclass reads a *local JSONL event log* for the bundled example. Real `confluent-kafka`/`kafka-python` broker consumer + `bootstrap.servers` config is roadmap. |
+| `object_storage` | Production: S3/GCS/ADLS, cross-account, event-driven | ✅ **Production-usable (local + S3 only)** | Local POSIX dirs + `s3://` buckets via `path_utils`. GCS/ADLS object-store sources are roadmap and tied to multi-cloud storage work (storage B-* items). |
+
+**Ingest roadmap (not in v1):**
+- Multi-DB SQL ingest via JDBC or Python driver matrix (Postgres, MySQL, MSSQL, Oracle, …)
+- Real Kafka broker consumer (offset-based streaming, basic capability only)
+- GCS / ADLS object-storage source read (tied to storage B-* multi-cloud)
+- Enterprise design note: streaming deployments normally land streams to object storage via Kafka Connect/Kinesis Firehose/Event Hubs Capture and use the `object_storage` connector to pick them up. A rock-solid multi-cloud object-storage path is the high-value ingress work; a direct Kafka broker consumer is a low-priority convenience.
+
 ## Background
 
 The founding principles for the platform are defined in [00-prd-platform-principles.md](00-prd-platform-principles.md).
