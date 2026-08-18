@@ -1,7 +1,18 @@
+import os
+
 import pytest
 
 from elt_pipeline.config import runtime_context
 from elt_pipeline.spark.session import build_spark_session
+
+# Test-harness-only knob (NOT product config; never read via runtime_context).
+# Selects the shared Spark session's Iceberg mode so the L2/parity unit tests can be
+# run in their required iceberg-off mode without editing this file. Default "1" keeps
+# the production-faithful iceberg-on checkpoint. Until S-0 (per-file process isolation)
+# lands, run parity/L2 files with this set to 0, e.g.:
+#     ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -q
+_TEST_SPARK_ICEBERG = os.environ.get("ELT_PIPELINE_TEST_SPARK_ICEBERG", "1").strip().lower()
+_SHARED_ICEBERG_ENABLED = _TEST_SPARK_ICEBERG not in {"0", "false", "no", "off"}
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +41,7 @@ def spark_session(tmp_path_factory):
     session = build_spark_session(
         app_name="elt-pipeline-tests",
         master="local[1]",
-        iceberg_enabled=True,
+        iceberg_enabled=_SHARED_ICEBERG_ENABLED,
         iceberg_warehouse_dir=str(warehouse_dir),
     )
     yield session

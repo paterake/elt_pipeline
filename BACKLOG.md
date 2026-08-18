@@ -11,9 +11,9 @@
 
 ## Resume (start here)
 
-- From `BACKLOG.md`: **BLOCKED — resolve S-0** (Spark session isolation: pick a per-file process-isolation mechanism) before further full-suite gate work. The shared-JVM `uv run pytest` count is now dominated by S-0 contamination (dead/ wrong-mode sessions), not real failures.
-- **Done:** P0-1, P0-2 (+session.py URI bug), P0-3, P0-4, P1-5, P2-10. **Per-file verified:** `test_normalize_pipeline` 9/9; `test_iceberg_catalog_config` 34/34; `test_sql_models` 23/25 (iceberg-off) — the 2 remainders are new functional bugs **S-1**/**S-2**.
-- **Next actionable without S-0:** S-1 (append exec), S-2 (partition ordering), P1-6 (serving_endpoint), P1-7 (schedule). Then S-0 to make the full suite green.
+- From `BACKLOG.md`: Continue **S-1** (append-mode execution bug) → get the full traceback with `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append --tb=long -q`, then root-cause. Then **S-2**, **P1-6**, **P1-7**. These are all workable in a cold session and do **not** need S-0.
+- **S-0 remains BLOCKED** and gates only the single-command *full-suite* green — the shared-JVM `uv run pytest` count is dominated by S-0 contamination (dead / wrong-mode sessions), not real failures. Don't chase the full-suite number until S-0 is decided; verify per-file.
+- **Done:** P0-1, P0-2 (+session.py URI bug), P0-3, P0-4, P1-5, P2-10. **Per-file verified:** `test_normalize_pipeline` 9/9; `test_iceberg_catalog_config` 34/34; `test_sql_models` 23/25 (iceberg-off) — the 2 remainders are the new functional bugs **S-1**/**S-2**.
 
 ## Session start prompt
 
@@ -24,7 +24,7 @@ Paste this verbatim to boot a fresh session warm (no `use-context`/PCO skill exi
 ## Status snapshot
 
 - **Gate:** 🟠 `uv run pytest` = **50 failed, 259 passed** (was 57/252). **This number is S-0-contaminated** — many failures are `AttributeError: 'NoneType' object has no attribute 'sc'` (a prior fixture's `spark.stop()` kills the shared JVM session) and wrong-mode session reuse, not real defects. Per-file runs are the real measure (see Resume). `ruff check` passes.
-- **Captured:** 2026-08-18, `main` @ `56c4466` (elt103) + uncommitted diff (`tests/conftest.py`, `src/elt_pipeline/spark/session.py`, `src/elt_pipeline/normalize/pipeline.py`, `tests/test_normalize_pipeline.py`, `tests/test_sql_models.py`). Re-stamp whenever counts change.
+- **Captured:** 2026-08-18. P0-1..P0-4, P1-5, the session.py URI fix, `CLAUDE.md`, and this doc are committed in **`d8fb234` (elt104)**. Uncommitted on top: `BACKLOG.md` (S-1/S-2 + env-knob) and `tests/conftest.py` (the `ELT_PIPELINE_TEST_SPARK_ICEBERG` knob). A cold session should start from a tree that includes both — commit them or work the dirty tree. Re-stamp whenever counts change.
 - **Placement:** repo root, *not* under canonical `docs/`, per [PRD 10 §11](docs/prd/10-prd-architecture-and-lifecycle.md).
   The historical `docs/todo/` tree was deleted in elt99–elt103; this is its lightweight successor.
 
@@ -38,7 +38,15 @@ export PATH="$JAVA_HOME/bin:$PATH"
 uv run pytest -q            # baseline: 57 failed, 252 passed
 ```
 
-With the JDK set there are **zero** Java-gateway failures — all 57 are genuine. Per-item verification commands are inside each item below; "should pass" is not a check — run it and paste the count.
+With the JDK set there are **zero** Java-gateway failures. Per-item verification commands are inside each item below; "should pass" is not a check — run it and paste the count.
+
+**Iceberg-mode test knob (until S-0):** the shared Spark fixture reads a test-only env var `ELT_PIPELINE_TEST_SPARK_ICEBERG` (default `1` = iceberg-on checkpoint). The L2/parity unit tests (`test_sql_models`, `test_normalize_pipeline`) need iceberg **off** — run them per-file with:
+
+```bash
+ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -q
+```
+
+This is the clean way to work S-1/S-2 in a cold session without editing `conftest.py`. It is a harness knob only — never read via `runtime_context`, never product config.
 
 ## Root-cause summary (3 overlapping causes)
 
@@ -84,14 +92,14 @@ Ordered. Each carries: symptom → evidence → cause → **decision** → files
 #### S-1 — `appended_orders` append-mode execution fails (NEW, functional)  ⏳
 - **Symptom:** `PipelineError: Failed to execute SQL model 'level3.sales.appended_orders'` ([spark_executor.py:128](src/elt_pipeline/sql/spark_executor.py#L128)).
 - **Evidence:** `test_sql_models::test_local_sql_model_executor_appends_rows_across_runs` (fails even under iceberg-off, after P0-3).
-- **Cause:** unknown — a real append-path execution error, not drift. Surfaced once the `run_id` TypeError was cleared.
-- **Verification:** `uv run pytest tests/test_sql_models.py -k append -q` (needs iceberg-off session until S-0).
+- **Cause:** unknown — a real append-path execution error, not drift. Surfaced once the `run_id` TypeError was cleared. Get the full traceback: `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append --tb=long -q`.
+- **Verification:** `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append -q`
 
 #### S-2 — late-arriving default-partition ordering mismatch (NEW, functional)  ⏳
 - **Symptom:** `AssertionError` comparing partition lists ([test_sql_models.py:1183](tests/test_sql_models.py#L1183)).
 - **Evidence:** `test_sql_models::test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data`.
-- **Cause:** unknown — partition value ordering/content differs from expectation; investigate repartition-of-late-arriving-data path.
-- **Verification:** `uv run pytest tests/test_sql_models.py -k late_arriving -q` (iceberg-off until S-0).
+- **Cause:** unknown — partition value ordering/content differs from expectation; investigate repartition-of-late-arriving-data path. Full traceback: `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k late_arriving --tb=long -q`.
+- **Verification:** `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k late_arriving -q`
 
 #### P1-6 — `serving_endpoint` returns a dict when Iceberg is disabled (expected `None`)  ⏳ (contract decision)
 - **Symptom:** `AssertionError: assert {...} is None`.
