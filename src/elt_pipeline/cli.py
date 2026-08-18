@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import sys
-from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1507,13 +1505,16 @@ def main(argv: list[str] | None = None) -> int:
     _config_path_str = str(_config_path_arg) if _config_path_arg is not None else None
     _environment_arg = getattr(args, "environment", None)
 
-    # (1) New singleton — ONE source of truth for framework.
-    runtime_context.initialize(
-        config_path_arg=_config_path_str,
-        environment_arg=_environment_arg,
-    )
-
     try:
+        # (1) New singleton — ONE source of truth for framework. Materialization
+        # runs the 4-tier config cascade (it loads/validates the pipeline YAML),
+        # so it must sit INSIDE this try: a bad --config-path surfaces as a
+        # structured CONFIG_VALIDATION_FAILED (exit 2), not a raw traceback.
+        runtime_context.initialize(
+            config_path_arg=_config_path_str,
+            environment_arg=_environment_arg,
+        )
+
         if args.command == "validate-config":
             if args.config_path is None:
                 explicit_cp = runtime_context.config_path()
@@ -2280,7 +2281,7 @@ def main(argv: list[str] | None = None) -> int:
             continue_on_error = args.continue_on_error or plan.continue_on_error
             payload, exit_code = _run_schedule_plan(
                 plan=plan,
-                plan_path=path_normalize(args.plan_path),
+                plan_path=path_normalize(str(args.plan_path)),
                 continue_on_error=continue_on_error,
             )
             print(json.dumps(payload, indent=2))
@@ -2380,21 +2381,21 @@ def _run_schedule_plan(
 
 
 def _invoke_cli_job(argv: list[str]) -> tuple[int, str, str]:
-    stdout_buffer = io.StringIO()
-    stderr_buffer = io.StringIO()
-    exit_code = 0
-    try:
-        with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-            exit_code = main(argv)
-    except SystemExit as exc:
-        if isinstance(exc.code, int):
-            exit_code = exc.code
-        else:
-            exit_code = 1
-    except Exception as exc:  # pragma: no cover - defensive containment for schedule runs
-        exit_code = 1
-        stderr_buffer.write(str(exc))
-    return exit_code, stdout_buffer.getvalue().strip(), stderr_buffer.getvalue().strip()
+    # Each scheduled job is a distinct CLI invocation: it must materialize its
+    # OWN runtime_context singleton (once-per-process, see config.runtime_context)
+    # and — for Spark jobs — its own JVM SparkSession (one JVM = one session).
+    # Re-entering main() in-process would trip the "initialize() called a second
+    # time" guard and share a wrongly-configured Spark session across jobs, so we
+    # run each job as a fresh subprocess.
+    import subprocess as _sp
+
+    result = _sp.run(
+        [sys.executable, "-m", "elt_pipeline", *argv],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
 def _parse_vars_json(raw_value: str | None) -> dict[str, Any]:
