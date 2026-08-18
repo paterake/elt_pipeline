@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql.functions import lit
 
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.storage import LocalArtifactStore
@@ -200,6 +201,12 @@ def normalize_level1_to_local_level2(
         partition = partition_strategy.resolve(manifest=manifest)
         for planned_table in plan.tables:
             df = dataframes[planned_table.physical_table_name]
+            # Stamp L2 lineage back to the L1 ingest run that produced this payload.
+            # The writer only defaults ``_run_id`` to the normalize run_context when the
+            # caller has not set it (see SparkLevel2Writer.write_dataframe safety net);
+            # the pipeline owns the lineage value, so set it explicitly here. The L2
+            # partition dir separately records the normalize run_id.
+            df = df.withColumn("_run_id", lit(manifest.run_id))
             table_manifest = level2_writer.write_dataframe(
                 run_context=run_context,
                 manifest=manifest,

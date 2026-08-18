@@ -1,0 +1,154 @@
+# Backlog & Continuity — Test-Gate Recovery
+
+<!--
+  ANCHOR DOC. This file is the durable, cold-start-resumable state for the test-gate
+  recovery backlog. It adopts the anchor-doc continuity contract shape (Resume / Session
+  start prompt / Done / Still Todo / Accumulated Active Constraints / Verification / Gotchas)
+  used by the elt_lake PCO, WITHOUT importing the PCO scaffolding.
+  Reference (not vendored): elt_lake/ai_context/pco/governance/AI_ASSISTANT_BACKLOG_CONTINUITY.md
+  Operating model: ONE session per backlog item. Update the Resume line before you close a session.
+-->
+
+## Resume (start here)
+
+- From `BACKLOG.md`: **BLOCKED — resolve S-0** (Spark session isolation: pick a per-file process-isolation mechanism) before further full-suite gate work. The shared-JVM `uv run pytest` count is now dominated by S-0 contamination (dead/ wrong-mode sessions), not real failures.
+- **Done:** P0-1, P0-2 (+session.py URI bug), P0-3, P0-4, P1-5, P2-10. **Per-file verified:** `test_normalize_pipeline` 9/9; `test_iceberg_catalog_config` 34/34; `test_sql_models` 23/25 (iceberg-off) — the 2 remainders are new functional bugs **S-1**/**S-2**.
+- **Next actionable without S-0:** S-1 (append exec), S-2 (partition ordering), P1-6 (serving_endpoint), P1-7 (schedule). Then S-0 to make the full suite green.
+
+## Session start prompt
+
+Paste this verbatim to boot a fresh session warm (no `use-context`/PCO skill exists in this repo, so this is the no-skill form):
+
+> `From BACKLOG.md: continue. First run the Verification command in "Environment & Verification" to confirm the baseline, then work the item named in "Resume (start here)".`
+
+## Status snapshot
+
+- **Gate:** 🟠 `uv run pytest` = **50 failed, 259 passed** (was 57/252). **This number is S-0-contaminated** — many failures are `AttributeError: 'NoneType' object has no attribute 'sc'` (a prior fixture's `spark.stop()` kills the shared JVM session) and wrong-mode session reuse, not real defects. Per-file runs are the real measure (see Resume). `ruff check` passes.
+- **Captured:** 2026-08-18, `main` @ `56c4466` (elt103) + uncommitted diff (`tests/conftest.py`, `src/elt_pipeline/spark/session.py`, `src/elt_pipeline/normalize/pipeline.py`, `tests/test_normalize_pipeline.py`, `tests/test_sql_models.py`). Re-stamp whenever counts change.
+- **Placement:** repo root, *not* under canonical `docs/`, per [PRD 10 §11](docs/prd/10-prd-architecture-and-lifecycle.md).
+  The historical `docs/todo/` tree was deleted in elt99–elt103; this is its lightweight successor.
+
+## Environment & Verification (run this first, every session)
+
+The suite needs Temurin 23 on `PATH`/`JAVA_HOME`. A bare non-interactive shell does **not** inherit mise's activation, which adds spurious `JAVA_GATEWAY_EXITED` noise on top of the real failures. Export explicitly:
+
+```bash
+export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23"
+export PATH="$JAVA_HOME/bin:$PATH"
+uv run pytest -q            # baseline: 57 failed, 252 passed
+```
+
+With the JDK set there are **zero** Java-gateway failures — all 57 are genuine. Per-item verification commands are inside each item below; "should pass" is not a check — run it and paste the count.
+
+## Root-cause summary (3 overlapping causes)
+
+The docs are coherent and the architecture *is* implemented. The gap: the **test suite (and some example fixtures) froze at elt60 (2026-08-13) while the code advanced through elt70–elt99**, and the Iceberg-on-by-default flip never reached the test harness. CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs `uv run pytest` on Java 23, so CI is red on this branch too.
+
+| # | Cause | Blast radius |
+|---|-------|--------------|
+| A | **Iceberg opt-out default flip landed in code, not in the test harness.** The session fixture builds an Iceberg-enabled Spark session with **no warehouse dir** → `Cannot initialize HadoopCatalog because warehousePath must not be null or empty`. | most `test_sql_models`, `test_publish_models`, `test_publish_cli`, `test_cli` |
+| B | **Src/test API drift (elt60 tests vs elt90–99 code).** Signatures + error wording changed; tests never updated. | `test_sql_models`, `test_normalize_pipeline` |
+| C | **No runtime-singleton reset between tests + repo-root `pipeline.yaml` bleed-through.** Cleared-env validation tests never raise their expected errors. | `test_iceberg_catalog_config` (11) |
+
+## Accumulated Active Constraints (honour in every item; append, never delete)
+
+1. **Run the gate with the JDK exported** (see Environment above). A run without it is invalid, not a failure.
+2. **No backlog/tracker files inside canonical `docs/`** (PRD 10 §11). This anchor doc lives at repo root.
+3. **Storage-format contract (confirmed by owner 2026-08-18):** L1 = raw source files; **L2 = plain parquet** (normalised/relationalised from L1, no catalog); **L3/L4 = Iceberg table format + data catalog + Trino JDBC access**. L2/normalize tests assert parquet paths and want Iceberg **off**; L3/L4 table tests want Iceberg **on**. (`test_sql_models` currently exercises the L3/L4 **parquet-parity** escape-hatch path, not the Iceberg default.)
+4. **One JVM = one SparkSession (S-0).** `build_spark_session().getOrCreate()` returns the first-built session for the whole process. A test that needs a different session config must run in its own process, or it silently gets the wrong one. Do not add a test that rebuilds a differently-configured session in the shared JVM and inspects it.
+5. **Per item, decide fix-code vs update-test explicitly.** Several P1 items encode PRD contracts; "just update the test" there would silently ratify a regression. Record the decision in that item's Done line.
+6. **Green gate is done.** An item is not Done until its Verification command is re-run and the pasted count reflects it, and the Status snapshot is re-stamped. Note "isolated file passes" ≠ "full suite passes" until S-0 is resolved.
+7. **Writer and serving Iceberg catalogs are separate** (PRD 10 §7). Writer config never falls back to serving config for URIs (fixed in P0-2).
+
+---
+
+## Work items
+
+Ordered. Each carries: symptom → evidence → cause → **decision** → files → **Verification**. Move a closed item's next-step out of "Still Todo" and update the Resume line + Status snapshot before ending the session.
+
+### Still Todo
+
+#### S-0 — Spark session isolation across tests  🚫 BLOCKED (decision needed)
+- **Blocker (one sentence):** the whole suite shares ONE JVM SparkSession, but tests legitimately need different session configs (Iceberg **on** for L3/L4 table tests; **off** for L2/parity unit tests; freshly-built sessions for `test_iceberg_catalog_config`'s config-inspection) — pick the per-file process-isolation mechanism, because no single shared fixture can satisfy all three.
+- **Proof:** `test_iceberg_catalog_config` passes **34/34 in isolation** but fails in the full suite (`Using an existing Spark session; only runtime SQL configurations will take effect`); flipping the shared fixture between Iceberg on/off only trades `test_sql_models`/`test_publish_models` failures for `test_sql_iceberg_write` failures (shared-JVM: iceberg-off → 57, iceberg-on → 50).
+- **Second facet — cross-fixture teardown:** a module/own-session fixture (e.g. `test_sql_iceberg_write`) calls `spark.stop()`, which stops the **shared** JVM SparkContext for every test that runs after it → `AttributeError: 'NoneType' object has no attribute 'sc'`. Even `test_normalize_pipeline` (9/9 isolated) fails this way in-suite. Confirms per-file isolation is required; no in-suite fixture ordering fixes it.
+- **Do NOT assume** one of these silently — list the options:
+  1. **`pytest-forked`** — add to `dev` deps; each test (or file) forks a fresh JVM. Simplest; slower (JVM boot per fork). Changes the `uv run pytest` contract.
+  2. **`pytest-xdist --dist loadfile -n>=<#files>`** — per-worker JVM, one file per worker. Needs enough workers to guarantee per-file isolation.
+  3. **CI runs pytest per-file** (shell loop / matrix) — no new dep, but the single-command `uv run pytest` gate stays red; [LOCAL_DEVELOPMENT_AND_RELEASE.md](docs/maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md) would need to define the gate as per-file.
+- **Recommended end-state (after the mechanism is chosen):** shared `spark_session` fixture = **Iceberg OFF** (correct for the many L2/parity unit tests); Iceberg tests keep their own iceberg-on fixtures (e.g. `test_sql_iceberg_write.py`); per-file isolation removes the cross-file JVM conflict; then P0-3/P0-4/P1-* fixes land the gate green.
+- **Interim tree state:** shared fixture currently **Iceberg ON** (51/258, no regressions vs baseline) as a safe checkpoint. Flip to OFF only once isolation is in place, or `test_sql_iceberg_write` regresses in the single-command run.
+- **Decision owner:** maintainer (dependency + release-gate contract change).
+- **Verification (once chosen):** `uv run pytest -q` (or the chosen per-file command) → 0 session-contamination failures.
+
+#### S-1 — `appended_orders` append-mode execution fails (NEW, functional)  ⏳
+- **Symptom:** `PipelineError: Failed to execute SQL model 'level3.sales.appended_orders'` ([spark_executor.py:128](src/elt_pipeline/sql/spark_executor.py#L128)).
+- **Evidence:** `test_sql_models::test_local_sql_model_executor_appends_rows_across_runs` (fails even under iceberg-off, after P0-3).
+- **Cause:** unknown — a real append-path execution error, not drift. Surfaced once the `run_id` TypeError was cleared.
+- **Verification:** `uv run pytest tests/test_sql_models.py -k append -q` (needs iceberg-off session until S-0).
+
+#### S-2 — late-arriving default-partition ordering mismatch (NEW, functional)  ⏳
+- **Symptom:** `AssertionError` comparing partition lists ([test_sql_models.py:1183](tests/test_sql_models.py#L1183)).
+- **Evidence:** `test_sql_models::test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data`.
+- **Cause:** unknown — partition value ordering/content differs from expectation; investigate repartition-of-late-arriving-data path.
+- **Verification:** `uv run pytest tests/test_sql_models.py -k late_arriving -q` (iceberg-off until S-0).
+
+#### P1-6 — `serving_endpoint` returns a dict when Iceberg is disabled (expected `None`)  ⏳ (contract decision)
+- **Symptom:** `AssertionError: assert {...} is None`.
+- **Evidence:** `test_iceberg_parity_and_audit::TestBuildServingEndpointDisabled::test_returns_none_when_iceberg_disabled` (line 381).
+- **Decision needed:** decide the contract — should the serving endpoint be `None` when Iceberg is off? (PRD 10 §8 treats serving as an Iceberg-bound spoke.) Then fix code or update test.
+- **Files:** serving-endpoint builder (search `build_serving_endpoint`), [tests/test_iceberg_parity_and_audit.py](tests/test_iceberg_parity_and_audit.py).
+- **Verification:** `uv run pytest tests/test_iceberg_parity_and_audit.py -q`
+
+#### P1-7 — `elt schedule run` rejects its own plan (`CONFIG_VALIDATION_FAILED`, exit 2)  ⏳
+- **Symptom:** subprocess exit 2; stderr `error_code: CONFIG_VALIDATION_FAILED` while loading the schedule YAML.
+- **Evidence:** `test_cli::test_schedule_run_command_*` (×2), `test_examples::test_schedule_example_runs_after_placeholder_resolution`.
+- **Cause:** schedule-plan schema drift — [scheduler.py](src/elt_pipeline/shared/scheduler.py) (last touched elt21) vs current config models; example/test plan shape no longer validates.
+- **Decision needed:** reconcile schedule-plan schema with the example plan + [LOCAL_DEVELOPMENT_AND_RELEASE.md](docs/maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md) line 37 (placeholder-resolution contract).
+- **Files:** [src/elt_pipeline/shared/scheduler.py](src/elt_pipeline/shared/scheduler.py), example schedule YAML under [examples/](examples/), [tests/test_cli.py](tests/test_cli.py).
+- **Verification:** `uv run pytest tests/test_cli.py -k schedule -q`
+
+#### P1-8 — `sql run` / `publish run` CLI subprocesses exit 1  ⏳ (re-verify after P0)
+- **Symptom:** `subprocess.CalledProcessError ... returned non-zero exit status 1`.
+- **Evidence:** `test_cli::test_sql_run_command*` (×4), `test_publish_cli::*` (×6), `test_examples::test_sql_example_package_compile_and_run` / `..._publish_example_*`.
+- **Cause:** expected **downstream of P0-1** (HadoopCatalog warehouse). A raw repro of `examples/sql/local_demo` returns `SQL_LEVEL2_SOURCE_NOT_FOUND` when L2 isn't seeded — confirm the tests seed L2 and that the only remaining failure is the warehouse one.
+- **Decision:** **re-run after P0-1/P0-2**; file any residual real failures as new items.
+- **Files:** [tests/test_cli.py](tests/test_cli.py), [tests/test_publish_cli.py](tests/test_publish_cli.py), [tests/test_examples.py](tests/test_examples.py).
+- **Verification:** `uv run pytest tests/test_cli.py tests/test_publish_cli.py -q`
+
+#### P2-9 — Example package model count drifted (test expects 2, package has 5)  ⏳
+- **Symptom:** `assert 5 == 2` (`compile_payload["model_count"] == 2`).
+- **Evidence:** `test_examples::test_sql_example_package_compile_and_run` (~line 186).
+- **Cause:** [examples/](examples/) SQL package grew; assertion not updated.
+- **Decision:** update the assertion (or trim the example) to match intended surface.
+- **Verification:** `uv run pytest tests/test_examples.py -q`
+
+#### P2-10 — Error-message regex drift  ✅ RESOLVED (incidental)
+- Was: `Failed: Regex pattern did not match` ×3 under the full suite. These passed once the shared session ran iceberg-off (the mismatched wording came from iceberg namespace-creation errors masking the intended message). No standalone change needed; re-file if they reappear once S-0 lands.
+
+### Done
+
+- **P0-1 — shared Spark fixture warehouse/mode (2026-08-18).** [tests/conftest.py](tests/conftest.py) `spark_session` now builds with an explicit mode + session-scoped `iceberg_warehouse_dir` (via `tmp_path_factory`), fixing `Cannot initialize HadoopCatalog because warehousePath must not be null or empty`. **Decision:** fixed the harness (not product). **Caveat:** the on-vs-off choice is entangled with **S-0** (single JVM) — currently left **Iceberg ON** as a no-regression checkpoint; the correct end-state (Iceberg OFF shared + per-file isolation) is blocked on S-0. Verification: `uv run pytest tests/test_publish_models.py -q` (isolated) 7→ improved; full suite 57→51.
+- **P0-4 — writer API rename `write_table`→`write_dataframe` (2026-08-18).** The writer also changed input type (`NormalizedTable(rows=…)` → Spark `DataFrame`). Rewrote the two safety-net tests in [tests/test_normalize_pipeline.py](tests/test_normalize_pipeline.py) to build a DataFrame via `createDataFrame` and call `write_dataframe(table_name=…, dataframe=…)`; dropped the now-unused `NormalizedTable` import. **Decision:** update tests (API drift). Verification: `uv run pytest tests/test_normalize_pipeline.py -q` → **9 passed**.
+- **P1-5 — L2 `_run_id` lineage (2026-08-18).** **Decision: fixed code** (not test). The normalize pipeline now stamps `_run_id = manifest.run_id` (the L1 ingest run) on each dataframe before writing ([pipeline.py](src/elt_pipeline/normalize/pipeline.py)); the writer's `run_context.run_id` default remains a safety net (proved intended by the "does-not-overwrite-existing-`_run_id`" test). L2 partition dir still records the normalize run. Honours replayability (PRD 00 §7). Verification: `uv run pytest tests/test_normalize_pipeline.py -q` → **9 passed**.
+- **P0-3 — `SparkSqlModelExecutor(run_id=…)` kwarg (2026-08-18).** Added `run_id="test-run"` to all 7 executor constructions in [tests/test_sql_models.py](tests/test_sql_models.py) (targeted, not blanket — `environment="dev"` appears in non-executor calls too). **Decision:** update tests (API drift). Verification (iceberg-off, temp-flip): `test_sql_models` 7→**23 passed, 2 failed**; the 2 remaining are genuine functional bugs, now tracked as **S-1** and **S-2** (not drift). Fully green once S-0 lets this file run iceberg-off.
+- **P2-10 — regex drift: RESOLVED incidentally** (see Still Todo note).
+- **P0-2 — runtime-singleton isolation + writer/serving URI bug (2026-08-18).** Added autouse `_reset_runtime_singleton` fixture in [tests/conftest.py](tests/conftest.py) calling `runtime_context._reset_for_tests()` before/after each test. **Uncovered + fixed a real product bug:** the **writer** catalog URI resolution fell back to the **serving** catalog URI ([session.py](src/elt_pipeline/spark/session.py#L251)), so a `rest`/`jdbc`/`nessie` writer catalog silently inherited the serving sqlite URI instead of raising `requires iceberg_catalog_uri`. Introduced at elt99; now writer URI resolves from writer config only. **Decision:** fix code (the fallback was a regression, not intended behaviour). Verification: `uv run pytest tests/test_iceberg_catalog_config.py -q` → **34 passed** (isolated; in-suite failures are S-0 contamination, not this bug).
+
+## Gotchas (things a fresh session would otherwise re-learn)
+
+- `timeout` is not installed on this macOS; don't wrap commands in it.
+- A bare `uv run pytest` (mise not activated) fails Spark tests with `JAVA_GATEWAY_EXITED` — that is env, not a code defect. Always export `JAVA_HOME`/`PATH` first (see Environment).
+- Running **multiple pytest/Spark suites concurrently** causes `Using an existing Spark session` and port contention → spurious extra failures. Run one suite at a time.
+- Full suite takes ~2 minutes; a single Spark test ~6–10s (JVM boot dominated).
+- Iceberg HadoopCatalog needs a non-empty warehouse dir; the shared `spark_session` fixture now supplies a session-scoped tmp one (P0-1 done).
+- **Isolated-file pass ≠ full-suite pass.** `test_iceberg_catalog_config` is 34/34 alone but fails 5 in the full run because another file already built the JVM's SparkSession. Always confirm a fix both ways. This is the S-0 blocker.
+- **A fixture calling `spark.stop()` kills the shared JVM session for all later tests** (`'NoneType' object has no attribute 'sc'`). In a shared JVM there is only one SparkContext; `test_sql_iceberg_write`'s own-fixture teardown stops it. Verify normalize/sql fixes **per-file**, not in the full suite, until S-0.
+- `_reset_for_tests()` alone does not stop `runtime_context.get()` from re-materializing from repo-root `pipeline.yaml` (fixed `repo_root = Path(__file__).parents[3]`, cwd-independent). The empty `iceberg_serving.catalog_uri` there auto-derives to a truthy `jdbc:sqlite:…` path — which is exactly what leaked into writer-URI resolution (P0-2).
+
+## Continuity — what IS verified good (do not re-litigate)
+
+- Canonical docs are internally consistent; [PRD 10](docs/prd/10-prd-architecture-and-lifecycle.md) contracts exist in code: four-phase CLI, four-tier SQL validity chain (token/partition/`EXPLAIN FORMATTED`/quality hooks), staging-swap (`_NO_STAGING_MOVE`), `mapping_version = sha256(...)[:16]`, six-way catalog enum, `_uc_cat()`+`exit 11` (in [ops/trino_serving/run_trino.sh](ops/trino_serving/run_trino.sh)), `serving_endpoint` in publish audit.
+- 252 tests pass: config loader, path utils, connectors (kafka/rest/object-storage/sql), merge-SQL generator, staging-swap, runtime, lineage/quality adapters.
+- JDK toolchain works (Temurin 23 via mise); "Unable to locate a Java Runtime" is purely a non-activated-shell PATH artifact.
+</content>

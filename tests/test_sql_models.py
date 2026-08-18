@@ -363,6 +363,7 @@ def test_local_sql_model_executor_runs_models_in_spark(tmp_path: Path, spark_ses
         warehouse_root=str(warehouse_root),
         root_path=str(tmp_path),
         environment="dev",
+        run_id="test-run",
     ).execute(compiled)
 
     assert result.model_count == 2
@@ -422,6 +423,7 @@ def test_local_sql_model_executor_plans_models_with_query_plan(
         warehouse_root=str(tmp_path / "warehouse"),
         root_path=str(tmp_path),
         environment="dev",
+        run_id="test-run",
     ).plan(
         compiled,
         include_query_plan=True,
@@ -456,6 +458,7 @@ def test_local_sql_model_executor_appends_rows_across_runs(
         warehouse_root=str(warehouse_root),
         root_path=str(tmp_path),
         environment="dev",
+        run_id="test-run",
     )
 
     first_run = compile_sql_model(
@@ -543,6 +546,7 @@ def test_local_sql_model_executor_partition_overwrite_replaces_selected_partitio
         warehouse_root=str(warehouse_root),
         root_path=str(tmp_path),
         environment="dev",
+        run_id="test-run",
         partition_values={"order_date": "2026-01-01"},
     ).execute([compiled])
 
@@ -1050,6 +1054,7 @@ def test_local_sql_model_executor_returns_structured_planning_error_code(
             warehouse_root=str(tmp_path / "warehouse"),
             root_path=str(tmp_path),
             environment="dev",
+            run_id="test-run",
         ).plan([compiled])
 
     assert exc_info.value.error_code == SqlRuntimeErrorCode.level2_source_not_found
@@ -1079,6 +1084,7 @@ def test_local_sql_model_executor_returns_structured_partition_error_code(
             warehouse_root=str(tmp_path / "warehouse"),
             root_path=str(tmp_path),
             environment="dev",
+            run_id="test-run",
         ).execute([compiled])
 
     assert exc_info.value.error_code == SqlRuntimeErrorCode.partition_value_missing
@@ -1154,6 +1160,7 @@ def test_level3_model_applies_default_partitions_and_repartitions_late_arriving_
             warehouse_root=str(warehouse_root),
             root_path=str(tmp_path),
             environment="dev",
+            run_id="test-run",
             partition_values={"source_name": "orders_source", "business_date": "2026-08-10"},
         ).execute([compiled])
 

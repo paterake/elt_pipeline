@@ -12,7 +12,6 @@ from elt_pipeline.integrations import (
     build_quality_hook,
 )
 from elt_pipeline.normalize.level2_storage import SparkLevel2Writer
-from elt_pipeline.normalize.models import NormalizedTable
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.shared.errors import PipelineError
@@ -321,22 +320,20 @@ def test_level2_writer_safety_net_injects_missing_lineage_columns(
 ) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
-    table_without_lineage = NormalizedTable(
-        logical_path="$",
-        physical_name="orders",
-        parent_table_name=None,
-        rows=[
+    dataframe_without_lineage = spark_session.createDataFrame(
+        [
             {"_row_id": "r1", "order_id": "A-100", "amount": 10},
             {"_row_id": "r2", "order_id": "A-200", "amount": 25},
-        ],
+        ]
     )
 
     writer = SparkLevel2Writer(root_path=str(tmp_path), spark=spark_session)
-    table_manifest = writer.write_table(
+    table_manifest = writer.write_dataframe(
         run_context=run_context,
         manifest=manifest,
         mapping_version="mv-test",
-        table=table_without_lineage,
+        table_name="orders",
+        dataframe=dataframe_without_lineage,
         partition={},
     )
 
@@ -359,11 +356,8 @@ def test_level2_writer_safety_net_does_not_overwrite_existing_lineage_columns(
 ) -> None:
     run_context = new_run_context(stage=StageName.normalize, job_name="normalize-orders")
     manifest = build_manifest()
-    table_with_custom_lineage = NormalizedTable(
-        logical_path="$",
-        physical_name="orders",
-        parent_table_name=None,
-        rows=[
+    dataframe_with_custom_lineage = spark_session.createDataFrame(
+        [
             {
                 "_row_id": "r1",
                 "order_id": "A-100",
@@ -371,15 +365,16 @@ def test_level2_writer_safety_net_does_not_overwrite_existing_lineage_columns(
                 "ingest_date": "2020-01-01",
                 "_run_id": "custom-run",
             },
-        ],
+        ]
     )
 
     writer = SparkLevel2Writer(root_path=str(tmp_path), spark=spark_session)
-    table_manifest = writer.write_table(
+    table_manifest = writer.write_dataframe(
         run_context=run_context,
         manifest=manifest,
         mapping_version="mv-test",
-        table=table_with_custom_lineage,
+        table_name="orders",
+        dataframe=dataframe_with_custom_lineage,
         partition={},
     )
 

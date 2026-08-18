@@ -248,17 +248,16 @@ def build_spark_session(
                 f"Unsupported iceberg_writer.catalog_type={catalog_type}. "
                 f"Supported: {valid}"
             )
-        catalog_uri = (
-            _resolve(
-                iceberg_catalog_uri,
-                singleton_key="iceberg_writer.catalog_uri",
-                override_path=("iceberg_serving", "catalog_uri"),
-            )
-            or _resolve(
-                None,
-                singleton_key="iceberg_serving.catalog_uri",
-                override_path=("iceberg_serving", "catalog_uri"),
-            )
+        # The WRITER catalog URI resolves from writer config only. It must NOT fall
+        # back to the SERVING catalog URI: the serving catalog is a distinct (often
+        # sqlite-JDBC) metastore, and inheriting it would let a rest/jdbc/nessie writer
+        # catalog silently bind to a nonsensical URI instead of failing the
+        # "requires iceberg_catalog_uri" guard below. Writer and serving are separate
+        # catalogs by design (PRD 10 §7 hybrid dual-catalog binding).
+        catalog_uri = _resolve(
+            iceberg_catalog_uri,
+            singleton_key="iceberg_writer.catalog_uri",
+            override_path=("iceberg_writer", "catalog_uri"),
         )
         resolved_warehouse = (
             _resolve(
