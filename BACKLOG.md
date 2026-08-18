@@ -11,9 +11,9 @@
 
 ## Resume (start here)
 
-- From `BACKLOG.md`: Continue **S-1** (append-mode execution bug) → get the full traceback with `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append --tb=long -q`, then root-cause. Then **S-2**, **P1-6**, **P1-7**. These are all workable in a cold session and do **not** need S-0.
+- From `BACKLOG.md`: Continue **S-2** (late-arriving default-partition ordering mismatch) → get the full traceback with `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k late_arriving --tb=long -q`, then root-cause. Then **P1-6**, **P1-7**. These are all workable in a cold session and do **not** need S-0.
 - **S-0 remains BLOCKED** and gates only the single-command *full-suite* green — the shared-JVM `uv run pytest` count is dominated by S-0 contamination (dead / wrong-mode sessions), not real failures. Don't chase the full-suite number until S-0 is decided; verify per-file.
-- **Done:** P0-1, P0-2 (+session.py URI bug), P0-3, P0-4, P1-5, P2-10. **Per-file verified:** `test_normalize_pipeline` 9/9; `test_iceberg_catalog_config` 34/34; `test_sql_models` 23/25 (iceberg-off) — the 2 remainders are the new functional bugs **S-1**/**S-2**.
+- **Done:** P0-1, P0-2 (+session.py URI bug), P0-3, P0-4, P1-5, **S-1**, P2-10. **Per-file verified:** `test_normalize_pipeline` 9/9; `test_iceberg_catalog_config` 34/34; `test_sql_models` 24/25 (iceberg-off) — the 1 remainder is the new functional bug **S-2**.
 
 ## Session start prompt
 
@@ -26,7 +26,7 @@ The session reads the **Resume (start here)** line for the next item, and the **
 ## Status snapshot
 
 - **Gate:** 🟠 `uv run pytest` = **50 failed, 259 passed** (was 57/252). **This number is S-0-contaminated** — many failures are `AttributeError: 'NoneType' object has no attribute 'sc'` (a prior fixture's `spark.stop()` kills the shared JVM session) and wrong-mode session reuse, not real defects. Per-file runs are the real measure (see Resume). `ruff check` passes.
-- **Captured:** 2026-08-18. P0-1..P0-4, P1-5, the session.py URI fix, `CLAUDE.md`, and this doc are committed in **`d8fb234` (elt104)**. Uncommitted on top: `BACKLOG.md` (S-1/S-2 + env-knob) and `tests/conftest.py` (the `ELT_PIPELINE_TEST_SPARK_ICEBERG` knob). A cold session should start from a tree that includes both — commit them or work the dirty tree. Re-stamp whenever counts change.
+- **Captured:** 2026-08-18. P0-1..P0-4, P1-5, the session.py URI fix, `CLAUDE.md`, and this doc are committed in **`d8fb234` (elt104)**; the `ELT_PIPELINE_TEST_SPARK_ICEBERG` conftest knob landed in **elt105/elt106**. The **S-1** fix (append fixture + this doc update) is committed on top as **elt107**. Tree is clean at session end. Re-stamp whenever counts change.
 - **Placement:** repo root, *not* under canonical `docs/`, per [PRD 10 §11](docs/prd/10-prd-architecture-and-lifecycle.md).
   The historical `docs/todo/` tree was deleted in elt99–elt103; this is its lightweight successor.
 
@@ -91,12 +91,6 @@ Ordered. Each carries: symptom → evidence → cause → **decision** → files
 - **Decision owner:** maintainer (dependency + release-gate contract change).
 - **Verification (once chosen):** `uv run pytest -q` (or the chosen per-file command) → 0 session-contamination failures.
 
-#### S-1 — `appended_orders` append-mode execution fails (NEW, functional)  ⏳
-- **Symptom:** `PipelineError: Failed to execute SQL model 'level3.sales.appended_orders'` ([spark_executor.py:128](src/elt_pipeline/sql/spark_executor.py#L128)).
-- **Evidence:** `test_sql_models::test_local_sql_model_executor_appends_rows_across_runs` (fails even under iceberg-off, after P0-3).
-- **Cause:** unknown — a real append-path execution error, not drift. Surfaced once the `run_id` TypeError was cleared. Get the full traceback: `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append --tb=long -q`.
-- **Verification:** `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append -q`
-
 #### S-2 — late-arriving default-partition ordering mismatch (NEW, functional)  ⏳
 - **Symptom:** `AssertionError` comparing partition lists ([test_sql_models.py:1183](tests/test_sql_models.py#L1183)).
 - **Evidence:** `test_sql_models::test_level3_model_applies_default_partitions_and_repartitions_late_arriving_data`.
@@ -138,6 +132,7 @@ Ordered. Each carries: symptom → evidence → cause → **decision** → files
 
 ### Done
 
+- **S-1 — `appended_orders` append-mode execution (2026-08-18).** Root cause was **not** an append-path defect — it was a stale (elt60) test fixture. The model's SELECT (`order_id, amount, order_date`) produced neither L3 default-partition column, so `.partitionBy("source_name","business_date")` raised `AnalysisException: Partition column 'source_name' not found in schema`. Per [PRD 03 FR4.1](docs/prd/03-prd-sql-level2-to-level3-and-level3-to-level4.md): L3 default partitions are `["source_name","business_date"]`, applied to **all three** load modes (incl. append), and a SELECT that omits them **is meant to fail at write time** (that write-time error is the PRD's stated enforcement mechanism — no extra validation layer). **Decision: update the test** (fixture was pre-convention; code matches the PRD). Made `_write_append_sql_package` conforming: SELECT `order_id, amount, source_name, business_date`, filter on `business_date`; seed rows carry `business_date`; read-back asserts on `str(business_date)` (partition path round-trips it back as a `date`). Verification: `ELT_PIPELINE_TEST_SPARK_ICEBERG=0 uv run pytest tests/test_sql_models.py -k append -q` → **1 passed**; full file **24 passed, 1 failed** (the 1 is S-2); `ruff check` clean.
 - **P0-1 — shared Spark fixture warehouse/mode (2026-08-18).** [tests/conftest.py](tests/conftest.py) `spark_session` now builds with an explicit mode + session-scoped `iceberg_warehouse_dir` (via `tmp_path_factory`), fixing `Cannot initialize HadoopCatalog because warehousePath must not be null or empty`. **Decision:** fixed the harness (not product). **Caveat:** the on-vs-off choice is entangled with **S-0** (single JVM) — currently left **Iceberg ON** as a no-regression checkpoint; the correct end-state (Iceberg OFF shared + per-file isolation) is blocked on S-0. Verification: `uv run pytest tests/test_publish_models.py -q` (isolated) 7→ improved; full suite 57→51.
 - **P0-4 — writer API rename `write_table`→`write_dataframe` (2026-08-18).** The writer also changed input type (`NormalizedTable(rows=…)` → Spark `DataFrame`). Rewrote the two safety-net tests in [tests/test_normalize_pipeline.py](tests/test_normalize_pipeline.py) to build a DataFrame via `createDataFrame` and call `write_dataframe(table_name=…, dataframe=…)`; dropped the now-unused `NormalizedTable` import. **Decision:** update tests (API drift). Verification: `uv run pytest tests/test_normalize_pipeline.py -q` → **9 passed**.
 - **P1-5 — L2 `_run_id` lineage (2026-08-18).** **Decision: fixed code** (not test). The normalize pipeline now stamps `_run_id = manifest.run_id` (the L1 ingest run) on each dataframe before writing ([pipeline.py](src/elt_pipeline/normalize/pipeline.py)); the writer's `run_context.run_id` default remains a safety net (proved intended by the "does-not-overwrite-existing-`_run_id`" test). L2 partition dir still records the normalize run. Honours replayability (PRD 00 §7). Verification: `uv run pytest tests/test_normalize_pipeline.py -q` → **9 passed**.

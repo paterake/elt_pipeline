@@ -441,13 +441,16 @@ def test_local_sql_model_executor_plans_models_with_query_plan(
 def test_local_sql_model_executor_appends_rows_across_runs(
     tmp_path: Path, spark_session
 ) -> None:
+    # A PRD-conforming L3 model (PRD 03 FR4.1) produces the default partition
+    # columns source_name + business_date; source_name is stamped by the L2 seed,
+    # business_date is a payload column carried from L2.
     _seed_level2_table(
         spark_session,
         tmp_path,
         rows=[
-            {"order_id": 1, "amount": 10, "order_date": "2026-01-01"},
-            {"order_id": 2, "amount": 20, "order_date": "2026-01-03"},
-            {"order_id": 3, "amount": 30, "order_date": "2026-01-07"},
+            {"order_id": 1, "amount": 10, "business_date": "2026-01-01"},
+            {"order_id": 2, "amount": 20, "business_date": "2026-01-03"},
+            {"order_id": 3, "amount": 30, "business_date": "2026-01-07"},
         ],
     )
 
@@ -502,7 +505,9 @@ def test_local_sql_model_executor_appends_rows_across_runs(
         ),
         key=lambda row: row["order_id"],
     )
-    assert [(row["order_id"], row["amount"], row["order_date"]) for row in rows] == [
+    # business_date round-trips through the partition path, so Spark infers it back
+    # as a date; compare on its string form.
+    assert [(row["order_id"], row["amount"], str(row["business_date"])) for row in rows] == [
         (1, 10, "2026-01-01"),
         (2, 20, "2026-01-03"),
         (3, 30, "2026-01-07"),
@@ -1389,10 +1394,10 @@ def _write_append_sql_package(base_path: Path) -> Path:
     (model_dir / "model.sql").write_text(
         dedent(
             """
-            select order_id, amount, order_date
+            select order_id, amount, source_name, business_date
             from raw_orders
-            where order_date >= '{{ window.start_date }}'
-              and order_date <= '{{ window.end_date }}'
+            where business_date >= '{{ window.start_date }}'
+              and business_date <= '{{ window.end_date }}'
             """
         ).strip(),
         encoding="utf-8",
