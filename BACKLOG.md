@@ -9,24 +9,18 @@
 
 ## Resume (start here)
 
-- From `BACKLOG.md`: Start with **D-0** — the **owner decision** that gates everything else:
-  **Path A (reconcile docs to the built S3+local scope)** vs **Path B (implement multi-cloud IO)**.
-  Path B has two strategies: **B1** = native per-backend clients (B-1/B-2/B-3), **B2** = delegate
-  the control plane to Spark's Hadoop FileSystem (**B-0**, recommended — makes the scheme a pure
-  config knob, but revisits PRD 08 + couples IO to a live SparkSession). Do not write B-* code
-  until D-0 is decided. **D-1 (doc consistency) is needed either way** and is the safe first
-  coding task. Then, if Path B: **B-6** (strategy B3 — recommended facade) *or* **B-0** (B2, delegate
-  to Spark FS) *or* **B-1→B-3** (B1, native clients), plus **B-4, B-5**. Separately, **I-1** tracks the
-  ingest-connector production gaps (SQL = sqlite-only, Kafka = file-replay, connectors abstract) —
-  scope those with the owner too; they are independent of the storage-scheme work.
-- **Also note:** the storage-scheme work must cover the **pre-Spark ingest L1 write** (Python, not
-  Spark) — this is why strategy B3 (Python facade) is preferred over B2 (Spark-coupled). See B-6.
-- **Two tranches, sequence them:** **(1) Publish-honestly** — `D-1` + `I-1` doc pass + **`D-2`
-  maturity matrix** = go public with accurate scope (small, do first). **(2) Platinum hardening** —
+- **D-0 is DECIDED (owner, 2026-08-18): Path A now — publish honestly; Path B (multi-cloud) is
+  roadmap.** So **do TRANCHE 1 first**, in order: **D-1** (make PRD 08 ↔ PRD 10 consistent — the
+  safe first task, start here) → **I-1 *doc pass only*** (state the real ingest surface in
+  README/PRD: real REST + sqlite-replay demo + local/s3 object storage; do **not** implement
+  Kafka/JDBC now) → **D-2** (publish the capability maturity matrix). Completing those three = the
+  repo can go public with accurate scope.
+- **Everything else is roadmap (tranche 2), do NOT start it in this pass:** `B-*` (multi-cloud
+  storage — prefer B-6 the facade when pulled forward), `I-1` implementation (real Kafka/JDBC), and
   `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment, secrets, governance,
-  OpenLineage, DQ quarantine) turn it from "great architecture, demo ops" into enterprise-grade;
-  each is additive and mostly implements behind an existing seam. `B-*` (multi-cloud) sits with
-  tranche 2. **Read `## Platform strengths` before touching anything — protect that list.**
+  OpenLineage, DQ quarantine). They stay ⏳ and get worked one-per-session after publication, each
+  marked in D-2's maturity matrix as "Roadmap" until done.
+- **Read `## Platform strengths` before touching anything — protect that list.**
 - **Framing:** the test gate is already 🟢 green; these are **capability/accuracy gaps between
   the documented claims and the implemented v1**, not regressions. "Done" for this backlog =
   the public-facing claims match what the code actually does, proven by tests.
@@ -45,11 +39,14 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 - **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311 passed / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-18. Origin: a portability review found that the storage IO layer
-  implements **`s3://` + local `file://` only**, while [PRD 10 §6](docs/prd/10-prd-architecture-and-lifecycle.md)
-  advertises 6 URI schemes and "runs identically on AWS/GCP/Azure/Databricks, 0 LOC." The
-  code matches [PRD 08](docs/prd/08-prd-storage-root-uri-io-dispatch.md) (v1 = s3+file, reject
-  the rest); PRD 10 overclaims. No commits yet for this backlog.
+- **Captured:** 2026-08-18. Origin: a portability + platinum review. Storage IO implements
+  **`s3://` + local `file://` only** while [PRD 10 §6](docs/prd/10-prd-architecture-and-lifecycle.md)
+  advertises 6 schemes + multi-cloud "0 LOC" (code matches [PRD 08](docs/prd/08-prd-storage-root-uri-io-dispatch.md)
+  v1 = s3+file); ingest is local-demo-grade (real REST, sqlite-only SQL, Kafka file-replay); and the
+  operational surface (Iceberg maintenance, observability, orchestration, deployment, secrets,
+  governance, OpenLineage, DQ quarantine) is bronze→silver. **D-0 decided: Path A (publish honestly)
+  now; B + G-* are roadmap.** The backlog + this decision are committed. **Active: tranche 1 →
+  start at D-1.**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -132,9 +129,13 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 
 ### Still Todo
 
-#### D-0 — Portability direction: reconcile-docs (A) vs implement-multi-cloud (B)  🚦 DECISION (owner)
-- **Decision needed:** the multi-cloud "0 LOC on AWS/GCP/Azure/Databricks" claim is not
-  implemented. Pick the resolution before any B-* code:
+#### D-0 — Portability direction: reconcile-docs (A) vs implement-multi-cloud (B)  ✅ DECIDED (Path A now; B roadmap)
+- **DECIDED (owner, 2026-08-18): Path A now — publish honestly with S3+local scope; Path B
+  (multi-cloud) is roadmap (tranche 2), and when pulled forward, prefer B-6 (the facade).** The
+  analysis below is retained as the reference for that future B work. Active next step: **D-1**.
+- **Decision (as taken):** the multi-cloud "0 LOC on AWS/GCP/Azure/Databricks" claim is not
+  implemented; rather than block publication on building it, de-scope the docs to reality now and
+  keep multi-cloud as a tracked roadmap. Original options, for the B roadmap:
   - **Path A — de-scope to reality (fast, always-safe):** market as *local-first + AWS S3*.
     Only **D-1** is required; B-* are dropped. Publishable within a session.
   - **Path B — implement the claim (real work).** Two strategies, pick one:
