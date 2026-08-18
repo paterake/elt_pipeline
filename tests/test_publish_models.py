@@ -125,7 +125,12 @@ def test_run_publish_definitions_locally_writes_jsonl_manifest_and_artifacts(
     assert run_scoped_path.suffix == ".jsonl"
     assert artifact.stable_delivery_path is None
     assert len(lines) == 2
-    assert json.loads(lines[0]) == {"order_date": "2026-01-01", "total_amount": 10}
+    # The publish definition declares no order_by, so JSONL row order is not a contract
+    # (Spark read order is unspecified). Assert on row content, order-independently.
+    assert sorted((json.loads(line) for line in lines), key=lambda row: row["order_date"]) == [
+        {"order_date": "2026-01-01", "total_amount": 10},
+        {"order_date": "2026-01-02", "total_amount": 35},
+    ]
     assert manifest_path.exists()
 
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))

@@ -30,8 +30,11 @@ jobs:
       - name: Run Ruff
         run: uv run ruff check .
 
-      - name: Run pytest
-        run: uv run pytest
+      - name: Run test gate (per-file Spark isolation)
+        # Not a bare `uv run pytest`: Spark/Iceberg suites cannot share a JVM
+        # (one JVM = one SparkSession; some suites call spark.stop()), so each
+        # Spark test file runs in its own process. See scripts/run_tests.sh.
+        run: bash scripts/run_tests.sh
 
   package-build:
     runs-on: ubuntu-latest

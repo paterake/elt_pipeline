@@ -84,7 +84,10 @@ def test_merge_requires_key():
 def test_merge_insert_only_preserves_partition_cols_in_insert_list():
     sql = build_merge_into_sql(
         target_table="iceberg.level3.inventory.canonical_shipments",
-        source_query="SELECT 1 AS row_id, 'inv' AS source_name, DATE '2026-08-15' AS business_date, 5 qty",
+        source_query=(
+            "SELECT 1 AS row_id, 'inv' AS source_name, "
+            "DATE '2026-08-15' AS business_date, 5 qty"
+        ),
         key_columns=["row_id"],
         partition_columns=["source_name", "business_date"],
         when_matched_update=False,

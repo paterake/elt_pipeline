@@ -16,7 +16,23 @@ Run the local quality gates before opening or updating a pull request:
 
 ```bash
 uv run ruff check .
-uv run pytest
+bash scripts/run_tests.sh
+```
+
+**Why not a bare `uv run pytest`?** The test process shares one JVM, and one JVM
+can hold only one `SparkSession` (`getOrCreate()` returns the first-built session
+for the life of the process). Iceberg on/off is frozen at session-build time, and
+some Spark suites call `spark.stop()` in teardown — which tears down the shared
+JVM for every test that runs afterwards. A single `uv run pytest` therefore
+cross-contaminates the Spark suites (dead sessions, wrong Iceberg mode). The test
+gate `scripts/run_tests.sh` runs every Spark-backed test file in its own process
+and the non-Spark files together, so each suite gets the session it needs. To run
+one file directly during development, invoke pytest per-file as usual (the shared
+`spark_session` fixture defaults to Iceberg off; override with
+`ELT_PIPELINE_TEST_SPARK_ICEBERG=1` only for a deliberate on-mode experiment):
+
+```bash
+uv run pytest tests/test_sql_models.py
 ```
 
 Use the CLI entrypoint in the managed environment when verifying examples or making manual runtime checks:
@@ -63,7 +79,7 @@ The workflow currently enforces:
 - a Temurin JDK 23 install (required for `pyspark` + Trino 468 serving)
 - `uv sync --extra dev`
 - `uv run ruff check .`
-- `uv run pytest`
+- `bash scripts/run_tests.sh` (per-file Spark isolation; see Local Development)
 - `uv build`
 
 Keep local commands aligned with CI so maintainers can reproduce failures quickly.

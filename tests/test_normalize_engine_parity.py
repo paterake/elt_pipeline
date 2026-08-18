@@ -148,8 +148,6 @@ def spark_session_fixture():
 
 def test_spark_planner_produces_valid_mapping_version_nested_orders() -> None:
     """Structural contract for mapping_version hash (16 hex SHA-256 prefix)."""
-    payload = _nested_orders_payload()
-
     schema = StructType([
         StructField("order_id", StringType(), True),
         StructField("customer", StructType([
@@ -291,7 +289,6 @@ def test_table_name_hash_suffix_applied_for_overflow_and_collision() -> None:
 # ---------------------------------------------------------------------------
 
 def test_csv_header_produces_valid_plan() -> None:
-    csv_text = _csv_orders_text()
     manifest = build_manifest(payload_format="csv")
 
     fieldnames = ["order_id", "customer_name", "amount", "status"]
@@ -525,9 +522,24 @@ def test_spark_csv_relationalizer_row_level_outputs(
     )
 
     expected = [
-        {"order_id": "ORD-A", "customer_name": "Ada Lovelace", "amount": "100.50", "status": "open"},
-        {"order_id": "ORD-B", "customer_name": "Grace Hopper", "amount": "250.00", "status": "fulfilled"},
-        {"order_id": "ORD-C", "customer_name": "Katherine Johnson", "amount": "17.25", "status": "refunded"},
+        {
+            "order_id": "ORD-A",
+            "customer_name": "Ada Lovelace",
+            "amount": "100.50",
+            "status": "open",
+        },
+        {
+            "order_id": "ORD-B",
+            "customer_name": "Grace Hopper",
+            "amount": "250.00",
+            "status": "fulfilled",
+        },
+        {
+            "order_id": "ORD-C",
+            "customer_name": "Katherine Johnson",
+            "amount": "17.25",
+            "status": "refunded",
+        },
     ]
     for exp, spark_row in zip(expected, spark_rows_sorted, strict=False):
         for col in ("order_id", "customer_name", "amount", "status"):
@@ -541,7 +553,6 @@ def test_spark_csv_relationalizer_row_level_outputs(
 # ---------------------------------------------------------------------------
 
 def test_flat_payload_metadata_validity() -> None:
-    payload = {"a": 1, "b": {"c": "x", "d": True}, "e": None}
     manifest = build_manifest()
 
     schema = StructType([
