@@ -150,28 +150,7 @@ def _atomic_swap_posix(
             os.rename(staging_local, target_local)
             return
 
-        partition_dirs = _list_immediate_subdirs_posix(staging_local)
-        if not partition_dirs:
-            if os.path.isdir(target_local):
-                shutil.rmtree(target_local)
-            os.makedirs(
-                os.path.dirname(target_local) or ".", exist_ok=True
-            )
-            os.rename(staging_local, target_local)
-            return
-
-        os.makedirs(target_local, exist_ok=True)
-        for part_name in partition_dirs:
-            staging_part = os.path.join(staging_local, part_name)
-            target_part = os.path.join(target_local, part_name)
-            if os.path.isdir(target_part):
-                shutil.rmtree(target_part)
-            elif os.path.exists(target_part):
-                os.remove(target_part)
-            os.rename(staging_part, target_part)
-        leftover = _list_immediate_subdirs_posix(staging_local)
-        if not leftover and not _has_non_dir_files_posix(staging_local):
-            shutil.rmtree(staging_local, ignore_errors=True)
+        _swap_partition_tree_posix(staging_local, target_local)
     except OSError as exc:
         msg = (
             f"POSIX atomic swap failed: staging={staging_path!r} "
@@ -191,6 +170,44 @@ def _atomic_swap_posix(
         ) from exc
 
 
+def _swap_partition_tree_posix(staging_dir: str, target_dir: str) -> None:
+    """Dynamic partition overwrite for a (possibly multi-level) Hive-partition tree.
+
+    Descends through nested ``key=value`` partition directories and replaces only
+    the **leaf** partition directories present in staging, leaving sibling
+    partitions in the target untouched. This is what makes a multi-column default
+    layout (e.g. L3 ``source_name=<src>/business_date=<date>``) obey dynamic
+    partition-overwrite semantics: only the ``(source_name, business_date)`` tuples
+    produced by this run are replaced — unrelated dates/sources survive.
+
+    Empty staging directories are pruned as the recursion unwinds so a caller
+    inspecting the staging root sees it gone once every partition has moved.
+    """
+    partition_subdirs = [
+        name for name in _list_immediate_subdirs_posix(staging_dir) if "=" in name
+    ]
+    if not partition_subdirs:
+        # Leaf partition (or unpartitioned output): replace the target subtree whole.
+        if os.path.isdir(target_dir):
+            shutil.rmtree(target_dir)
+        elif os.path.exists(target_dir):
+            os.remove(target_dir)
+        os.makedirs(os.path.dirname(target_dir) or ".", exist_ok=True)
+        os.rename(staging_dir, target_dir)
+        return
+
+    os.makedirs(target_dir, exist_ok=True)
+    for name in partition_subdirs:
+        _swap_partition_tree_posix(
+            os.path.join(staging_dir, name),
+            os.path.join(target_dir, name),
+        )
+    # Prune this staging level if nothing remains (a stray _SUCCESS marker or other
+    # non-partition file legitimately keeps it around for best-effort cleanup later).
+    if not os.listdir(staging_dir):
+        os.rmdir(staging_dir)
+
+
 def _list_immediate_subdirs_posix(local_path: str) -> list[str]:
     try:
         names = os.listdir(local_path)
@@ -202,18 +219,6 @@ def _list_immediate_subdirs_posix(local_path: str) -> list[str]:
         if os.path.isdir(full):
             result.append(name)
     return sorted(result)
-
-
-def _has_non_dir_files_posix(local_path: str) -> bool:
-    try:
-        names = os.listdir(local_path)
-    except FileNotFoundError:
-        return False
-    for name in names:
-        full = os.path.join(local_path, name)
-        if not os.path.isdir(full):
-            return True
-    return False
 
 
 def _atomic_swap_s3(
@@ -420,6 +425,13 @@ def _s3_infer_partition_subprefixes(
     staging_prefix: str,
     staging_keys: list[str],
 ) -> list[str]:
+    """Infer the **leaf** partition subprefixes present in staging.
+
+    Returns the full ``key=value/.../key=value/`` chain down to (but excluding) the
+    object name, so a multi-column layout (e.g. ``source_name=X/business_date=Y/``)
+    replaces only the exact leaf partitions written by this run and leaves sibling
+    partitions in the target intact — the S3 analogue of dynamic partition overwrite.
+    """
     subprefixes: set[str] = set()
     for key in staging_keys:
         rel = (
@@ -429,7 +441,13 @@ def _s3_infer_partition_subprefixes(
         )
         if "/" not in rel:
             continue
-        first_segment = rel.split("/", 1)[0]
-        if "=" in first_segment:
-            subprefixes.add(first_segment + "/")
+        # Leading run of consecutive key=value segments before the object name.
+        segments = rel.split("/")[:-1]
+        partition_segments: list[str] = []
+        for segment in segments:
+            if "=" not in segment:
+                break
+            partition_segments.append(segment)
+        if partition_segments:
+            subprefixes.add("/".join(partition_segments) + "/")
     return sorted(subprefixes)

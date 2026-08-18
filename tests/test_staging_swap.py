@@ -341,6 +341,47 @@ class TestAtomicSwapPosix:
         # staging cleaned up when empty after partition moves
         assert not os.path.isdir(staging)
 
+    def test_partition_overwrite_multi_level_preserves_sibling_leaves(
+        self, tmp_path
+    ) -> None:
+        # L3 default layout is two-level: source_name=<src>/business_date=<date>.
+        # Dynamic partition overwrite must replace only the leaf (source, date)
+        # tuples produced by this run, leaving unrelated dates/sources intact.
+        root = str(tmp_path)
+        staging = os.path.join(root, "staging")
+        target = os.path.join(root, "target")
+        src = "source_name=orders_source"
+        # This run writes two business_date leaves under orders_source.
+        _write(os.path.join(staging, src, "business_date=2026-07-31", "p.parquet"), "jul_new")
+        _write(os.path.join(staging, src, "business_date=2026-08-10", "p.parquet"), "aug_new")
+        # Pre-existing target: an unrelated date leaf (keep), a stale copy of a
+        # written leaf (replace), and a whole other source (keep).
+        _write(os.path.join(target, src, "business_date=2026-06-01", "p.parquet"), "jun_keep")
+        _write(os.path.join(target, src, "business_date=2026-07-31", "p.parquet"), "jul_stale")
+        _write(
+            os.path.join(target, "source_name=other", "business_date=2026-06-01", "p.parquet"),
+            "other_keep",
+        )
+
+        atomic_swap(
+            staging_path=staging,
+            target_path=target,
+            scheme=_StorageScheme.local_unschemed,
+            mode="partition_overwrite",
+        )
+
+        def _read(*parts: str) -> str:
+            with open(os.path.join(target, *parts)) as f:
+                return f.read()
+
+        # Unrelated date under the same source survives untouched.
+        assert _read(src, "business_date=2026-06-01", "p.parquet") == "jun_keep"
+        # A wholly different source survives untouched.
+        assert _read("source_name=other", "business_date=2026-06-01", "p.parquet") == "other_keep"
+        # Written leaves are replaced with fresh data (stale jul copy gone).
+        assert _read(src, "business_date=2026-07-31", "p.parquet") == "jul_new"
+        assert _read(src, "business_date=2026-08-10", "p.parquet") == "aug_new"
+
     def test_file_scheme_posix_also_works(self, tmp_path) -> None:
         root = str(tmp_path)
         staging = os.path.join(root, "staging")
@@ -481,6 +522,45 @@ class TestAtomicSwapS3:
         # Stale jan2 part must be gone
         assert f"{target}/dt=2025-01-02/part-stale.parquet" not in all_keys
         # Staging run_id keys must be purged
+        assert not any(k.startswith(staging) for k in all_keys)
+
+
+    def test_partition_overwrite_multi_level_preserves_sibling_leaves(
+        self, fake_s3: _FakeS3Client
+    ) -> None:
+        # S3 analogue of the two-level L3 layout: only the exact leaf
+        # source_name=/business_date= prefixes written this run are replaced.
+        staging = "wh/_staging/sql/canonical/run_id=r2"
+        target = "wh/sql/canonical"
+        src = "source_name=orders_source"
+        fake_s3.objects[("b", f"{staging}/{src}/business_date=2026-07-31/p.parquet")] = b"jul_new"
+        fake_s3.objects[("b", f"{staging}/{src}/business_date=2026-08-10/p.parquet")] = b"aug_new"
+        # Pre-existing: unrelated date (keep), stale copy of written leaf (replace),
+        # a whole other source (keep).
+        fake_s3.objects[("b", f"{target}/{src}/business_date=2026-06-01/p.parquet")] = b"jun_keep"
+        fake_s3.objects[
+            ("b", f"{target}/{src}/business_date=2026-07-31/stale.parquet")
+        ] = b"jul_stale"
+        fake_s3.objects[
+            ("b", f"{target}/source_name=other/business_date=2026-06-01/p.parquet")
+        ] = b"other_keep"
+
+        atomic_swap(
+            staging_path="s3://b/" + staging,
+            target_path="s3://b/" + target,
+            scheme=_StorageScheme.s3,
+            mode="partition_overwrite",
+        )
+
+        all_keys = sorted(k for (b, k) in fake_s3.objects.keys() if b == "b")
+        # Unrelated date and unrelated source survive.
+        assert f"{target}/{src}/business_date=2026-06-01/p.parquet" in all_keys
+        assert f"{target}/source_name=other/business_date=2026-06-01/p.parquet" in all_keys
+        # Written leaves present; stale jul copy purged.
+        assert f"{target}/{src}/business_date=2026-07-31/p.parquet" in all_keys
+        assert f"{target}/{src}/business_date=2026-08-10/p.parquet" in all_keys
+        assert f"{target}/{src}/business_date=2026-07-31/stale.parquet" not in all_keys
+        # Staging purged.
         assert not any(k.startswith(staging) for k in all_keys)
 
 
