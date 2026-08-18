@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -19,10 +20,14 @@ def _seed_level2_table(
     table_name: str = "raw_orders",
     rows: list[dict],
 ) -> None:
+    # Canonical L2 layout has NO environment= segment (P5 decision — environment is
+    # expressed by which root_path is pointed at, enforced by asserts in both
+    # normalize.level2_storage and sql.level2_source). Mirror the real writer:
+    # level2/source=/entity=/mapping_version=/table=/run_id=.
+    _ = environment
     data_dir = (
         root_path
         / "level2"
-        / f"environment={environment}"
         / f"source={source_name}"
         / f"entity={entity_name}"
         / "mapping_version=v1"
@@ -255,7 +260,6 @@ def test_normalize_run_command_supports_bypass_level2_mode(tmp_path: Path) -> No
         output_root
         / "runs"
         / "stage=normalize"
-        / "environment=default"
         / "job=normalize-run"
         / f"run_id={payload['results'][0]['run_id']}"
         / "audit.json"
@@ -1164,12 +1168,19 @@ def write_normalize_window_fixture(
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+    # These are L2→L3→L4 parquet-parity CLI tests: they seed/read plain parquet at
+    # warehouse/level<N>/<table>. The CLI subprocess runs in its own process and cannot
+    # see the in-process ELT_PIPELINE_TEST_SPARK_ICEBERG conftest knob, so it would
+    # otherwise use the production Iceberg-on default and write to a catalog. Select the
+    # parity (plain-parquet + staging-swap) path via the CLI's own env override.
+    env = {**os.environ, "ELT_PIPELINE_ICEBERG_ENABLED": "false"}
     return subprocess.run(
         [sys.executable, "-m", "elt_pipeline", *args],
         cwd=Path(__file__).resolve().parents[1],
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 

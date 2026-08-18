@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -101,7 +102,12 @@ def test_publish_run_command_writes_jsonl(tmp_path: Path, spark_session) -> None
     assert artifact["output_format"] == "jsonl"
     assert artifact["stable_delivery_path"] is None
     assert len(lines) == 2
-    assert json.loads(lines[0]) == {"order_date": "2026-01-01", "total_amount": 10}
+    # The publish definition declares no order_by, so JSONL row order is not a contract
+    # (Spark read order is unspecified). Assert on row content, order-independently.
+    assert sorted((json.loads(line) for line in lines), key=lambda row: row["order_date"]) == [
+        {"order_date": "2026-01-01", "total_amount": 10},
+        {"order_date": "2026-01-02", "total_amount": 35},
+    ]
 
 
 def test_publish_run_command_appends_new_delivery_artifact(tmp_path: Path, spark_session) -> None:
@@ -254,12 +260,19 @@ def _run_cli(
     *,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    # Publish here reads a plain-parquet L4 table seeded at warehouse/level4/<table>.
+    # The CLI subprocess runs in its own process (no access to the in-process
+    # ELT_PIPELINE_TEST_SPARK_ICEBERG conftest knob), so select the parquet-parity path
+    # via the CLI's env override; otherwise it uses the Iceberg-on default and looks in a
+    # catalog instead of the seeded parquet.
+    env = {**os.environ, "ELT_PIPELINE_ICEBERG_ENABLED": "false"}
     return subprocess.run(
         [sys.executable, "-m", "elt_pipeline", *args],
         cwd=Path(__file__).resolve().parents[1],
         check=check,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
