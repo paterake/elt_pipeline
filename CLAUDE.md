@@ -5,9 +5,12 @@ Auto-loaded into every session. Keep it tiny; it is a router, not documentation.
 ## Active backlog (cold-start resume)
 
 There is durable, resumable backlog state in **[BACKLOG.md](BACKLOG.md)** (repo-root anchor doc) —
-the **portability & publication-readiness** effort (reconcile the multi-cloud claims with the
-S3+local-only implementation). If the user asks to continue/progress the backlog, open it and
-follow its **"Resume (start here)"** line. Method: [docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md).
+the **publication-readiness & platinum-hardening** effort: two tranches — (1) publish honestly
+(reconcile the multi-cloud/ingest claims with the S3+local demo-grade reality + a maturity matrix),
+and (2) platinum hardening (Iceberg maintenance, observability, orchestration, deployment, secrets,
+governance, OpenLineage, DQ quarantine, multi-cloud storage). If the user asks to continue/progress
+the backlog, open it and follow its **"Resume (start here)"** line (and read its **Platform
+strengths** section first). Method: [docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md).
 Operating model: **one session per backlog item**; update the Resume line + Status snapshot before ending a session.
 When the backlog is exhausted and the gate is green, delete `BACKLOG.md` and this section.
 

@@ -1,4 +1,4 @@
-# Backlog & Continuity — Portability & Publication Readiness
+# Backlog & Continuity — Publication Readiness & Platinum Hardening
 
 <!--
   ANCHOR DOC. Durable, cold-start-resumable state for the portability / publication-readiness
@@ -21,6 +21,12 @@
   scope those with the owner too; they are independent of the storage-scheme work.
 - **Also note:** the storage-scheme work must cover the **pre-Spark ingest L1 write** (Python, not
   Spark) — this is why strategy B3 (Python facade) is preferred over B2 (Spark-coupled). See B-6.
+- **Two tranches, sequence them:** **(1) Publish-honestly** — `D-1` + `I-1` doc pass + **`D-2`
+  maturity matrix** = go public with accurate scope (small, do first). **(2) Platinum hardening** —
+  `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment, secrets, governance,
+  OpenLineage, DQ quarantine) turn it from "great architecture, demo ops" into enterprise-grade;
+  each is additive and mostly implements behind an existing seam. `B-*` (multi-cloud) sits with
+  tranche 2. **Read `## Platform strengths` before touching anything — protect that list.**
 - **Framing:** the test gate is already 🟢 green; these are **capability/accuracy gaps between
   the documented claims and the implemented v1**, not regressions. "Done" for this backlog =
   the public-facing claims match what the code actually does, proven by tests.
@@ -76,6 +82,26 @@ The gap is **claim vs implementation**, in two layers:
 | **Kafka ingest** | (implied broker) | **local JSONL file replay**, not a real broker (I-1) |
 | **Connector base classes** | — | `rest/sql/kafka/object_storage` are **abstract**; only `local_*` concretes exist (I-1) |
 
+## Platform strengths (verified good — preserve, never regress)
+
+These are the parts that are genuinely strong. Every item below must **keep** them intact; do not
+trade any of these away for a gap fix. When in doubt, protect this list.
+
+- **4-tier SQL validity chain** — token → partition → `EXPLAIN FORMATTED` → quality hooks
+  ([sql/](src/elt_pipeline/sql/)). A dbt-like compile-time guardrail most homegrown platforms lack;
+  it catches bad models before they write. Keep it on the write path.
+- **Replayability / idempotency** — run_id lineage stamping + dynamic partition overwrite
+  (the S-2 leaf-partition-only replace). Re-running a window reproduces the same output with zero
+  blast radius. Do not weaken the partition-overwrite scoping.
+- **Clean, production-shaped seams** — DQ and lineage are pluggable adapters with blocking /
+  non-blocking policy ([integrations/](src/elt_pipeline/integrations/)); connectors, catalogs, and
+  storage are abstractions, not hardcoding. The platinum gaps below are mostly "implement the
+  concrete behind an existing seam," not "build the seam."
+- **Config-cascade + catalog-binding model** — one 4-tier cascade (arg > ENV > YAML > manifest),
+  separate writer/serving Iceberg catalogs, six-way catalog enum. Coherent and well-tested.
+- **Design discipline** — thorough canonical PRDs, a green per-file test gate (311/0), and an
+  end-to-end example that actually runs. The foundation is above-average; the gaps are additive.
+
 ## Accumulated Active Constraints (honour in every item; append, never delete)
 
 1. **Keep the gate green.** `bash scripts/run_tests.sh` must stay 311+/0 after every item; new
@@ -95,6 +121,10 @@ The gap is **claim vs implementation**, in two layers:
 4. **Docs are a source of truth, not marketing.** A public claim the code can't back is a defect.
    Every doc edit must leave PRD 08 and PRD 10 mutually consistent.
 5. **Per item, decide the direction explicitly and record it in the Done line.**
+6. **Preserve the Platform strengths** (section above). A gap fix that regresses the validity
+   chain, replayability, or an existing seam is not done — it's a trade-down.
+7. **Implement behind existing seams where they exist.** DQ/lineage adapters, `secret_refs`,
+   connector/catalog abstractions are already there — extend them, don't fork parallel paths.
 
 ---
 
@@ -332,6 +362,102 @@ The gap is **claim vs implementation**, in two layers:
   [config/models.py](src/elt_pipeline/config/models.py), README/PRD.
 - **Verification:** each claimed mechanism has a concrete connector + a test against a real/emulated
   endpoint; docs match the shipped surface.
+
+### Platinum / production-hardening (operational, governance, reliability)
+
+The architecture is platinum-grade; the operational hardening is bronze→silver. These are the
+"complete platform" gaps — additive, mostly implement-behind-an-existing-seam, and largely
+independent of the portability (B-*) and ingest (I-1) tranches. **None block publishing as an
+OSS platform with a roadmap** (mark them roadmap in D-2's maturity matrix); they **do** block
+claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med · 🟡 low.
+
+#### G-1 — Iceberg table maintenance: compaction, snapshot expiry, orphan cleanup  🔴 HIGH  ⏳
+- **Symptom:** no `rewrite_data_files` (compaction), `expire_snapshots`, or `remove_orphan_files`
+  anywhere in `src/`/`ops/`. Iceberg tables **degrade without this** — small-file explosion,
+  unbounded snapshot/metadata growth, storage bloat, slowing every Trino read. This is the #1
+  operational gap for any real Iceberg deployment.
+- **Scope:** a maintenance command/module (`elt maintain …`) invoking Iceberg's Spark procedures
+  (`rewrite_data_files`, `expire_snapshots`, `remove_orphan_files`, optionally `rewrite_manifests`)
+  per L3/L4 table, with retention config (snapshot age/count); a documented schedule to run it.
+- **Files:** new `src/elt_pipeline/maintenance/` + CLI wiring; [spark/session.py](src/elt_pipeline/spark/session.py); ops docs.
+- **Verification:** run maintenance against the local Iceberg warehouse; assert snapshots expired +
+  files compacted + orphans removed; gate green.
+
+#### G-2 — Observability: metrics + tracing export, alerting hooks  🔴 HIGH  ⏳
+- **Symptom:** structured logging + audit records only ([shared/logging.py](src/elt_pipeline/shared/logging.py),
+  [shared/audit.py](src/elt_pipeline/shared/audit.py)); **no** Prometheus/OpenTelemetry, no run
+  metrics surface (duration, row counts, bytes, failure rate), no alerting seam.
+- **Scope:** an OTel/Prometheus metrics emitter fed by the existing audit/`MetricsSummary` data
+  (run duration, rows in/out per level, quality pass/fail, failures); traces spanning ingest→publish;
+  a pluggable alert hook. Keep it a seam (like DQ/lineage) so backends are swappable.
+- **Files:** new `src/elt_pipeline/integrations/metrics.py`; wire from the audit path.
+- **Verification:** a run emits metrics to an in-test collector; documented Prometheus/OTel config.
+
+#### G-3 — Orchestration integration (beyond the sequential runner)  🟠 MED  ⏳
+- **Symptom:** the `schedule` command is a **basic ordered runner** (stop-on-error / continue) —
+  no retries, no DAG dependencies, no SLAs, no cron, no backfill orchestration ([scheduler.py](src/elt_pipeline/shared/scheduler.py)).
+- **Scope:** ship (or document) first-class integration with a real orchestrator — Airflow/Dagster/
+  Prefect operators wrapping the `ingest/normalize/sql/publish` CLI phases, with retry/backfill/SLA
+  semantics — rather than growing a bespoke scheduler. Keep the local runner for zero-dependency demos.
+- **Files:** new `src/elt_pipeline/integrations/orchestration/` (thin operators); docs; an example DAG.
+- **Verification:** an example DAG runs the four phases with retries against the local demo.
+
+#### G-4 — Deployment artifacts: container image + reference deployment  🟠 MED  ⏳
+- **Symptom:** no Dockerfile, Helm chart, or k8s manifests — only a wheel. A Spark/Trino runtime
+  needs a reproducible container + a reference deploy for anyone to run it off a laptop.
+- **Scope:** a Dockerfile pinning the JDK 23 + Spark 4.1 + Trino 468 stack; a minimal
+  docker-compose (runtime + Trino serving) for local; optionally a Helm chart / k8s manifests.
+- **Files:** new `Dockerfile`, `docker-compose.yml`, `deploy/`.
+- **Verification:** `docker compose up` runs the demo end-to-end incl. Trino serving.
+
+#### G-5 — Real secrets backend (resolve_secret is a stub)  🔴 HIGH  ⏳
+- **Symptom:** [rest.py:301](src/elt_pipeline/ingest/connectors/rest.py#L301) `resolve_secret()`
+  literally `return secret_ref` — the `secret_refs` config is a pass-through, no Vault/KMS/AWS
+  Secrets Manager/Azure Key Vault/GCP Secret Manager integration. (`redacted_fields` log-redaction
+  is good and should stay.) This also blocks the cloud-credential story in **B-4**.
+- **Scope:** a `SecretsProvider` seam (env / file / Vault / cloud SM) resolving `secret_ref` →
+  value at run start; never logged (honour `redacted_fields`). Wire cloud FS creds (B-4) through it.
+- **Files:** new `src/elt_pipeline/shared/secrets.py`; [rest.py](src/elt_pipeline/ingest/connectors/rest.py); B-4.
+- **Verification:** a resolver test per provider (env + one cloud, mocked); secrets never appear in logs/audit.
+
+#### G-6 — Governance: PII classification, masking, retention, right-to-erasure  🟠 MED  ⏳
+- **Symptom:** the README claims DAMA-DMBOK alignment (governance, security, quality), but there is
+  **no** column masking, data classification, retention policy, or right-to-erasure — only an audit
+  trail. Access control is delegated entirely to Trino.
+- **Scope:** decide the honest scope. Minimum: data-classification tags in manifests + column
+  masking in the serving layer (Trino) + a documented retention/erasure procedure (Iceberg
+  row-level deletes + snapshot expiry). Don't claim more than is enforced.
+- **Files:** manifest models; serving/Trino config ([ops/trino_serving/](ops/trino_serving/)); governance docs.
+- **Verification:** masking demonstrated via Trino; a retention/erasure runbook exists and is tested.
+
+#### G-7 — OpenLineage-compatible lineage export  🟠 MED  ⏳
+- **Symptom:** lineage is a **bespoke emitter** ([shared/lineage.py](src/elt_pipeline/shared/lineage.py),
+  `producer="elt_pipeline"`) — OpenLineage-*shaped* (`namespace`, `DatasetRef`) but not wire-compatible,
+  so it won't plug into Marquez / DataHub / OpenMetadata / Atlas.
+- **Scope:** add an OpenLineage emitter behind the existing lineage adapter seam
+  ([integrations/lineage.py](src/elt_pipeline/integrations/lineage.py)) — map runs/datasets/facets to
+  the OpenLineage spec, emit to an OTLP/HTTP endpoint. Keep the native emitter as a fallback.
+- **Verification:** emitted events validate against the OpenLineage schema; documented Marquez config.
+
+#### G-8 — Data-quality depth: quarantine/DLQ + a concrete check set  🟠 MED  ⏳
+- **Symptom:** DQ ([integrations/quality.py](src/elt_pipeline/integrations/quality.py)) is a
+  blocking/non-blocking **seam** — records either pass or fail the run; there is **no quarantine
+  lane** for bad rows and no batteries-included check library (bring-your-own only).
+- **Scope:** a quarantine/DLQ write path for failed-quality rows (so a run can proceed while bad
+  data is captured for triage) + a starter set of built-in checks (not-null, uniqueness, range,
+  referential, freshness) behind the existing seam.
+- **Files:** [integrations/quality.py](src/elt_pipeline/integrations/quality.py); a quarantine writer (reuse B-6 storage).
+- **Verification:** a run with bad rows quarantines them + proceeds (non-blocking) or blocks
+  (blocking), asserted in tests.
+
+#### D-2 — Publish an honest capability maturity matrix  🔴 HIGH (publication gate)  ⏳
+- **Goal:** the single artifact that makes going public honest — a table classifying every
+  capability as **Production / Demo / Roadmap**, so no reader infers more than is built. Ties
+  together D-1 (portability), I-1 (ingest), and the G-* tranche.
+- **Scope:** a `docs/` maturity matrix (storage backends, ingest mechanisms, catalogs, serving,
+  maintenance, observability, orchestration, security/governance, DQ, lineage) with the honest
+  status of each; link it from the README top. Update it as items close.
+- **Verification:** every "Production" claim maps to a passing test/feature; no claim outruns the code.
 
 #### M-1 — Connector extensibility (no-code ceiling)  ⏳ (optional / lower priority)
 - **Observation:** ingest connectors are a fixed `if/elif` set (object_storage/kafka/rest/sql) in
