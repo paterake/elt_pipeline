@@ -2,12 +2,14 @@
 
 Auto-loaded into every session. Keep it tiny; it is a router, not documentation.
 
-## Backlog continuity (capability — no backlog currently active)
+## Active backlog (cold-start resume)
 
-No active recovery backlog right now. If a bounded, multi-session recovery/migration effort
-is needed, follow **[docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md)**:
-create a repo-root `BACKLOG.md` anchor doc from its skeleton, add a tiny router section here,
-work one session per item, and delete both when the backlog is exhausted and the gate is green.
+There is durable, resumable backlog state in **[BACKLOG.md](BACKLOG.md)** (repo-root anchor doc) —
+the **portability & publication-readiness** effort (reconcile the multi-cloud claims with the
+S3+local-only implementation). If the user asks to continue/progress the backlog, open it and
+follow its **"Resume (start here)"** line. Method: [docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md).
+Operating model: **one session per backlog item**; update the Resume line + Status snapshot before ending a session.
+When the backlog is exhausted and the gate is green, delete `BACKLOG.md` and this section.
 
 ## Running tests (required environment + the gate)
 
