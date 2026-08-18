@@ -301,16 +301,32 @@ The gap is **claim vs implementation**, in two layers:
     `sqlite3` and raises for any other driver. **There is no JDBC and no Postgres/MySQL/MSSQL/Oracle
     source ingest.** (The `jdbc` in the codebase is the *Iceberg catalog* type + a `jdbc_driver`
     config field — unrelated to source-DB extraction.)
-  - **Kafka — file replay, not a broker.** `LocalKafkaConnector` reads a local JSONL log via
-    `path_read_text` ([local_kafka.py:71](src/elt_pipeline/ingest/connectors/local_kafka.py#L71));
-    there is no `confluent_kafka`/`KafkaConsumer`, no `bootstrap.servers` connection.
+  - **Kafka — abstraction ready, real broker not implemented.** `KafkaConnectorBase`
+    ([kafka.py:123](src/elt_pipeline/ingest/connectors/kafka.py#L123)) is a proper broker-shaped ABC
+    (`KafkaMessage` with topic/partition/offset/headers, starting positions, offset + checkpoint
+    management, run loop) with abstract seams `consume_messages()` / `persist_message()`. The only
+    concrete subclass, `LocalKafkaConnector`, implements `consume_messages` by reading a **local JSONL
+    log** ([local_kafka.py:71](src/elt_pipeline/ingest/connectors/local_kafka.py#L71)). No
+    `confluent-kafka`/`kafka-python` dependency exists, and `KafkaConnectorConfig` has **no
+    `bootstrap.servers`** field. **Real Kafka = a small, well-scoped add** (implement one
+    `KafkaConnector(KafkaConnectorBase)` over a client lib + add the dep + add broker-connection
+    config + wire the CLI dispatch), not a rewrite.
   - **REST — real.** `LocalRestConnector` uses `urllib.request` against any URL (auth + pagination
     modes exist). This one is genuinely usable.
   - **Object storage — s3 + local dir only** (source read via `path_utils`; same scheme limit as B-6).
-- **Decision needed (owner), per mechanism:** which are in scope for v1 vs roadmap? Likely:
-  real multi-DB SQL ingest (JDBC via Spark `spark.read.jdbc`, or a Python driver matrix), a real
-  Kafka consumer, cloud object-storage sources (falls out of B-6). At minimum, **the README/PRD must
-  state the real ingest surface** (REST + sqlite-replay demo + local/s3 object storage) rather than
+- **Design note — object storage is the universal ingress; don't over-invest in streaming.** In
+  enterprise deployments, streaming ingest (Kafka/Kinesis/Event Hubs) is normally owned by
+  cloud-native infra built for it — AWS Lambda event-source mapping, Kafka Connect S3 sink, Kinesis
+  Firehose, Flink, Event Hubs Capture — which **lands raw files into object storage**; this pipeline
+  then picks them up via the object-storage connector. So a rock-solid, multi-cloud **object-storage
+  path (B-6) is the high-value work**, and a real Kafka broker consumer is a *low-priority
+  convenience* (demos, small no-infra deployments), not a blocker. Prioritise B-6 over a real Kafka
+  consumer.
+- **Decision needed (owner), per mechanism:** which are in scope for v1 vs roadmap? Suggested:
+  **(high)** multi-DB SQL ingest (JDBC via Spark `spark.read.jdbc`, or a Python driver matrix) +
+  cloud object-storage sources (falls out of B-6); **(low)** a real Kafka consumer (basic capability
+  only — enterprises use infra to land to object storage). At minimum, **the README/PRD must state
+  the real ingest surface** (real REST + sqlite-replay demo + local/s3 object storage) rather than
   imply production Kafka/JDBC.
 - **Files:** [ingest/connectors/](src/elt_pipeline/ingest/connectors/),
   [config/models.py](src/elt_pipeline/config/models.py), README/PRD.
