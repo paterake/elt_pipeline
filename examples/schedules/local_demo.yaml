@@ -34,6 +34,34 @@ jobs:
       - --entity
       - my_entity
 
+  - name: ingest-shipments
+    argv:
+      - ingest
+      - run
+      - /absolute/path/to/pipeline.yaml
+      - --environment
+      - default
+      - --root-path
+      - /absolute/path/to/runtime
+      - --source
+      - my_source
+      - --entity
+      - shipments
+
+  - name: normalize-shipments
+    argv:
+      - normalize
+      - run
+      - /absolute/path/to/pipeline.yaml
+      - --environment
+      - default
+      - --root-path
+      - /absolute/path/to/runtime
+      - --source
+      - my_source
+      - --entity
+      - shipments
+
   - name: sql-compile
     argv:
       - sql

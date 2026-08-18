@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -53,7 +54,8 @@ def test_object_storage_example_runs_ingest_and_normalize(tmp_path: Path) -> Non
         ]
     )
     ingest_payload = json.loads(ingest_result.stdout)
-    assert ingest_payload["result_count"] == 1
+    # The config declares two entities (orders + shipments); a no-entity run does both.
+    assert ingest_payload["result_count"] == 2
     assert ingest_payload["results"][0]["connector_type"] == "object_storage"
 
     normalize_result = _run_cli(
@@ -66,7 +68,7 @@ def test_object_storage_example_runs_ingest_and_normalize(tmp_path: Path) -> Non
         ]
     )
     normalize_payload = json.loads(normalize_result.stdout)
-    assert normalize_payload["processed_count"] == 1
+    assert normalize_payload["processed_count"] == 2
     assert normalize_payload["results"][0]["bypassed"] is False
     assert normalize_payload["results"][0]["table_manifests"]
 
@@ -183,9 +185,12 @@ def test_sql_example_package_compile_and_run(tmp_path: Path, spark_session) -> N
         ]
     )
     compile_payload = json.loads(compile_result.stdout)
-    assert compile_payload["model_count"] == 2
+    assert compile_payload["model_count"] == 5
     assert [model["model_id"] for model in compile_payload["models"]] == [
+        "level3.inventory.canonical_shipments",
         "level3.sales.base_orders",
+        "level3.sales.canonical_orders",
+        "level3.sales.orders_ingest_snapshot",
         "level4.sales.order_summary",
     ]
 
@@ -208,7 +213,7 @@ def test_sql_example_package_compile_and_run(tmp_path: Path, spark_session) -> N
         ]
     )
     run_payload = json.loads(run_result.stdout)
-    assert run_payload["model_count"] == 2
+    assert run_payload["model_count"] == 5
     assert Path(run_payload["artifacts"]["audit_path"]).exists()
 
     rows = sorted(
@@ -401,23 +406,24 @@ def test_schedule_example_runs_after_placeholder_resolution(tmp_path: Path) -> N
     payload = json.loads(result.stdout)
 
     assert payload["success"] is True
-    assert payload["executed_count"] == 5
-    assert [job["status"] for job in payload["jobs"]] == [
-        "success",
-        "success",
-        "success",
-        "success",
-        "success",
-    ]
+    assert payload["executed_count"] == 7
+    assert [job["status"] for job in payload["jobs"]] == ["success"] * 7
 
 
 def _run_cli(args: list[str]) -> subprocess.CompletedProcess[str]:
+    # The example L3/L4 flows are exercised through the plain-parquet parity path so the
+    # tests can read warehouse output directly (warehouse/level<N>/<table>). The CLI runs
+    # in its own process and cannot see the in-process ELT_PIPELINE_TEST_SPARK_ICEBERG
+    # conftest knob, so select the parity path via the CLI's own env override; otherwise it
+    # uses the production Iceberg-on default and writes to a catalog instead.
+    env = {**os.environ, "ELT_PIPELINE_ICEBERG_ENABLED": "false"}
     return subprocess.run(
         [sys.executable, "-m", "elt_pipeline", *args],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 

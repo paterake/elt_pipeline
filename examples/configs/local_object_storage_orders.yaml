@@ -8,6 +8,11 @@ sources:
     entities:
       - name: orders
         extraction:
-          bucket_path: examples/data/object_storage
+          bucket_path: examples/data/object_storage/orders
+          payload_format: json
+          sync_mode: full
+      - name: shipments
+        extraction:
+          bucket_path: examples/data/object_storage/shipments
           payload_format: json
           sync_mode: full

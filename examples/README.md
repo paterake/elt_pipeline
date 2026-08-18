@@ -72,7 +72,7 @@ uv run elt-pipeline ingest run examples/configs/local_rest_orders.yaml \
 
 ## SQL Models
 
-The downstream SQL model package lives under `examples/sql/local_demo/`. Its `level3.sales.base_orders` model declares a `sources` entry pointing at the `orders` table produced by the Object Storage JSON example (`source_name: local_files`, `entity_name: orders`), so run that ingest/normalize pair first to produce real `level2` data before running the SQL package.
+The downstream SQL model package lives under `examples/sql/local_demo/`. It builds five models from the `local_files` source produced by the Object Storage JSON example — four `sales` models over the `orders` entity (`base_orders`, `canonical_orders`, `orders_ingest_snapshot`, and the `level4.sales.order_summary` datamart) plus `level3.inventory.canonical_shipments` over the `shipments` entity. Both entities are declared in `local_object_storage_orders.yaml`, so run the ingest/normalize pair (no `--entity` flag processes both) first to produce real `level2` data before running the SQL package.
 
 ## Publish / Export Happy Path
 

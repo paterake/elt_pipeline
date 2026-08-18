@@ -1,11 +1,14 @@
 name: canonical_shipments
 stage: level3
 domain: inventory
-description: "Canonical shipments table — demonstrates the standard late-arrival pattern. No explicit partition_columns, so it relies on the L3 convention default of source_name plus business_date. load_mode partition_overwrite means dynamic partition overwrite scopes writes to only the source_name and business_date tuples appearing in this batch."
+description: "Canonical shipments table — demonstrates event-day partitioning. Explicit partition_columns of source_name plus business_date (=ship_date) so each shipment lands in its own event-day partition, the way canonical models cluster data by when the event happened rather than when it arrived."
 materialization: table
-load_mode: partition_overwrite
+load_mode: full_refresh
 target:
   table_name: canonical_shipments
+  partition_columns:
+    - source_name
+    - business_date
 sources:
   - logical_name: raw_shipments
     source_name: local_files

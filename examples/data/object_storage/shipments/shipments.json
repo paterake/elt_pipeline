@@ -1,0 +1,16 @@
+[
+  {
+    "shipment_id": "S-100",
+    "order_id": "A-100",
+    "carrier": "acme_freight",
+    "tracking_number": "TRK-0001",
+    "ship_date": "2026-01-01"
+  },
+  {
+    "shipment_id": "S-200",
+    "order_id": "A-200",
+    "carrier": "acme_freight",
+    "tracking_number": "TRK-0002",
+    "ship_date": "2026-01-02"
+  }
+]
