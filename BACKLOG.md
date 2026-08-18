@@ -19,7 +19,9 @@
 
 Paste this verbatim to boot a fresh session warm (no `use-context`/PCO skill exists in this repo, so this is the no-skill form):
 
-> `From BACKLOG.md: continue. First run the Verification command in "Environment & Verification" to confirm the baseline, then work the item named in "Resume (start here)".`
+> `from BACKLOG.md, continue`
+
+The session reads the **Resume (start here)** line for the next item, and the **Environment & Verification** section for the JDK export and the `ELT_PIPELINE_TEST_SPARK_ICEBERG=0` knob before running anything. (If the cold session is a non–Claude-Code tool that doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, then …`.)
 
 ## Status snapshot
 
