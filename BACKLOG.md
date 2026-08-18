@@ -10,11 +10,10 @@
 ## Resume (start here)
 
 - **D-0 is DECIDED (owner, 2026-08-18): Path A now — publish honestly; Path B (multi-cloud) is
-  roadmap.** So **do TRANCHE 1 first**, in order: **D-1** (make PRD 08 ↔ PRD 10 consistent — the
-  safe first task, start here) → **I-1 *doc pass only*** (state the real ingest surface in
-  README/PRD: real REST + sqlite-replay demo + local/s3 object storage; do **not** implement
-  Kafka/JDBC now) → **D-2** (publish the capability maturity matrix). Completing those three = the
-  repo can go public with accurate scope.
+  roadmap.** So **do TRANCHE 1 first**, in order: **D-1 ✅ Done** → **I-1 *doc pass only***
+  (state the real ingest surface in README/PRD: real REST + sqlite-replay demo + local/s3 object
+  storage; do **not** implement Kafka/JDBC now) → **D-2** (publish the capability maturity matrix).
+  Completing those three = the repo can go public with accurate scope.
 - **Everything else is roadmap (tranche 2), do NOT start it in this pass:** `B-*` (multi-cloud
   storage — prefer B-6 the facade when pulled forward), `I-1` implementation (real Kafka/JDBC), and
   `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment, secrets, governance,
@@ -40,13 +39,12 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 - **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311 passed / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
 - **Captured:** 2026-08-18. Origin: a portability + platinum review. Storage IO implements
-  **`s3://` + local `file://` only** while [PRD 10 §6](docs/prd/10-prd-architecture-and-lifecycle.md)
-  advertises 6 schemes + multi-cloud "0 LOC" (code matches [PRD 08](docs/prd/08-prd-storage-root-uri-io-dispatch.md)
-  v1 = s3+file); ingest is local-demo-grade (real REST, sqlite-only SQL, Kafka file-replay); and the
-  operational surface (Iceberg maintenance, observability, orchestration, deployment, secrets,
-  governance, OpenLineage, DQ quarantine) is bronze→silver. **D-0 decided: Path A (publish honestly)
-  now; B + G-* are roadmap.** The backlog + this decision are committed. **Active: tranche 1 →
-  start at D-1.**
+  **`s3://` + local `file://` only** (D-1 closed: PRD 10 §6 + README now state the implemented scope
+  and carry an explicit multi-cloud roadmap subsection; PRD 08 was already consistent); ingest is
+  local-demo-grade (real REST, sqlite-only SQL, Kafka file-replay); and the operational surface
+  (Iceberg maintenance, observability, orchestration, deployment, secrets, governance, OpenLineage,
+  DQ quarantine) is bronze→silver. **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
+  The backlog + this decision are committed. **Active: tranche 1 → start at I-1 (doc pass only).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -174,24 +172,50 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 - **Owner:** maintainer. Record the choice here, then set the Resume line to D-1.
 - **Verification:** none (decision only). Note the choice in this item's Done line.
 
-#### D-1 — Make PRD 08 and PRD 10 mutually consistent (needed in BOTH paths)  ⏳
+#### D-1 — Make PRD 08 and PRD 10 mutually consistent (needed in BOTH paths)  ✅ Done (2026-08-18)
 - **Symptom:** [PRD 10 §6](docs/prd/10-prd-architecture-and-lifecycle.md) (lines ~31, 245, 251-254)
-  claims 6 URI schemes and "runs identically on AWS/GCP/Azure/Databricks/Polaris, 0 LOC";
+  claimed 6 URI schemes and "runs identically on AWS/GCP/Azure/Databricks/Polaris, 0 LOC";
   [PRD 08 §P2](docs/prd/08-prd-storage-root-uri-io-dispatch.md) scopes v1 to `s3://` + `file://`
-  and mandates the other schemes fail fast. The code follows PRD 08. README frames it as
-  "local-first … typically parquet for local workflows."
-- **Decision:**
-  - **If Path A:** rewrite PRD 10 §6 + the cloud-portability table to state the *implemented*
-    scope (S3 + local; catalogs glue/rest/nessie/hive/jdbc/hadoop). Move the multi-cloud storage
-    matrix into an explicit "Roadmap / not-yet-implemented" subsection. Align the README.
-  - **If Path B:** update PRD 08's "v1 scope" to include the schemes you implement, and keep
-    PRD 10 in sync as each backend lands (don't claim a backend before its B-item is Done).
-- **Files:** [docs/prd/10-prd-architecture-and-lifecycle.md](docs/prd/10-prd-architecture-and-lifecycle.md),
-  [docs/prd/08-prd-storage-root-uri-io-dispatch.md](docs/prd/08-prd-storage-root-uri-io-dispatch.md),
-  [README.md](README.md).
-- **Verification:** docs review — grep both PRDs for scheme lists and confirm they agree with
-  `_SUPPORTED_SCHEME_PREFIXES` in [path_utils.py](src/elt_pipeline/shared/path_utils.py); no
-  cloud is claimed whose B-item is not Done.
+  and mandates the other schemes fail fast. The code follows PRD 08. README framed it as
+  "local-first … typically parquet for local workflows" (already conservative but lacked an explicit boundary).
+- **Decision (Path A, per D-0):** rewrite PRD 10 §Positioning and §6 to state the *implemented* scope
+  (S3 + local) and move the multi-cloud storage matrix into an explicit "Roadmap / not-yet-implemented"
+  subsection (§6.3). Align the README by adding a new high-level "Current Scope and Capabilities
+  (Honest Boundary)" section immediately after DAMA framing (storage backends / ingest mechanisms /
+  serving/catalogs / platinum roadmap), and correct the test-gate line (the gate is
+  `bash scripts/run_tests.sh`, not a bare `uv run pytest`). PRD 08 required **no changes** — it was already
+  consistent with the code (§P2 explicit v1 scope of s3+local, §Anti-scope explicitly excludes GCS/Azure/ADLS/
+  DBFS/HDFS, fail-fast L81-87 matches implementation exactly).
+- **Files changed:**
+  - [docs/prd/10-prd-architecture-and-lifecycle.md](docs/prd/10-prd-architecture-and-lifecycle.md)
+    — §Positioning L27-L32 reworded (native AWS S3 only + roadmap; §6 split into 6.1 (implemented storage:
+    s3/file/bare-POSIX); §6.2 (implemented env table: Workstation + AWS S3/Glue); new §6.3 (Roadmap, all
+    5 environments flagged as not implemented, with scope notes per env and explicit "adding each requires ≈18 path_utils
+    branches + Spark FS wiring + emulator tests"); closing sentence on catalog-implemented vs storage scheme). Catalog enum kept.
+  - [README.md](README.md) — new § "Current Scope and Capabilities (Honest Boundary)" L18-L41
+    (storage implemented/roadmap, ingest mechanisms, serving/catalogs implemented, platinum roadmap);
+    Install/test-gate section corrected to `bash scripts/run_tests.sh` with JDK exports + per-file
+    pytest caveat.
+  - PRD 08: unchanged (already consistent with code).
+- **Verification:**
+  1. **Docs review (grep cross-doc scheme alignment):
+     - `_SUPPORTED_SCHEME_PREFIXES` in
+     [path_utils.py:22-24](src/elt_pipeline/shared/path_utils.py#L22-L24)
+     = `{s3://, file://}`.
+     - PRD 08 §P2 L77-79 lists supported for v1 s3:// + file:///bare POSIX — matches ✓
+     L81 fail-fast list includes (s3a://, gs://, hdfs://, wasbs://) — unchanged ✓
+     - PRD 10 §6.1 implemented storage scheme list = {s3://, file://, bare POSIX} matches prefixes ✓
+     §6.2 implemented cloud table = Workstation/AWS S3 only (both shippable) + explicit note that the
+     6 catalog types are genuinely implemented but combining them with non-S3 storage schemes = the
+     L282 closing sentence). §6.3 roadmap = GCP/Azure/Databricks/Polaris explicitly labelled "not implemented in current release" ✓
+     - README Honest Boundary § = storage s3+local implemented; 5 storage roadmap;
+     ingest real REST/sqlite-only/sql/Kafka-JSONL-only; G-* platinum items roadmap pointer to PRD 10 §6.3 ✓
+     Result: all three docs agree; every "implemented" claim is a subset of `{s3://, file://, bare POSIX};
+     all unsupported schemes are in fail-fast lists or roadmap sections only; zero claims as shippable.
+  2. **Gate:** `bash scripts/run_tests.sh` → TEST GATE: PASS (all files green) — 311 passed / 0 failed.
+     TOTAL_PASSES: 311. EXITCODE: 0. (Doc-only edits; zero code touched.)
+  3. **Lint:** `uv run ruff check .` → All checks passed! RUFF_EXIT: 0.
+- **Owner:** maintainer (D-0 Decided Path A; executed as doc-only reconciliation in this session. Next item: I-1 doc pass.
 
 #### B-0 — Delegate control-plane IO to Spark's Hadoop `FileSystem` (Path B, strategy B2 — alternative to B-6)  ⏳
 - **Goal:** make the storage scheme a **pure config knob** by routing the Python control plane's

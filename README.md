@@ -15,6 +15,31 @@ The platform is designed to align with DAMA-DMBOK v2 principles for:
 
 The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` through `level5` naming used here. Instead, those levels are the platform's chosen architecture model for operationalizing DMBOK-aligned concerns in a concrete implementation.
 
+## Current Scope and Capabilities (Honest Boundary)
+
+This section states what the code actually ships, so no reader infers more than is built. For the formal capability maturity matrix, see the Roadmap / Capability Matrix linked from [PRD 10](docs/prd/10-prd-architecture-and-lifecycle.md).
+
+**Storage backends — implemented and tested:**
+- Local POSIX filesystem (bare paths or `file://` URIs) — fully implemented, default on a laptop.
+- AWS S3 (`s3://` URIs) — Python control plane via `boto3`, Spark data plane via Spark's native S3 / EMRFS; unit-tested with an in-process S3 fake.
+
+**Storage backends — not yet implemented (roadmap):**
+- GCS (`gs://`), ADLS Gen2 (`abfss://`), Azure Blob (`wasbs://`), Databricks DBFS (`dbfs://`), HDFS (`hdfs://`) — these schemes are hard-rejected with a clear error. Adding them requires per-scheme branches in `src/elt_pipeline/shared/path_utils.py`, Spark Hadoop FS credential wiring, and emulator-backed integration tests.
+
+**Ingest mechanisms — implemented:**
+- **REST** (real `urllib.request`-based connector: auth, pagination modes). Production-usable.
+- **Object storage source read** (local dirs + `s3://` buckets via `path_utils` scheme dispatch).
+- **SQL (SQLite only)** — Python `sqlite3` driver; the connector base class is abstract for other DBs.
+- **Kafka (local JSONL file replay only)** — the real broker consumer is not implemented; the `KafkaConnectorBase` abstraction is in place and a concrete broker client is a small, well-scoped add.
+
+**Serving / catalogs — implemented:**
+- Iceberg L3/L4 tables with a 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`, `hive_metastore`, `glue`.
+- Trino 468 JDBC serving endpoint (first-class spoke; SQLite-backed metastore default for workstation).
+- Airflow reference orchestration wrapper; OpenLineage-compatible lineage adapter; row-count DQ adapter.
+
+**Operational / platinum-hardening items — roadmap (not blocking publication):**
+Iceberg maintenance (compaction / snapshot expiry / orphan cleanup), metrics and tracing export, a real secrets backend (Vault / cloud SM), PII classification and masking, a deeper DQ library with quarantine/DLQ, and container / Helm deployment artifacts — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
+
 ## Source Code references
 
 **Architecture & lifecycle overview (canonical):**
@@ -68,8 +93,16 @@ uv sync --extra dev --extra spark
 
 Run the test suite:
 
+The quality gate is **`bash scripts/run_tests.sh`** — Spark-backed test files each run in their own process (one JVM = one SparkSession). A bare single-file test is fine locally with `uv run pytest tests/<file>.py`:
+
 ```bash
-uv run pytest
+# Full gate (311+ tests, per-file Spark isolation)
+export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23"
+export PATH="$JAVA_HOME/bin:$PATH"
+bash scripts/run_tests.sh
+
+# Individual file (e.g. non-Spark)
+uv run pytest tests/test_path_utils.py
 ```
 
 Run the CLI:

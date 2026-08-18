@@ -24,11 +24,11 @@ This PRD consolidates architecture conclusions from the platform design sessions
 
 ## Positioning
 
-`elt_pipeline` is a config-driven, Spark/Iceberg/Trino data platform runtime for local-first workstation development with native cloud portability. The execution engine is Spark (writer) and the serving engine is Trino (JDBC reader). Iceberg provides the table-format contract at L3/L4; L2 is written as plain parquet with no catalog entity, ensuring the simplest possible staging model before value accrues at conformed layers.
+`elt_pipeline` is a config-driven, Spark/Iceberg/Trino data platform runtime for local-first workstation development with native AWS S3 cloud portability and a roadmap for multi-cloud storage. The execution engine is Spark (writer) and the serving engine is Trino (JDBC reader). Iceberg provides the table-format contract at L3/L4; L2 is written as plain parquet with no catalog entity, ensuring the simplest possible staging model before value accrues at conformed layers.
 
 The platform is explicitly designed so that:
 - A pipeline author can run the full end-to-end loop (ingest → normalize → sql → publish) on a laptop with zero cloud dependencies.
-- The same package manifest (YAML + SQL files) runs identically on AWS, GCP, Azure, Databricks, and Snowflake Polaris — configuration-only, zero lines of code change.
+- The same package manifest (YAML + SQL files) runs identically on **local POSIX** and **AWS S3** storage backends — configuration-only, zero lines of code change. Multi-cloud storage (GCS, ADLS, Databricks) is roadmap (see §6.3).
 - JDBC serving is a first-class spoke: a BI tool or Jupyter notebook can always connect to a queryable `jdbc:trino://` endpoint emitted by every publish stage.
 
 ---
@@ -238,22 +238,38 @@ and no mapping_version mutation are permitted in this scope.**
 
 ## 6. Portability
 
-The platform is portable across storage, cloud, and Iceberg catalog backends via configuration only.
+The platform is portable across storage backends and Iceberg catalog backends via configuration only. The storage-portability contract aligns exactly with [PRD 08 §P2](08-prd-storage-root-uri-io-dispatch.md): scheme prefix is the single routing key, unsupported schemes fail fast.
 
-### Storage Backends
+### 6.1 Storage Backends — Implemented Scope
 
-L1/L2 file handoff is via string URIs (scheme + absolute path) — never via `pathlib` joins at root. Supported schemes: `file://`, `s3a://`, `gs://`, `abfss://`, `wasbs://`, `dbfs://`. The single URI scheme is the routing key; no mount-point inference, no path re-prefixing. See [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md).
+L1/L2 file handoff is via string URIs (scheme + absolute path) — never via `pathlib` joins at root. **Implemented and tested storage schemes:**
 
-### Cloud Portability
+| Scheme | Backend | Notes |
+|--------|---------|-------|
+| `s3://` | AWS S3 (Python control plane: `boto3`; Spark data plane: Spark's native S3 / EMRFS) | Unit-tested with an in-process S3 fake. |
+| `file://` | Explicit local POSIX | Handled via `pathlib.Path` at leaf I/O call sites only. |
+| *(no scheme)* | Bare local POSIX path | Treated as local filesystem; `pathlib.Path` at leaf I/O. |
 
-| Environment | Required changes |
-|-------------|------------------|
-| AWS (S3 + Glue) | Configure `catalog_type=glue` + S3 URI roots. 0 LOC. |
-| GCP (GCS + BigLake) | Configure `catalog_type=iceberg (rest)` + GCS URI roots. 0 LOC. |
-| Azure (ADLS Gen2) | Configure `catalog_type=rest` + ABFS URI roots. 0 LOC. |
-| Databricks (Unity) | Configure `catalog_type=hive_metastore` + Databricks Spark launcher. 0 LOC. |
-| Snowflake Polaris — Pattern A | Polaris ships an Iceberg-compatible REST catalog. Drop the single `polaris-catalog.jar` into Spark jars and set `catalog_type=rest` with Polaris endpoint. 0 LOC, 1 jar. |
-| Snowflake Polaris — Pattern B | If Polaris REST protocol diverges: add one dispatch branch (~20 LOC) in `spark/session.py` to select the Snowflake-specific `Catalog` implementation. No stage code change. |
+**Unsupported storage schemes fail fast and sharp** with a clear error — they are never silently coerced. The current fail-fast list includes (at minimum): `s3a://`, `gs://`, `abfss://`, `wasbs://`, `dbfs://`, `hdfs://`. See [PRD 08 §P2](08-prd-storage-root-uri-io-dispatch.md) for the exact error message.
+
+### 6.2 Cloud & Catalog Portability — Implemented Scope
+
+| Environment | Storage backend | Supported catalog types | Required changes |
+|-------------|-----------------|-------------------------|------------------|
+| **Workstation / laptop** | Local POSIX (`file://` or bare paths) | `hadoop` (writer default), `jdbc` (serving default, SQLite-backed) | 0 LOC. Defaults. |
+| **AWS (S3 + Glue)** | `s3://` (AWS S3) | `glue`, `jdbc`, `rest`, `nessie`, `hive_metastore`, `hadoop` | Set `ELT_PIPELINE_WRITER_CATALOG_TYPE=glue` + S3 URI roots. 0 LOC config change. Spark FS credentials use ambient IAM role on EMR; see [PRD 08 §P4](08-prd-storage-root-uri-io-dispatch.md). |
+
+### 6.3 Multi-Cloud Storage & Catalogs — Roadmap (Not Yet Implemented)
+
+The architecture (single-seam scheme dispatch in [PRD 08](08-prd-storage-root-uri-io-dispatch.md), 6-way catalog enum) is designed to support the environments below. They are **not implemented in the current release** — adding each requires scheme branches in `elt_pipeline/shared/path_utils.py` (≈18 functions per backend), Spark Hadoop FS config and credential wiring, and emulator-backed integration tests. Tracked per-backend items are added when pulled forward from this roadmap.
+
+| Environment | Storage scheme(s) needed | Catalog approach | Roadmap notes |
+|-------------|---------------------------|------------------|---------------|
+| GCP (GCS + BigLake) | `gs://` | `catalog_type=rest` (BigLake Iceberg REST) or `hive_metastore` (Dataproc) | Requires GCS SDK branch in `path_utils`; Spark `spark.hadoop.fs.gs.*` config; credentials model (workload identity). |
+| Azure (ADLS Gen2) | `abfss://` | `catalog_type=rest` or OneLake-compatible | Requires Azure SDK branch; authority parsing (`account@account.dfs.core.windows.net`); `spark.hadoop.fs.azure.*` + credential config. `wasbs://` (ADLS Gen1 / blob) is **not** on the roadmap; fail-fast as unsupported. |
+| Databricks (Unity) | Covered by the backing-store scheme above (S3/GCS/ADLS — `dbfs://` as an explicit scheme is **not** on the roadmap) | `catalog_type=rest` (Unity Catalog REST) — Databricks storage is ADLS/S3/GCS underneath + Unity as the catalog | Recommendation: document the Unity-as-REST-catalog config + add a Databricks example YAML; do NOT add a `dbfs://` scheme branch. |
+| Snowflake Polaris — Pattern A | Backing-store scheme from above (S3/GCS/ADLS) | Polaris ships an Iceberg-compatible REST catalog. Set `catalog_type=rest` with Polaris endpoint; drop the `polaris-catalog.jar` into Spark jars. | 0 LOC platform change; 1 jar + config. |
+| Snowflake Polaris — Pattern B | Backing-store scheme from above | If Polaris REST protocol diverges from standard Iceberg REST: add one dispatch branch (~20 LOC) in `spark/session.py` to select the Snowflake-specific `Catalog` implementation. No stage code change. |
 
 ### Six-Way Catalog Type Enum
 
@@ -262,6 +278,8 @@ Both the writer catalog and the serving catalog accept the same six-way enum. Th
 ```
 hadoop | jdbc | rest | nessie | hive_metastore | glue
 ```
+
+Catalog types are genuinely implemented across both writer and serving paths; combining a catalog type with a **non-implemented storage scheme** (row 2+ in the roadmap table above) is the combination that is not yet shippable.
 
 ---
 
