@@ -578,7 +578,12 @@ def _build_serving_endpoint(
         return manifest_default
 
     enabled = _iceberg_effective_enabled(args, runtime_overrides=ro)
-    if enabled is None:
+    if not enabled:
+        # Serving is an Iceberg-bound spoke (PRD 10 §8): the serving_endpoint is
+        # the jdbc:trino:// URL for the associated L3/L4 Iceberg tables. When
+        # Iceberg is explicitly disabled (plain-parquet escape hatch) there is no
+        # catalog and no Trino serving spoke, so there is no endpoint to emit.
+        # `enabled is None` (no tier matched) is likewise treated as "no serving".
         return None
     catalog_name = (
         _cli("iceberg_catalog_name")
