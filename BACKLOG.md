@@ -9,17 +9,16 @@
 
 ## Resume (start here)
 
-- **D-0 is DECIDED (owner, 2026-08-18): Path A now — publish honestly; Path B (multi-cloud) is
-  roadmap.** So **do TRANCHE 1 first**, in order: **D-1 ✅ Done** → **I-1 ✅ Done (doc pass only)**
-  (state the real ingest surface in README/PRD: real REST + sqlite-replay demo + local/s3 object
-  storage; Kafka/JDBC left as roadmap, not implemented) → **D-2 next** (publish the capability
-  maturity matrix — storage backends, ingest mechanisms, catalogs, serving, platinum items as
-  Production / Demo / Roadmap). Completing those three = the repo can go public with accurate scope.
-- **Everything else is roadmap (tranche 2), do NOT start it in this pass:** `B-*` (multi-cloud
-  storage — prefer B-6 the facade when pulled forward), `I-1` implementation (real Kafka/JDBC), and
-  `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment, secrets, governance,
-  OpenLineage, DQ quarantine). They stay ⏳ and get worked one-per-session after publication, each
-  marked in D-2's maturity matrix as "Roadmap" until done.
+- **TRANCHE 1 COMPLETE (publication-readiness gate, 2026-08-19):** D-0 ✅ → D-1 ✅ → I-1 ✅ (doc pass
+  only) → **D-2 ✅**. The repo is publication-ready with honest scope: README prominently links the
+  [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md) which classifies every feature as
+  🟢 Production / 🟠 Demo / ⏳ Roadmap. Cross-doc claims match the code.
+- **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** `B-*`
+  (multi-cloud storage — prefer B-6 the facade when pulled forward), `I-1` implementation (real
+  Kafka/JDBC), and `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment,
+  secrets, governance, OpenLineage, DQ quarantine) + `M-1` (connector extensibility). Each is ⏳ and
+  gets worked one-per-session when a consumer needs it; every close must also update the matching
+  row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
 - **Framing:** the test gate is already 🟢 green; these are **capability/accuracy gaps between
   the documented claims and the implemented v1**, not regressions. "Done" for this backlog =
@@ -39,15 +38,17 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 - **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311 passed / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-18 (re-stamped after I-1 doc pass). Origin: a portability + platinum review.
-  Storage IO implements **`s3://` + local `file://` only** (D-1 closed: PRD 10 §6 + README state the
-  implemented scope with explicit multi-cloud roadmap; PRD 08 was already consistent); ingest surface
-  is now explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
+- **Captured:** 2026-08-19 (re-stamped after D-2 publication gate closed). Origin: a portability +
+  platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
+  surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
-  marked roadmap); and the operational surface (Iceberg maintenance, observability, orchestration,
-  deployment, secrets, governance, OpenLineage, DQ quarantine) is bronze→silver.
-  **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.** Backlog + decision committed.
-  **Active: tranche 1 → next at D-2 (publish capability maturity matrix).**
+  marked roadmap); operational surface (Iceberg maintenance, observability, orchestration,
+  deployment, secrets, governance, OpenLineage, DQ quarantine) is bronze→silver; **D-2 closed**
+  (Capability Maturity Matrix at `docs/CAPABILITY_MATURITY_MATRIX.md` classifies every feature as
+  🟢/🟠/⏳ and is linked prominently from README top).
+  **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
+  **D-2 closed → TRANCHE 1 (publication-readiness) COMPLETE.**
+  **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -505,14 +506,50 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
 - **Verification:** a run with bad rows quarantines them + proceeds (non-blocking) or blocks
   (blocking), asserted in tests.
 
-#### D-2 — Publish an honest capability maturity matrix  🔴 HIGH (publication gate)  ⏳
+#### D-2 — Publish an honest capability maturity matrix  🔴 HIGH (publication gate)  ✅ Done (2026-08-19)
 - **Goal:** the single artifact that makes going public honest — a table classifying every
   capability as **Production / Demo / Roadmap**, so no reader infers more than is built. Ties
   together D-1 (portability), I-1 (ingest), and the G-* tranche.
-- **Scope:** a `docs/` maturity matrix (storage backends, ingest mechanisms, catalogs, serving,
-  maintenance, observability, orchestration, security/governance, DQ, lineage) with the honest
-  status of each; link it from the README top. Update it as items close.
-- **Verification:** every "Production" claim maps to a passing test/feature; no claim outruns the code.
+- **Scope delivered:**
+  - Created [docs/CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) as a
+    standalone canonical reference. Status: Canonical reference. 13 capability groups covering:
+    1. Storage backends (local/S3=🟢; GCS/ADLS/wasbs/dbfs/hdfs=⏳)
+    2. Ingest mechanisms (REST + ObjStore local/S3=🟢; SQLite SQL + JSONL Kafka=🟠; JDBC/real broker/GCS-ADLS objstore=⏳)
+    3. Iceberg catalogs writer (hadoop/jdbc/glue/rest/nessie/hive_metastore=🟢) + serving (jdbc/hadoop/rest/glue/nessie/snowflake=🟢)
+    4. JDBC serving (Trino 468=🟢; auth/TLS=⏳)
+    5. Iceberg maintenance (all 4=⏳)
+    6. Observability (structured logging+audit=🟠; metrics/tracing/alerting=⏳)
+    7. Orchestration (basic ordered runner=🟠; Airflow/Dagster/Prefect=⏳)
+    8. Deployment (sdist/wheel=🟠; Docker/compose/Helm=⏳)
+    9. Secrets (pass-through stub + redaction=🟠; Vault/AWS SM/Azure KV/GCP SM=⏳)
+    10. Governance (audit trail=🟠; PII masking/retention/erasure=⏳)
+    11. Data Quality (seam + row-count adapter=🟠; quarantine/check library=⏳)
+    12. Lineage (bespoke OL-shaped=🟠; OpenLineage wire-compat=⏳)
+    13. Connector extensibility (4 families=🟢; plugin registry=⏳)
+  - Added **top-of-readme prominent link** ("Honest scope at a glance: Capability Maturity Matrix") at
+    README line 5, plus updated the Honest Boundary § intro to link to the matrix while retaining the
+    cross-reference to PRD 10 §6.3 for the portability environment table.
+- **Verification:**
+  1. Every 🟢 Production claim maps to a shipped feature + test: local & S3 storage via path_utils
+     (tested in [tests/test_path_utils.py](tests/test_path_utils.py)), REST + objstore ingest +
+     SQLite-SQL + JSONL-Kafka all exercised in `test_examples.py` / `test_cli.py`, all 6+6 Iceberg
+     catalog bindings validated in `test_iceberg_catalog_config.py`, Trino JDBC serving exercised
+     end-to-end. No 🟢 claim outruns the code.
+  2. Every 🟠 Demo claim maps to code that is deliberately scoped (SQLite-only enum, JSONL replay,
+     stub secrets, row-count-only DQ) rather than half-implemented: the limitation is explicit in
+     the matrix notes and the README Honest Boundary.
+  3. Every ⏳ Roadmap claim is absent from code or explicitly fail-fast-rejected (gs/abfss/wasbs/dbfs/hdfs
+     schemes all fail fast in `path_utils`).
+  4. Cross-doc link walk: README top → [CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md)
+     resolves. README Honest Boundary § → the matrix + PRD 10 §6.3 both resolve.
+     Matrix §2 Design Note cross-references the B-6 facade roadmap. Matrix §3 catalog caveat correctly
+     ties catalogs to storage backends.
+  5. **Gate:** `bash scripts/run_tests.sh` → TEST GATE: PASS (311 passed / 0 failed).
+     TOTAL_PASSES: 311. EXITCODE: 0. (Doc-only edits; zero code touched.)
+  6. **Lint:** `uv run ruff check .` → All checks passed! RUFF_EXIT: 0.
+- **Owner:** maintainer (D-0 Decided Path A; D-2 closes TRANCHE 1 → repo is publication-ready.
+  Next work: Tranche 2 is on-demand pull-forward, one item per session, starting with B-6 if
+  multi-cloud is needed or G-1 if Iceberg maintenance is the first production gap.
 
 #### M-1 — Connector extensibility (no-code ceiling)  ⏳ (optional / lower priority)
 - **Observation:** ingest connectors are a fixed `if/elif` set (object_storage/kafka/rest/sql) in
@@ -549,6 +586,20 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   capabilities, with matching tables + cross-links. Verification: 4-point cross-doc ingest
   claim alignment review + `bash scripts/run_tests.sh` → 311/0 green +
   `uv run ruff check .` clean.
+
+- **D-2 — Capability maturity matrix + publication gate (2026-08-19).** ✅ Done. Created standalone
+  canonical reference [CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) classifying
+  every feature in 13 groups as 🟢 Production / 🟠 Demo / ⏳ Roadmap with explicit maturity
+  definitions and per-row notes. Groups: storage backends, ingest mechanisms, Iceberg writer
+  catalogs (6 types), Iceberg serving catalogs (6 types incl. snowflake), JDBC serving endpoint,
+  Iceberg maintenance, observability, orchestration, deployment, secrets, governance, data quality,
+  lineage, connector extensibility. README gained a top-of-page "Honest scope at a glance" prominent
+  link directly to the matrix plus the Honest Boundary section intro cross-links both the matrix
+  and PRD 10 §6.3. Every 🟢 claim maps to a tested feature; every 🟠 claim is deliberately scoped
+  with an explicit limitation; every ⏳ claim is either fail-fast-rejected or genuinely roadmap-only.
+  Verification: 6-point check (claim mapping ×3 + cross-doc link walk + gate + lint) all green.
+  `bash scripts/run_tests.sh` → 311/0 green. `uv run ruff check .` clean. **TRANCHE 1 COMPLETE →
+  repo is publication-ready.** Tranche 2 is on-demand pull-forward only (B-* / G-1…G-8 / M-1 / I-1 impl).
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

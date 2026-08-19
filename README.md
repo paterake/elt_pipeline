@@ -2,6 +2,8 @@
 
 Client-neutral, configuration-driven runtime for a governed data platform.
 
+**Honest scope at a glance:** [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md) — classifies every feature as 🟢 Production / 🟠 Demo / ⏳ Roadmap.
+
 `elt_pipeline` is not only an ingestion and transformation tool. It is a governed data platform runtime for moving data through explicit architectural levels with strong auditability, lineage, metadata discipline, replayability, and access-control boundaries.
 
 The platform is designed to align with DAMA-DMBOK v2 principles for:
@@ -17,7 +19,7 @@ The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` t
 
 ## Current Scope and Capabilities (Honest Boundary)
 
-This section states what the code actually ships, so no reader infers more than is built. For the formal capability maturity matrix, see the Roadmap / Capability Matrix linked from [PRD 10](docs/prd/10-prd-architecture-and-lifecycle.md).
+This section states what the code actually ships, so no reader infers more than is built. For the formal, per-capability classification with maturity definitions and notes, see [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md). The cross-doc roadmap and portability environment breakdown also lives in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
 
 **Storage backends — implemented and tested:**
 - Local POSIX filesystem (bare paths or `file://` URIs) — fully implemented, default on a laptop.

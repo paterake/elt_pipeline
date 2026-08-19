@@ -1,0 +1,249 @@
+# Capability Maturity Matrix
+
+## Document Status
+
+- Status: Canonical reference
+- Updated: 2026-08-19 (publication-readiness pass)
+- Owner: maintainer
+
+## Purpose
+
+This matrix classifies every `elt_pipeline` capability by maturity so that consumers,
+contributors, and operators know exactly what is production-tested, demo-only, or on
+the roadmap. Every **Production** entry is backed by a passing test in the green gate
+(`bash scripts/run_tests.sh`). **Demo** entries ship code but with deliberate scope
+limits. **Roadmap** entries are design intent without shipped implementation.
+
+## Maturity definitions
+
+| Label | Meaning | Test & support posture |
+|---|---|---|
+| 🟢 **Production** | Shipped. Automated tests pass. Reliable for real use on the documented scope. | Covered by the default test gate; defects treated as priority bugs. |
+| 🟠 **Demo** | Shipped code exists, but deliberately scoped for bundled examples / zero-dependency workstation proof of concept. Not intended for production use as-documented. | Exercised by the bundled demo. Production-hardening work is a tracked roadmap item. |
+| ⏳ **Roadmap** | Not shipped. Architecture and seams exist (or a design is agreed), but no usable concrete implementation. Honest scoping: consumers should not depend on it. | No tests (none to run). Becomes a work item when pulled forward. |
+
+A reader should never infer more than the row states. If a capability is not listed,
+assume ⏳ Roadmap, not Production.
+
+---
+
+## 1. Storage backends
+
+Root URI schemes supported by the framework's control-plane IO (`path_utils`) and the
+Spark/Iceberg data-plane writes. Control-plane IO (list / exists / mkdir / delete /
+rename / read / write) is pre-Spark for the INGEST phase and co-Spark for SQL staging
+swaps. A scheme is Production only when both planes pass.
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Local POSIX filesystem (bare paths, `file://` URIs) | 🟢 Production | Default workstation path. Full ~18-function coverage in `path_utils`; Spark writes natively. |
+| AWS S3 (`s3://` URIs) | 🟢 Production | `boto3` control-plane + Spark Hadoop `s3a://` / EMRFS data-plane. Unit-tested with an in-process S3 fake. Credentials via ambient IAM role on EMR or standard `boto3` env/config cascade. |
+| Google Cloud Storage (`gs://`) | ⏳ Roadmap | Fail-fast rejected today. Requires: native `google-cloud-storage` branch across ~18 `path_utils` functions, Spark `spark.hadoop.fs.gs.*` config + credential wiring, emulator-backed integration tests. Roadmap strategy: prefer B-6 (pluggable storage-backend facade) when pulled forward. |
+| Azure ADLS Gen2 (`abfss://`) | ⏳ Roadmap | Fail-fast rejected today. Requires: native `azure-storage-file-datalake` branch (with authority parsing for `account@account.dfs.core.windows.net`), Spark `spark.hadoop.fs.azure.*` + credential wiring, Azurite-backed integration tests. |
+| Azure Blob (legacy, `wasbs://`) | ⏳ Roadmap | Explicitly not on the recommended path. When multi-cloud is pulled forward, `wasbs://` fails fast with a pointer to `abfss://`. |
+| Databricks DBFS (`dbfs://`) | ⏳ Roadmap | Databricks deployments are recommended to use the ADLS/S3/GCS storage path natively (B-1/B-2) and bind the Unity catalog as a **REST catalog** — no `dbfs://` scheme required. A first-class Unity example config is the recommended closure, not a scheme implementation. |
+| Hadoop HDFS (`hdfs://`) | ⏳ Roadmap | Fail-fast rejected today. On-prem HDFS was deliberately de-scoped for v1; re-evaluate only if a concrete on-prem deployment need appears. |
+
+---
+
+## 2. Ingest mechanisms
+
+Four first-class connector *families* (`rest`, `sql`, `kafka`, `object_storage`) are
+defined as shared abstractions with a validated lifecycle (config → secrets → client
+→ extract → persist → audit → checkpoint). Concrete implementations per family:
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| REST API source ingest | 🟢 Production | Real `urllib.request` connector. Production-shape auth (basic, API key, static bearer, client-credential token flows), request templating, date-window tokenization, page/offset pagination, envelope+inner-payload extraction, retry/backoff/timeout. Secrets ref is a pass-through stub (see §9). |
+| Object storage source — local + S3 | 🟢 Production | Source discovery and read via `path_utils` scheme dispatch across local POSIX dirs and `s3://` buckets. End-to-end in tests. |
+| Object storage source — GCS / ADLS | ⏳ Roadmap | Tied to the multi-cloud storage B-* work. Closes automatically when B-6 (or B-1/B-2) closes. |
+| SQL database source — SQLite replay | 🟠 Demo | `SqlConnectionDriver` enum = `{sqlite}` only. Uses Python `sqlite3` against a local DB file. Ships exclusively for the bundled example. **There is no JDBC driver and no Postgres/MySQL/MSSQL/Oracle source extraction in v1.** |
+| SQL database source — Multi-DB JDBC / driver matrix | ⏳ Roadmap | Well-scoped add: implement a concrete connector behind the existing `sql.py` abstract base class using JDBC (via `jaydebeapi`) or per-DB Python drivers (psycopg, mysql-connector, etc.). Add driver enum entries + config validation. |
+| Kafka source — JSONL file replay | 🟠 Demo | Broker-shaped abstract base class (offsets, partitions, headers, checkpoints, run loop) is in place. The *only* concrete subclass reads a local JSONL event log. Ships exclusively for the bundled example; no `confluent-kafka`/`kafka-python` dependency, no `bootstrap.servers` config. |
+| Kafka source — Real broker consumer | ⏳ Roadmap | Low-priority convenience for demos and small no-infra deployments. Enterprise deployments normally land streams to object storage via Kafka Connect / Firehose / Event Hubs Capture and consume via the `object_storage` connector (Production). Prioritize B-6 (object storage path) over this. |
+
+### Ingest design note
+
+Object storage is the **universal ingress**. The platform's preferred posture for any
+streaming or high-volume DB extraction is: land raw payloads and CDC events to object
+storage via an infra-native connector (Kafka Connect S3 sink, Firehose, Event Hubs
+Capture, Debezium → S3/GCS/ADLS), then pick them up via the `object_storage` source.
+This keeps this pipeline focused on what it's good at (governed schema evolution +
+replayable lineage + Iceberg serving) and delegates streaming durability to the
+cloud-native tools built for it.
+
+---
+
+## 3. Iceberg catalog bindings
+
+Iceberg tables are used at L3 (canonical) and L4 (datamarts). Two independent catalog
+bindings exist per run — a **writer catalog** (source of truth on the write path) and
+a **serving catalog** (what `elt_pipeline`'s Trino serving endpoint reads). Both
+catalogs are wired from the same 7-type enum; valid types per binding are listed
+below. All 6 valid types in each binding are genuinely wired and callable; their
+Production label does not require a real external catalog to be running.
+
+### 3a. Writer catalog (L3/L4 writes)
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| `hadoop` (filesystem-backed, default writer) | 🟢 Production | Default for workstation. Zero external service; writes directly to storage. |
+| `jdbc` (JDBC-backed metastore) | 🟢 Production | SQLite-backed by default on workstation (auto-downloaded sqlite-jdbc jar). Any JDBC-compatible metastore works. |
+| `glue` (AWS Glue Data Catalog) | 🟢 Production | Set `ELT_PIPELINE_WRITER_CATALOG_TYPE=glue` + S3 URI roots. Credentials via ambient IAM on EMR. Designed to combine with `s3://` storage. |
+| `rest` (Iceberg REST catalog) | 🟢 Production | Connects to any REST-compatible catalog (Polaris, custom, etc.) via configured URI + credentials. |
+| `nessie` (Project Nessie / Dremio Arctic) | 🟢 Production | Nessie catalog URI + branch/tag config via the standard 4-tier config cascade. |
+| `hive_metastore` (Apache Hive Metastore / Dataproc / EMR Hive) | 🟢 Production | Thrift URI config: `thrift://<host>:9083`. Writer-only binding; serving continues via the 6 valid serving types. |
+
+### 3b. Serving catalog (Trino JDBC serving endpoint reads)
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| `jdbc` (default serving) | 🟢 Production | Auto-SQLite metastore default for workstation; zero-service. |
+| `hadoop` | 🟢 Production | Direct filesystem reads; mirrors the writer catalog's `hadoop` binding. |
+| `rest` (Iceberg REST catalog) | 🟢 Production | Trino REST catalog wiring. |
+| `glue` (AWS Glue Data Catalog) | 🟢 Production | Trino Glue catalog via the standard `glue` connector. |
+| `nessie` (Project Nessie / Dremio Arctic) | 🟢 Production | Trino Nessie catalog via URI + ref config. |
+| `snowflake` (Snowflake Polaris Iceberg catalog) | 🟢 Production | Snowflake Polaris-backed Iceberg serving via configured Snowflake catalog URI + credentials. Serving-only type; not available on the writer catalog binding. |
+
+**Important:** The 6 Production catalog types each are Production as a *binding* (enum
+entry validated, Spark/Trino configs emitted, `path_utils` storage scheme dispatched
+correctly). Combining them with a non-S3 / non-local storage scheme (e.g., `gs://` +
+`rest` catalog) requires the corresponding §1 storage backend to also be Production
+— that is the tracked roadmap closure, not a catalog defect.
+
+---
+
+## 4. JDBC serving endpoint
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Trino 468 JDBC serving endpoint | 🟢 Production | First-class spoke. Every L5 publish execution emits an audit record with `serving_endpoint = jdbc:trino://…`. Workstation default binds to the JDBC/SQLite serving catalog + hadoop writer catalog; all 6 serving catalog types above are supported by the endpoint's config generator. |
+| Trino authentication (HTTPS / password / Kerberos) | ⏳ Roadmap | Currently `http_server_authentication_type = "none"` by default. Real deployments need auth + TLS as a documented config surface. |
+
+---
+
+## 5. Iceberg table maintenance
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Data file compaction (`rewrite_data_files`) | ⏳ Roadmap | Critical operational gap. Iceberg tables degrade without compaction (small-file explosion, slow queries). |
+| Snapshot expiry (`expire_snapshots`) | ⏳ Roadmap | Unbounded snapshot + metadata growth without this. |
+| Orphan file cleanup (`remove_orphan_files`) | ⏳ Roadmap | Storage bloat from failed writes and GC. |
+| Manifest rewrite (`rewrite_manifests`) | ⏳ Roadmap | Add-on; lower priority than the three above. |
+
+All four share a delivery vehicle: a `elt maintain …` CLI module invoking Iceberg's
+Spark procedures per L3/L4 table with retention config, plus a documented schedule.
+See BACKLOG item **G-1**.
+
+---
+
+## 6. Observability
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Structured logging + audit records | 🟠 Demo | `logging.py` + `audit.py` produce lineaged run records (run duration, rows in/out per level, quality pass/fail, endpoints). Consumable as JSON but no export path. |
+| Prometheus / OpenTelemetry metrics export | ⏳ Roadmap | Emit run metrics from the existing audit + `MetricsSummary` data to a pluggable backend (OTLP / Prometheus scrape). Keep it a seam like DQ/lineage so backends are swappable. |
+| Distributed tracing export | ⏳ Roadmap | Traces spanning ingest → normalize → sql → publish, tied to `run_id`. |
+| Alerting hooks | ⏳ Roadmap | Pluggable failure/quality-failure alerting seam on top of metrics/tracing. |
+
+See BACKLOG item **G-2**.
+
+---
+
+## 7. Orchestration
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Basic ordered runner (`elt schedule`) | 🟠 Demo | Stop-on-error / continue modes. No retries, no DAG dependencies, no SLAs, no cron, no backfill scheduling. Intended for workstation proof-of-concept and simple linear pipelines. |
+| Airflow operators / DAG integration | ⏳ Roadmap | Thin operators wrapping the `ingest / normalize / sql / publish` CLI phases, with retry/backfill/SLA semantics. Recommended delivery vehicle for anyone running on Airflow. |
+| Dagster / Prefect / Mage operators | ⏳ Roadmap | Same shape as the Airflow integration — thin CLI wrappers. Defer until real consumer demand appears. |
+
+See BACKLOG item **G-3**.
+
+---
+
+## 8. Deployment artifacts
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Python sdist + wheel via `build` | 🟠 Demo | Standard packaging via `pyproject.toml`; no bundled JDK/Spark/Trino — consumer must provide the JDK 23 + Spark 4.1 + Trino 468 stack. |
+| Docker image (JDK 23 + Spark 4.1 + Trino 468 + `elt_pipeline` wheel) | ⏳ Roadmap | Reproducible container for anything beyond a laptop. |
+| Local docker-compose (runtime + Trino serving) | ⏳ Roadmap | 0-command workstation demo. Depends on the Docker image above. |
+| Kubernetes manifests / Helm chart | ⏳ Roadmap | Only if real cluster deployments appear. Additive to the Docker image. |
+
+See BACKLOG item **G-4**.
+
+---
+
+## 9. Secrets & security
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| `secret_refs` config field + log redaction (`redacted_fields`) | 🟠 Demo | Config cascade accepts `secret_refs`; connector code calls `resolve_secret(secret_ref)`. Current implementation is a **literal pass-through**: `resolve_secret(x) → x`. This is *not* a security defect if the operator puts the real value in a short-lived env var and never logs the run config — but it is not a secrets backend. Log redaction via `redacted_fields` is correct and Production-grade and must never be weakened. |
+| Env-var + file-based secrets resolver | ⏳ Roadmap | Baseline resolvers: read secret value from env (never logged) or from a restricted-perm file pointed to by the ref. |
+| HashiCorp Vault resolver | ⏳ Roadmap | Vault AppRole / Token auth. |
+| AWS Secrets Manager resolver | ⏳ Roadmap | boto3 `secretsmanager:GetSecretValue`; credential delegation via ambient IAM. Also blocks the cloud-credential story for cloud storage backends. |
+| Azure Key Vault resolver | ⏳ Roadmap | `azure-keyvault-secrets` SDK; workload identity. |
+| GCP Secret Manager resolver | ⏳ Roadmap | `google-cloud-secret-manager` SDK; workload identity. |
+
+See BACKLOG item **G-5**.
+
+---
+
+## 10. Governance
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Run-level audit trail | 🟠 Demo | Every run writes an audit record (ingest → publish) with `run_id` + timestamps + row counts + serving endpoint. Readable by operators; no retention/access control enforced by the framework beyond path IAM. |
+| Data-classification tags (PII / sensitive) | ⏳ Roadmap | Tag columns in manifests + surface those tags in L3/L4 Iceberg table properties. |
+| Column-level masking (Trino serving) | ⏳ Roadmap | Masking rules applied at the Trino serving layer based on classification tags. Access control otherwise delegated to Trino's RBAC. |
+| Retention policy + right-to-erasure runbook | ⏳ Roadmap | Retention → snapshot expiry + `DELETE` + partition drop. Erasure → Iceberg row-level deletes (position/equality deletes) + G-1 maintenance sweep. Documented + tested runbook only; no custom enforcement code on the write path today. |
+
+See BACKLOG item **G-6**.
+
+---
+
+## 11. Data quality
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Blocking / non-blocking DQ seam (`integrations/quality.py`) | 🟠 Demo | The adapter surface is correct: a run hooks quality at L3→L4 write, calls a DQ implementation, and either continues (non-blocking, recorded) or stops (blocking, fails the run). The shipped default adapter is a *row-count sanity adapter* (asserting write row-count matches expectations). Bring-your-own adapter is the intended v1 extension point. |
+| Quarantine / DLQ write path for bad rows | ⏳ Roadmap | Capture failed-quality rows separately so a non-blocking run can proceed *while bad data is preserved for triage*. Reuses the §1 storage backends. |
+| Built-in check library (not-null, uniqueness, range, referential, freshness, format regex) | ⏳ Roadmap | Starter set behind the existing seam so operators don't need to BYO everything. |
+
+See BACKLOG item **G-8**.
+
+---
+
+## 12. Lineage
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| Bespoke lineage emitter (`producer = "elt_pipeline"`) | 🟠 Demo | OpenLineage-*shaped* (namespace, run ID, `DatasetRef` inputs/outputs) but **not wire-compatible** with OpenLineage consumers (Marquez, DataHub, OpenMetadata, Atlas). Writes to the same audit/log channel as §6. |
+| OpenLineage wire-compatible export | ⏳ Roadmap | Add an OpenLineage emitter *behind the existing lineage adapter seam* (`integrations/lineage.py`). Map runs / datasets / facets to the OL spec; emit to OTLP/HTTP. Keep the native emitter as a fallback. |
+
+See BACKLOG item **G-7**.
+
+---
+
+## 13. Connector extensibility ceiling
+
+| Capability | Maturity | Notes |
+|---|---|---|
+| 4 built-in connector families (rest / sql / kafka / object_storage) | 🟢 Production | Each family is a validated, config-driven surface (see §2). |
+| No-code connector plugin registry | ⏳ Roadmap | Today, adding a new source *type* (e.g., generic HTTP webhook, CDC log tail, SFTP) needs code: the CLI dispatch is a fixed `if/elif` on the four families. The honest v1 boundary is "no-code authoring of pipelines within the four families + SQL modeling". A plugin registry is additive; build only when real consumer demand appears. |
+
+See BACKLOG item **M-1**.
+
+---
+
+## How to read this for publication
+
+For a public consumer walking in cold:
+
+1. **What works today (🟢 Production):** local + AWS S3 storage, REST + object-storage ingest, all 6+6 Iceberg catalog bindings, Trino JDBC serving, the 4-tier SQL validity chain, replayable idempotent writes, the 4-tier config cascade, clean seams for DQ/lineage/audit. This is a usable platform — it runs the full end-to-end loop on a laptop or on AWS.
+2. **What ships but is demo-only (🟠 Demo):** SQLite SQL source, JSONL Kafka source, the basic schedule runner, the row-count DQ adapter, the bespoke lineage emitter, the stub secrets resolver. All of these *work* for a zero-dependency bundled demo; none are intended as-is for production deployments.
+3. **What is not built yet (⏳ Roadmap):** GCS / ADLS / DBFS / HDFS storage, real JDBC DB sources, real Kafka broker, Iceberg maintenance operations, metrics/tracing/alerting, real secrets backends, PII masking, DQ quarantine + check library, OpenLineage wire compatibility, container deployment artifacts, a connector plugin registry. All are well-scoped adds behind existing seams (or explicit roadmap items) and tracked when pulled forward.
+
+To update this matrix as a capability closes: move its row to the correct 🟢/🟠/⏳ column,
+stamp the date, and cross-reference the closed BACKLOG item in the "Notes" column.
