@@ -16,6 +16,10 @@ from elt_pipeline.config.models import ResolvedEntityConfig
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.shared.errors import ConfigValidationError, ErrorCategory, PipelineError
 from elt_pipeline.shared.runtime import RunContext
+from elt_pipeline.shared.secrets import (
+    SecretValue,
+    resolve_secret_ref,
+)
 
 
 class RestAuthStrategy(str, Enum):
@@ -298,7 +302,11 @@ class RestConnectorBase(ABC):
         return None
 
     def resolve_secret(self, *, secret_name: str, secret_ref: str) -> str:
-        return secret_ref
+        resolved = resolve_secret_ref(
+            secret_ref,
+            strict=False,
+        )
+        return SecretValue(resolved)
 
     def resolve_client_credentials_authentication(
         self,

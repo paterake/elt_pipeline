@@ -3,7 +3,7 @@
 ## Document Status
 
 - Status: Canonical reference
-- Updated: 2026-08-26 (B-6 pluggable storage-backend facade closed)
+- Updated: 2026-08-19 (G-5 secrets backend closed)
 - Owner: maintainer
 
 ## Purpose
@@ -185,12 +185,15 @@ See BACKLOG item **G-4**.
 
 | Capability | Maturity | Notes |
 |---|---|---|
-| `secret_refs` config field + log redaction (`redacted_fields`) | 🟠 Demo | Config cascade accepts `secret_refs`; connector code calls `resolve_secret(secret_ref)`. Current implementation is a **literal pass-through**: `resolve_secret(x) → x`. This is *not* a security defect if the operator puts the real value in a short-lived env var and never logs the run config — but it is not a secrets backend. Log redaction via `redacted_fields` is correct and Production-grade and must never be weakened. |
-| Env-var + file-based secrets resolver | ⏳ Roadmap | Baseline resolvers: read secret value from env (never logged) or from a restricted-perm file pointed to by the ref. |
-| HashiCorp Vault resolver | ⏳ Roadmap | Vault AppRole / Token auth. |
-| AWS Secrets Manager resolver | ⏳ Roadmap | boto3 `secretsmanager:GetSecretValue`; credential delegation via ambient IAM. Also blocks the cloud-credential story for cloud storage backends. |
-| Azure Key Vault resolver | ⏳ Roadmap | `azure-keyvault-secrets` SDK; workload identity. |
-| GCP Secret Manager resolver | ⏳ Roadmap | `google-cloud-secret-manager` SDK; workload identity. |
+| `secret_refs` config field + log redaction (`redacted_fields`) | 🟢 Production | Config cascade accepts `secret_refs: dict[str, str]`; connector code calls `resolve_secret(secret_name, secret_ref)`. Log redaction via `redacted_fields` enforced at `RestResolvedAuth` / request building (auth headers, query params, body fields). Closed in BACKLOG item **G-5** (2026-08-19). |
+| Env-var secrets resolver (`env://ENV_VAR` / implicit plain ref) | 🟢 Production | Default resolver: bare refs without `scheme://` default to `env://` for backward compatibility. `EnvVarSecrets` reads at resolve time (not at construction) so CI env-injection works. strict=False (default for REST connectors) preserves the old pass-through behaviour on env-miss so existing configs with literal values continue to work; strict=True raises fail-fast. Closed in **G-5**. |
+| File-based secrets resolver (`file:///abs/path` / `file://./rel/path`) | 🟢 Production | `FileSecrets` reads raw bytes from the pointed-to file, strips a single trailing newline only. Supports absolute URIs and relative paths resolved against `cwd=` parameter / `base_dir=` constructor. Recommended POSIX mode `chmod 600` for secrets files; not enforced because some k8s/CI/tmpfs mounts don't support POSIX modes. Closed in **G-5**. |
+| `SecretsProvider` Protocol / registry seam (G-5) | 🟢 Production | `@runtime_checkable` Protocol declaring `resolve(*, path: str) -> SecretValue` plus `provider_type: str`. Singleton `_PROVIDER_REGISTRY` keyed by `SecretScheme` enum (6 schemes today: env/file/aws/azure/gcp/vault). Public API: `register_provider(scheme, impl)` / `get_provider(scheme)`. No dynamic auto-discovery (static in-code registration only, matching the same constraint as B-6 storage-backends). Closed in **G-5**. |
+| `SecretValue` redacting `str` subclass + `redact_secret()` utility | 🟢 Production | `SecretValue(str)` overrides `__repr__` → `[REDACTED]` to prevent accidental `%r` / `repr()` leakage. `__str__` / `str()` / `f"{s}"` return the real value for header/auth injection. `redact_secret(value)` is the audit-path helper that always returns the placeholder for non-empty inputs. Closed in **G-5**. |
+| HashiCorp Vault resolver | ⏳ Roadmap | Scheme registered as `vault://` today but `resolve()` raises `SecretsNotImplementedError` (stub). Recommended closure: `hvac` library, support AppRole + Token auth modes + `vault://mount/path/to/secret[#field]` syntax. Additive-only: one new `VaultSecrets` class implementing the Production Protocol — no registry/dispatcher changes. Requires: add dep → implement → add mock-vault tests. See G-5 roadmap. |
+| AWS Secrets Manager resolver | ⏳ Roadmap | Scheme registered as `aws_secretsmanager://` (stub). boto3 `secretsmanager:GetSecretValue`; credential delegation via ambient IAM role. Also blocks the cloud-credential story for the B-4 Spark FS wiring. Additive-only new `AWSSecretsManagerSecrets` class via Protocol/registry. |
+| Azure Key Vault resolver | ⏳ Roadmap | Scheme registered as `azure_keyvault://` (stub). `azure-keyvault-secrets` SDK; DefaultAzureCredential / workload identity. Additive-only. |
+| GCP Secret Manager resolver | ⏳ Roadmap | Scheme registered as `gcp_secretmanager://` (stub). `google-cloud-secret-manager` SDK; workload identity. Additive-only. |
 
 See BACKLOG item **G-5**.
 

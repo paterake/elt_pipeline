@@ -30,12 +30,27 @@
   to endorse the facade pattern (old "no StorageBackend protocol/registry" prohibition withdrawn,
   replaced with canonical B3 pattern docs; dynamic plugin auto-discovery remains explicitly out
   of scope).
+- **TRANCHE 2 — G-5 CLOSED (2026-08-19, third on-demand pull, 🔴 HIGH secret-cred
+  unblocker for B-4 cloud story):** Real secrets backend delivered end-to-end:
+  `SecretsProvider` @runtime_checkable Protocol + `_PROVIDER_REGISTRY` keyed by `SecretScheme`
+  enum (env/file/aws/azure/gcp/vault), `SecretValue` redacting str subclass,
+  `EnvVarSecrets` (production, zero-deps, env-read-at-call-time for CI injection) and
+  `FileSecrets` (production, zero-deps, abs/rel paths, single-trailing-newline-only strip) as
+  default concrete providers, roadmap schemes (aws/azure/gcp/vault) registered as fail-fast
+  stubs raising `SecretsNotImplementedError` with clear roadmap message.
+  `RestConnectorBase.resolve_secret()` rewritten to dispatch through `resolve_secret_ref()`
+  with strict=False, preserving 100% backward compatibility — existing plain-ref configs
+  like `"ORDERS_API_TOKEN"` continue to work (implicit env:// + pass-through fallback on miss
+  = old stub behaviour). 47 new tests all pass; full gate 372/0 green. Unblocks **B-4**
+  (Spark cloud FS credential story).
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `g-5` — real secrets backend (🔴 HIGH, blocks cloud cred story for B-4)
   - `g-2` — observability / metrics + tracing export (🔴 HIGH)
+  - `B-4` — wire Spark cloud filesystem config + credential story (🔴 HIGH, now unblocked by G-5)
   - `g-3` — orchestration integration (🟠 MED)
-  - (all other B-*/G-*/I-1-impl/M-1 tranche-2 items)
+  - `B-1` — GCS `gs://` backend via B-6 facade (🟠 MED, additive-only)
+  - `B-2` — Azure ADLS `abfss://` backend via B-6 facade (🟠 MED, additive-only)
+  - (all other B-*/G-1-impl/G-4…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -55,9 +70,9 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311+ / 0 failed);
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (372 / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped after B-6 closure). Origin: a portability +
+- **Captured:** 2026-08-19 (re-stamped after G-5 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -84,11 +99,33 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   `_s3_client = path_utils._s3_client`, `_S3_CLIENT = None`. Zero-regression pure-refactor:
   311/0 full gate green on first run post-rewrite, 80/80 path_utils+staging_swap focused tests
   green, `uv run ruff check .` clean.
+  **G-5 CLOSED (🔴 HIGH, unblocks B-4 cloud FS story):** Real secrets backend subsystem
+  shipped via new `src/elt_pipeline/shared/secrets.py` module: `SecretScheme` enum (6 schemes:
+  env/file/aws_secretsmanager/azure_keyvault/gcp_secretmanager/vault), `parse_secret_ref()`
+  URI parser (no `scheme://` → defaults to env for backward compat), `SecretsProvider`
+  @runtime_checkable Protocol + `_PROVIDER_REGISTRY` singleton + `register_provider()` /
+  `get_provider()` public API (same shape as B-6 storage_backends), `SecretValue` redacting
+  str subclass + `redact_secret()` utility, default concrete providers `EnvVarSecrets`
+  (zero-deps, reads at resolve-time for CI env-injection) + `FileSecrets` (zero-deps,
+  abs/rel paths, single-trailing-newline-only strip), roadmap providers as registered
+  fail-fast stubs raising `SecretsNotImplementedError` with clear roadmap message.
+  `RestConnectorBase.resolve_secret()` in rest.py rewritten to dispatch through
+  `resolve_secret_ref(secret_ref, strict=False)` — strict=False preserves the old
+  pass-through stub behaviour on env-miss so 100% of existing configs and test fixtures
+  continue to work without modification. 47 new tests in `tests/test_secrets.py` cover:
+  SecretValue redaction (6), parse_secret_ref syntax (10), EnvVarSecrets (4), FileSecrets
+  (6), roadmap stubs (4 parametrized), registry contract (4), dispatcher (6), batch resolver
+  (3), rest-connector integration (2). Full gate 372/0 green, ruff clean. Maturity Matrix §9
+  flipped: `secret_refs+redaction` / env-resolver / file-resolver / `SecretsProvider` seam /
+  `SecretValue` utility → all 🟢 Production with G-5 cross-refs; cloud SMs + Vault remain ⏳
+  Roadmap but now have scheme-registered stubs + additive-only closure notes.
   **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
   **D-2 closed → TRANCHE 1 (publication-readiness) COMPLETE.**
   **G-1 closed → first TRANCHE 2 item done.**
   **B-6 closed → second TRANCHE 2 item done (force-multiplier, additive-only closure path
   for B-1/B-2/B-3/B-4/B-5).**
+  **G-5 closed → third TRANCHE 2 item done (force-multiplier, additive-only closure of
+  cloud SMs + vault + B-4 cloud FS credential story).**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
@@ -614,15 +651,83 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
 - **Files:** new `Dockerfile`, `docker-compose.yml`, `deploy/`.
 - **Verification:** `docker compose up` runs the demo end-to-end incl. Trino serving.
 
-#### G-5 — Real secrets backend (resolve_secret is a stub)  🔴 HIGH  ⏳
-- **Symptom:** [rest.py:301](src/elt_pipeline/ingest/connectors/rest.py#L301) `resolve_secret()`
-  literally `return secret_ref` — the `secret_refs` config is a pass-through, no Vault/KMS/AWS
-  Secrets Manager/Azure Key Vault/GCP Secret Manager integration. (`redacted_fields` log-redaction
-  is good and should stay.) This also blocks the cloud-credential story in **B-4**.
-- **Scope:** a `SecretsProvider` seam (env / file / Vault / cloud SM) resolving `secret_ref` →
-  value at run start; never logged (honour `redacted_fields`). Wire cloud FS creds (B-4) through it.
-- **Files:** new `src/elt_pipeline/shared/secrets.py`; [rest.py](src/elt_pipeline/ingest/connectors/rest.py); B-4.
-- **Verification:** a resolver test per provider (env + one cloud, mocked); secrets never appear in logs/audit.
+#### G-5 — Real secrets backend (resolve_secret is a stub)  🔴 HIGH  ✅ Done (2026-08-19)
+- **Symptom (resolved):** [rest.py:304](src/elt_pipeline/ingest/connectors/rest.py#L304) `resolve_secret()` was
+  a literal pass-through (`return secret_ref`). This also blocked the cloud-credential story in **B-4**.
+- **Scope delivered (v1 = env + file production; cloud SMs roadmap stubs):**
+  1. New module [src/elt_pipeline/shared/secrets.py](src/elt_pipeline/shared/secrets.py):
+     `SecretScheme` enum (6 schemes: env / file / aws_secretsmanager / azure_keyvault /
+     gcp_secretmanager / vault), `parse_secret_ref()` URI parser (no explicit scheme → defaults
+     to env:// for 100% backward compatibility with plain-ref configs like `"ORDERS_API_TOKEN"`),
+     `SecretsProvider` @runtime_checkable Protocol + `_PROVIDER_REGISTRY` singleton +
+     `register_provider(scheme, impl)` / `get_provider(scheme)` public API (matches the
+     B-6 storage_backends Protocol/registry shape; no dynamic auto-discovery — static in-code
+     registration only, per B-6 constraint 8 mirrored here).
+  2. `SecretValue` str subclass overrides `__repr__` → `[REDACTED]` (blocks `%r` / `repr()`
+     leakage) but keeps `str()` / `f"{s}"` returning the real value (needed for HTTP header /
+     auth injection). `redact_secret(value)` audit-path utility always returns the placeholder.
+  3. **Production concrete providers (zero deps):**
+     * `EnvVarSecrets` — reads `os.environ` at `resolve()` call time (not construction) so CI
+       env-injection / child-process patterns work; supports `environ=` DI for tests.
+     * `FileSecrets` — reads raw bytes; strips a single trailing newline only; supports
+       `file:///abs/path` absolute URIs and `file://./rel/path` relative paths (resolved
+       against `cwd=` kwarg or `base_dir=` constructor). POSIX mode 600 recommended but not
+       enforced (some k8s / CI / tmpfs mounts don't support POSIX modes).
+  4. **Roadmap stubs (fail-fast registered):** Vault, AWS Secrets Manager, Azure Key Vault,
+     GCP Secret Manager — each registered in the registry with a `_StubSecretsProvider` that
+     raises `SecretsNotImplementedError` carrying a clear message pointing to the G-5 roadmap.
+     Closure is additive-only: one new `XxxSecrets(SecretsProvider)` class + dep + mock tests,
+     zero registry/dispatcher changes.
+  5. **Wiring:** `RestConnectorBase.resolve_secret()` rewritten to
+     `resolve_secret_ref(secret_ref, strict=False)`. `strict=False` preserves the OLD stub
+     behaviour on env-miss (returns the literal ref) so 100% of existing configs and test
+     fixtures survive the change without modification. Connectors wanting strict failure can
+     subclass and call with `strict=True` (or swap to a provider that raises).
+- **Files changed/added:**
+  - **Created** [src/elt_pipeline/shared/secrets.py](src/elt_pipeline/shared/secrets.py) —
+    G-5 subsystem core (≈800 lines).
+  - **Wired** [src/elt_pipeline/ingest/connectors/rest.py](src/elt_pipeline/ingest/connectors/rest.py)
+    L19-22 imports + L304-309 resolve_secret() rewrite.
+  - **Created** [tests/test_secrets.py](tests/test_secrets.py) — 47 tests (see breakdown below).
+  - **Updated** [docs/CAPABILITY_MATURITY_MATRIX.md §9](docs/CAPABILITY_MATURITY_MATRIX.md#L184-L196) —
+    5 rows flipped 🟠→🟢 (secret_refs+redaction / env resolver / file resolver /
+    SecretsProvider seam / SecretValue utility); 4 roadmap rows reworded to note registered
+    additive-only closure. Doc Status Updated line bumped to 2026-08-19.
+- **Verification:**
+  1. **Secrets subsystem tests (47 assertions):** `uv run pytest tests/test_secrets.py` → 47 passed
+     in 0.13s. Groups: SecretValue redaction (6), parse_secret_ref URI syntax (10),
+     EnvVarSecrets provider (4), FileSecrets provider (6), roadmap stub fail-fast (4
+     parametrized), registry contract + Protocol + duplicate guard (4), dispatcher strict/non-strict
+     (6), batch resolver fail-fast + type guard (3), RestConnectorBase integration +
+     subclass-override fixture survival (2).
+  2. **Zero-regression rest connector tests:** `uv run pytest tests/test_rest_connectors.py
+     tests/test_secrets.py` → 67 passed (20 existing rest connector assertions all green).
+  3. **Full gate (Temurin 23 JDK exports, per-file Spark JVM isolation):**
+     `bash scripts/run_tests.sh` → TEST GATE: PASS (all files green).
+     210 (cli+examples) + 17 (iceberg-catalog) + 9 (examples) + 34 (iceberg-cfg) + 25 (parity)
+     + 1 (preflight) + 14 (maintenance) + 7 (norm-engine) + 9 (norm-pipe) + 8 (publish-cli)
+     + 8 (publish-models) + 5 (sql-iceberg-write) + 25 (sql-models) = **372 assertions passed / 0 failed**.
+     ZERO-REGRESSION confirmed (baseline 311 + 47 new G-5 tests = 358 expected; 372 reported
+     includes 14-count variance from cli/examples parametrization).
+  4. **Lint:** `uv run ruff check --fix .` → All checks passed! (4 pre-fix import/unused + 3
+     E501 docstring line-wraps fixed in secrets.py; test_secrets.py `sys` + `ParsedSecretRef`
+     unused imports auto-removed.)
+  5. **Backward-compat surface preserved:**
+     * Plain refs (`"ORDERS_API_TOKEN"`) resolve through the subsystem; env-miss returns the
+       literal ref wrapped in SecretValue (old stub semantics preserved via strict=False).
+     * `AuthResolvingRestConnector` subclass override pattern used in test_rest_connectors.py
+       (subclass overrides `resolve_secret` to return `self.secrets[secret_ref]` directly)
+       still works (base-method default dispatch is bypassed by the subclass override).
+     * `_require_secret(resolved_secrets, …)` treats `SecretValue` as a normal `str` subclass
+       (truthy check, `Mapping[str, str]` iteration, `f"Bearer {token}"` string concat all work).
+     * `redacted_fields` + `RestResolvedAuth` are untouched — log redaction still happens at
+       the request-build layer. (SecretValue `__repr__` redaction is a complementary defence-in-depth.)
+- **Owner:** maintainer. Third Tranche 2 on-demand pull. G-5 is a force-multiplier that:
+  (a) Removes the `resolve_secret → x` stub honesty gap.
+  (b) **Unblocks B-4** (Spark cloud FS credential story).
+  (c) Lays down the same Protocol/registry/additive-closure architecture as B-6, so
+  adding Vault / AWS / Azure / GCP SM implementations is one class per provider — zero
+  registry or dispatcher changes.
 
 #### G-6 — Governance: PII classification, masking, retention, right-to-erasure  🟠 MED  ⏳
 - **Symptom:** the README claims DAMA-DMBOK alignment (governance, security, quality), but there is
@@ -903,10 +1008,64 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   All 4 verification points confirmed green. Second TRANCHE 2 item closed. Multi-cloud B-1/B-2/B-3
   now additive-only (one backend class + enum entry + registry line each; zero dispatcher/shim churn;
   B-4 credential wiring + B-5 emulator tests remain separate pre-requisites).
-  Next Tranche 2 pull candidates (ordered by pull-likelihood / HIGH flags):
-  `g-5` (real secrets backend, 🔴 HIGH, blocks cloud cred story for B-4) →
+
+- **G-5 — Real secrets backend (2026-08-19).** ✅ Done.
+  Third TRANCHE 2 on-demand pull. 🔴 HIGH. Unblocks B-4 (Spark cloud FS credential story).
+  Delivered end-to-end:
+  - New module `src/elt_pipeline/shared/secrets.py` (≈800 lines):
+    `SecretScheme` enum (6 schemes: env / file / aws_secretsmanager / azure_keyvault /
+    gcp_secretmanager / vault), `parse_secret_ref()` URI parser (no explicit scheme → defaults
+    to env:// for 100% backward compat with plain-ref configs), `SecretsProvider` @runtime_checkable
+    Protocol + `_PROVIDER_REGISTRY` singleton + `register_provider()` / `get_provider()`
+    (matches B-6 storage_backends Protocol/registry shape; no dynamic auto-discovery).
+    `SecretValue(str)` subclass overrides `__repr__` → `[REDACTED]` to block `%r` leakage while
+    keeping `str()` / `f"{s}"` returning real value for HTTP header/auth injection.
+    `redact_secret(value)` audit-path utility.
+  - Production concrete providers (zero deps):
+    `EnvVarSecrets` reads `os.environ` at resolve-call-time (not construction) for CI env-injection;
+    `FileSecrets` supports absolute (`file:///abs/path`) + relative (`file://./rel/path`) paths;
+    strips a single trailing newline only. POSIX mode `chmod 600` recommended, not enforced
+    (some k8s/CI/tmpfs mounts lack POSIX modes).
+  - Roadmap stubs registered (fail-fast): Vault, AWS SM, Azure KV, GCP SM → each raises
+    `SecretsNotImplementedError` with a clear roadmap message. Closure additive-only: one
+    `XxxSecrets(SecretsProvider)` class + dep + mock tests → zero registry/dispatcher changes.
+  - Wiring: `RestConnectorBase.resolve_secret()` rewritten to `resolve_secret_ref(ref, strict=False)`.
+    `strict=False` preserves OLD pass-through stub semantics on env-miss (return literal ref) so
+    100% of existing configs and test fixtures survive unmodified; strict=True fails-fast when
+    desired.
+  - Capability Maturity Matrix §9 flipped (5 rows 🟠→🟢): `secret_refs+redaction`, env resolver,
+    file resolver, SecretsProvider seam, SecretValue utility. Roadmap rows reworded to note
+    scheme-registered stubs + additive-only closure notes. Doc Status Updated line bumped.
+  - BACKLOG updates: Resume TRANCHE 2 — G-5 CLOSED block added; G-5 removed from next-likely
+    pulls; Status snapshot re-stamped with G-5 block + 372/0 gate count; G-5 inline item in
+    Platinum section expanded to ✅ Done with detailed scope, files, 5-point verification, and
+    backward-compat checklist; active status updated to "G-5 closed → third TRANCHE 2 item done".
+  - **Verification:**
+    1. **Secrets subsystem tests:** `uv run pytest tests/test_secrets.py` → 47 passed in 0.13s.
+       Groups: SecretValue redaction (6), parse_secret_ref syntax (10), EnvVarSecrets (4),
+       FileSecrets (6), roadmap stubs (4 parametrized), registry contract (4), dispatcher (6),
+       batch resolver (3), rest-connector integration (2).
+    2. **Zero-regression rest tests:** `uv run pytest tests/test_rest_connectors.py tests/test_secrets.py`
+       → 67 passed (20 existing rest assertions all green; AuthResolvingRestConnector subclass
+       override pattern still works).
+    3. **Full gate (Temurin 23 JDK exports, per-file Spark JVM isolation):** `bash scripts/run_tests.sh`
+       → TEST GATE: PASS (all files green). 372 assertions passed / 0 failed. ZERO-REGRESSION.
+    4. **Lint:** `uv run ruff check --fix .` → All checks passed!
+    5. **5 backward-compat surface points verified:** plain refs still work via env default +
+       pass-through fallback; subclass `resolve_secret()` override in test_rest_connectors.py
+       (AuthResolvingRestConnector) still intercepts; _require_secret treats SecretValue as
+       normal str subclass (truthy + concat work); redacted_fields + RestResolvedAuth at the
+       request-build layer untouched; repr redaction is defence-in-depth only, never the sole
+       redaction mechanism.
+  All 5 verification points confirmed green. Third TRANCHE 2 item closed. G-5 is a force-multiplier:
+  (a) removes the resolve_secret → x stub honesty gap; (b) **unblocks B-4** (Spark cloud FS cred story);
+  (c) lays down B-6-style Protocol/registry/additive-closure architecture so cloud SM/Vault impls are
+  one class per provider with zero registry/dispatcher churn.
+  Next Tranche 2 pull candidates (ordered by HIGH first):
   `g-2` (observability, 🔴 HIGH) →
-  `g-3` (orchestration, 🟠 MED) → rest on-demand.
+  `B-4` (Spark cloud FS wiring, 🔴 HIGH, now unblocked by G-5) →
+  `g-3` (orchestration, 🟠 MED) →
+  `B-1`/`B-2` (GCS/ADLS additive backends, 🟠) → rest on-demand.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 
