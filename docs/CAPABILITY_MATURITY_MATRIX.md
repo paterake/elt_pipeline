@@ -3,7 +3,7 @@
 ## Document Status
 
 - Status: Canonical reference
-- Updated: 2026-08-19 (publication-readiness pass + G-1 Iceberg maintenance closed)
+- Updated: 2026-08-26 (B-6 pluggable storage-backend facade closed)
 - Owner: maintainer
 
 ## Purpose
@@ -38,8 +38,9 @@ swaps. A scheme is Production only when both planes pass.
 |---|---|---|
 | Local POSIX filesystem (bare paths, `file://` URIs) | 🟢 Production | Default workstation path. Full ~18-function coverage in `path_utils`; Spark writes natively. |
 | AWS S3 (`s3://` URIs) | 🟢 Production | `boto3` control-plane + Spark Hadoop `s3a://` / EMRFS data-plane. Unit-tested with an in-process S3 fake. Credentials via ambient IAM role on EMR or standard `boto3` env/config cascade. |
-| Google Cloud Storage (`gs://`) | ⏳ Roadmap | Fail-fast rejected today. Requires: native `google-cloud-storage` branch across ~18 `path_utils` functions, Spark `spark.hadoop.fs.gs.*` config + credential wiring, emulator-backed integration tests. Roadmap strategy: prefer B-6 (pluggable storage-backend facade) when pulled forward. |
-| Azure ADLS Gen2 (`abfss://`) | ⏳ Roadmap | Fail-fast rejected today. Requires: native `azure-storage-file-datalake` branch (with authority parsing for `account@account.dfs.core.windows.net`), Spark `spark.hadoop.fs.azure.*` + credential wiring, Azurite-backed integration tests. |
+| Pluggable `StorageBackend` Protocol / registry seam (B-6) | 🟢 Production | `@runtime_checkable` Protocol declaring 18 leaf IO ops + `staging_swap_atomic`. `_BACKEND_REGISTRY` singleton keyed by `StorageScheme` enum. `path_utils` public functions are one-line dispatchers (lazy import resolves circular dependency between scheme primitives and backend classes). `register_backend(scheme, backend)` public API for explicit registration. New schemes add ~1 backend class + enum entry + registry line — zero changes to any call site. `_staging_swap.py` reduced to a backward-compat shim delegating to `storage_backends.atomic_swap`. Zero-regression pure refactor: full 311-assertion test gate + 80 path_utils/staging-swap focused tests all pass. |
+| Google Cloud Storage (`gs://`) | ⏳ Roadmap | Fail-fast rejected today. Requires: add `GCSBackend` class behind the B-6 facade, Spark `spark.hadoop.fs.gs.*` config + credential wiring, emulator-backed integration tests. Closure is additive-only against the Production seam (no control-plane code churn). |
+| Azure ADLS Gen2 (`abfss://`) | ⏳ Roadmap | Fail-fast rejected today. Requires: add `ADLSBackend` class behind the B-6 facade (with authority parsing for `account@account.dfs.core.windows.net`), Spark `spark.hadoop.fs.azure.*` + credential wiring, Azurite-backed integration tests. Closure is additive-only against the Production seam. |
 | Azure Blob (legacy, `wasbs://`) | ⏳ Roadmap | Explicitly not on the recommended path. When multi-cloud is pulled forward, `wasbs://` fails fast with a pointer to `abfss://`. |
 | Databricks DBFS (`dbfs://`) | ⏳ Roadmap | Databricks deployments are recommended to use the ADLS/S3/GCS storage path natively (B-1/B-2) and bind the Unity catalog as a **REST catalog** — no `dbfs://` scheme required. A first-class Unity example config is the recommended closure, not a scheme implementation. |
 | Hadoop HDFS (`hdfs://`) | ⏳ Roadmap | Fail-fast rejected today. On-prem HDFS was deliberately de-scoped for v1; re-evaluate only if a concrete on-prem deployment need appears. |

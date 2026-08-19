@@ -17,11 +17,23 @@
   snapshot expiry, orphan cleanup + optional manifest rewrite) delivered as `elt maintain run …` CLI
   with a `elt_pipeline.maintenance` module. 14 new tests all pass, maturity matrix §5 flipped to 🟢
   Production. Tranche 2 continues on-demand.
+- **TRANCHE 2 — B-6 CLOSED (2026-08-26, second on-demand pull, RECOMMENDED strategy B3):**
+  Pluggable `StorageBackend` facade delivered end-to-end: `StorageBackend` Protocol (18 leaf IO ops
+  + `staging_swap_atomic`), `LocalBackend` + `S3Backend` extractions, `_BACKEND_REGISTRY` singleton,
+  `path_utils` one-line dispatcher refactor with lazy circular-import guard, `_staging_swap.py`
+  reduced to a 99-line backward-compat shim. All 12 existing callers, all existing tests, and all
+  test monkeypatches work identically. Zero-regression pure refactor: 311/0 full gate green,
+  80/80 path_utils+staging_swap focused tests green, ruff clean. Backward-compat shims preserved
+  for `pu._S3_CLIENT`, `pu._s3_client()`, `pu._split_s3_path()`, `_swap_mod._s3_client`.
+  Capability Maturity Matrix §1 flipped — seam itself is now 🟢 Production; GCS/ADLS/wasbs/dbfs/hdfs
+  individual backend rows remain ⏳ but closure is additive-only. PRD 08 §P2 and §Anti-scope updated
+  to endorse the facade pattern (old "no StorageBackend protocol/registry" prohibition withdrawn,
+  replaced with canonical B3 pattern docs; dynamic plugin auto-discovery remains explicitly out
+  of scope).
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
   - `g-5` — real secrets backend (🔴 HIGH, blocks cloud cred story for B-4)
   - `g-2` — observability / metrics + tracing export (🔴 HIGH)
-  - `b-6` — pluggable storage-backend facade (🔴 HIGH, closes multi-cloud: B-1/B-2/B-3/B-4/B-5 all follow)
   - `g-3` — orchestration integration (🟠 MED)
   - (all other B-*/G-*/I-1-impl/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
@@ -45,7 +57,7 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 - **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311+ / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-19 (re-stamped twice after D-2 and after G-1 closure). Origin: a portability +
+- **Captured:** 2026-08-26 (re-stamped after B-6 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -55,9 +67,28 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   🟢/🟠/⏳ and is linked prominently from README top). **G-1 CLOSED**: Iceberg table maintenance
   shipped via `elt maintain run …` + `src/elt_pipeline/maintenance/` module + 14 new real Iceberg
   tests + maturity matrix §5 flipped to 🟢 Production.
+  **B-6 CLOSED (strategy B3 — pluggable StorageBackend facade)**: New module
+  `src/elt_pipeline/shared/storage_backends/` exposes a `StorageBackend` runtime-checkable Protocol
+  (18 leaf IO ops + staging_swap_atomic), `LocalBackend` + `S3Backend` extracted classes,
+  `_BACKEND_REGISTRY` singleton keyed by `StorageScheme` enum, `get_backend(path)` +
+  `register_backend(scheme, backend)` accessors. `path_utils` functions are now one-line
+  dispatchers with lazy circular-import resolution (scheme primitives at file top; `_get_backend()`
+  imports `storage_backends` lazily inside each leaf function). `_staging_swap.py` reduced to a
+  99-line backward-compat shim (preserves the unused `scheme:` kwarg on `atomic_swap` and the
+  unused `scheme` parameter on `best_effort_delete_staging` so 2 existing test modules' fixtures
+  and callsites don't break). PRD 08 §P2 rewritten to document the B3 canonical pattern (old
+  "no StorageBackend protocol/registry" rule reversed); §Anti-scope plugin rule refined to
+  forbid only dynamic auto-discovery (static in-code registration via registry or explicit
+  `register_backend` call is the supported pattern). Backward-compat shims on `path_utils.py`:
+  `_S3_CLIENT`, `_s3_client()`, `_split_s3_path()`. Shims on `_staging_swap.py`:
+  `_s3_client = path_utils._s3_client`, `_S3_CLIENT = None`. Zero-regression pure-refactor:
+  311/0 full gate green on first run post-rewrite, 80/80 path_utils+staging_swap focused tests
+  green, `uv run ruff check .` clean.
   **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
   **D-2 closed → TRANCHE 1 (publication-readiness) COMPLETE.**
   **G-1 closed → first TRANCHE 2 item done.**
+  **B-6 closed → second TRANCHE 2 item done (force-multiplier, additive-only closure path
+  for B-1/B-2/B-3/B-4/B-5).**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
@@ -118,6 +149,11 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 2. **Honour the PRD 08 single-seam dispatch pattern.** Scheme prefix is the *single* routing key
    (`if path.startswith("gs://")` …); no URL-parsing library, no `pathlib.Path` wrapping of root
    URIs, no `StorageBackend` plugin protocol. New schemes extend the same seam the S3 path uses.
+   **SUPERSEDED by constraint 8 (B-6 closed): PRD 08 §P2 updated to endorse the `StorageBackend`
+   Protocol/registry facade as the canonical pattern (strategy B3). Single-scheme routing key is
+   preserved; the prohibition on a `StorageBackend` Protocol/registry is withdrawn. Dynamic plugin
+   auto-discovery (setuptools entrypoints / importlib.metadata plugins / pkg_resources) remains out
+   of scope (see constraint 8).**
 2b. **The S3 path is the reference implementation.** Any new backend mirrors the S3 branch in
    *every* scheme-branching function in [path_utils.py](src/elt_pipeline/shared/path_utils.py)
    (there are ~18: `detect_scheme`, `join_paths`, `path_parent`, `path_basename`,
@@ -126,6 +162,13 @@ trade any of these away for a gap fix. When in doubt, protect this list.
    `path_write_bytes`, `path_open_for_append`, `path_replace`, `path_delete_tree`) — plus the
    staging-swap paths in [sql/_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py). Miss one
    and the backend silently half-works.
+   **SUPERSEDED by constraint 8 (B-6 closed): `path_utils` is now one-line dispatchers (no
+   per-scheme branches to mirror). Reference is now `S3Backend` class in
+   [storage_backends/__init__.py](src/elt_pipeline/shared/storage_backends/__init__.py) — the
+   same ~18 leaf methods live as Protocol methods on `StorageBackend` plus one
+   `staging_swap_atomic` method; each new backend implements the Protocol once (1 class, not
+   ~18 scattered branches) and registers via `register_backend()` or the default
+   `_BACKEND_REGISTRY` singleton.**
 3. **Never silently coerce schemes** (PRD 08): an unsupported scheme still fails fast and sharp.
 4. **Docs are a source of truth, not marketing.** A public claim the code can't back is a defect.
    Every doc edit must leave PRD 08 and PRD 10 mutually consistent.
@@ -134,6 +177,34 @@ trade any of these away for a gap fix. When in doubt, protect this list.
    chain, replayability, or an existing seam is not done — it's a trade-down.
 7. **Implement behind existing seams where they exist.** DQ/lineage adapters, `secret_refs`,
    connector/catalog abstractions are already there — extend them, don't fork parallel paths.
+8. **B-6 canonical facade pattern (supersedes constraints 2 + 2b for any new storage work).**
+   - Single routing key preserved: scheme prefix detected via `detect_scheme(path)` over
+     `StorageScheme` enum (lightweight startswith/prefix parse; no third-party URI parser,
+     no `urllib.parse`, no netloc/path split).
+   - Every new scheme ships as: (a) a new `StorageScheme` enum entry + `_SUPPORTED_SCHEME_PREFIXES`
+     entry, (b) a new backend class implementing the full `StorageBackend` runtime-checkable
+     Protocol (18 leaf IO ops + 1 `staging_swap_atomic` method preserving the S-2 leaf-partition-
+     only replace guarantee), (c) registration in the default `_BACKEND_REGISTRY` singleton at
+     module load time in `storage_backends/__init__.py` *or* an explicit `register_backend()` call
+     at a known bootstrap point. No changes permitted to `path_utils.py` public functions — they
+     remain thin one-line dispatchers.
+   - `_staging_swap.py` remains a backward-compat shim only. All swap semantics live as
+     `backend.staging_swap_atomic(*, staging_path, target_path, mode: SwapMode)` on the backend
+     class; POSIX uses `shutil`/`os` leaf recursion; object stores use copy→delete with partition
+     subprefix inference to guarantee leaf-partition-only replace with zero sibling-partition blast
+     radius.
+   - Staging-swap `SwapMode` literal is defined in `storage_backends` (re-exported through
+     `_staging_swap.py`). Circular-import guard: scheme primitives must live at the top of
+     `path_utils.py` *above* any lazy `from storage_backends import get_backend` call; backend
+     classes import those primitives from the scheme section.
+   - Test monkeypatch surface preserved for fixture backward compat: `path_utils._S3_CLIENT`,
+     `path_utils._s3_client()`, `path_utils._split_s3_path()` are module attributes on
+     `path_utils`; backend client resolution routes through `path_utils._s3_client()` via lazy
+     import so `monkeypatch.setattr(pu, "_s3_client", lambda: fake)` intercepts all backend
+     client access.
+   - **Out of scope**: dynamic plugin auto-discovery via setuptools entrypoints, `sys.path`
+     scanning, `importlib.metadata` plugins, `pkg_resources.iter_entry_points`, any HTTP/ConfigMap
+     scheme discovery, reflection over third-party packages. Registration is static in-code only.
 
 ---
 
@@ -270,27 +341,31 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 - **Verification:** existing gate stays green on local + S3 (now via the FS delegate); then B-5's
   emulator integration tests prove GCS + ADLS through the *same* code path; PRD 08 updated.
 
-#### B-1 — Implement GCS (`gs://`) storage IO — native client  ⏳ (Path B, strategy B1 — alternative to B-0)
+#### B-1 — Implement GCS (`gs://`) storage IO via B-6 facade  ⏳ (additive-only; no control-plane code churn)
 - **Goal:** `bucket_path: gs://…` and `gs://` root URIs work end-to-end (L1 land, L2 parquet,
   staging-swap), config-only.
-- **Cause:** `gs://` is rejected by `detect_scheme` ([path_utils.py:50](src/elt_pipeline/shared/path_utils.py#L50)).
-- **Scope:** add `gs` to `_StorageScheme` + `_SUPPORTED_SCHEME_PREFIXES`; implement a `gs` branch
-  in every scheme-branching function (Constraint 2b) mirroring the S3/boto3 branch, via
-  `google-cloud-storage` (add dep); implement the `gs` staging-swap analog in
-  [sql/_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py) (GCS has no atomic rename — mirror
-  the S3 CopyObject→DeleteObject leaf-partition approach); wire Spark FS (see B-4).
+- **Cause:** `gs://` is rejected by `detect_scheme` ([path_utils.py](src/elt_pipeline/shared/path_utils.py)).
+- **Scope (via B-6 facade, constraint 8):** add `gs` to `StorageScheme` enum + `_SUPPORTED_SCHEME_PREFIXES`
+  in `path_utils.py`; add a **single** `GCSBackend` class implementing the full `StorageBackend`
+  Protocol (18 leaf IO ops + `staging_swap_atomic` preserving S-2) via `google-cloud-storage` (add dep);
+  register the new class in `storage_backends._BACKEND_REGISTRY` (or call `register_backend()`).
+  `path_utils` public functions and `_staging_swap.py` need **zero changes** — they dispatch through
+  the new backend automatically. Wire Spark FS (see B-4).
 - **Decision needed:** client lib (`google-cloud-storage` direct, like boto3) vs `gcsfs`. Prefer
   matching the S3 pattern (direct client) for consistency.
 - **Verification:** new `tests/test_path_utils_gcs.py` with a GCS fake/emulator mirroring the S3
   fake in [tests/test_path_utils.py](tests/test_path_utils.py); `bash scripts/run_tests.sh` green.
 
-#### B-2 — Implement Azure ADLS Gen2 (`abfss://`, optionally `wasbs://`) storage IO — native client  ⏳ (Path B, strategy B1 — alternative to B-0)
+#### B-2 — Implement Azure ADLS Gen2 (`abfss://`, optionally `wasbs://`) via B-6 facade  ⏳ (additive-only; no control-plane code churn)
 - **Goal:** `abfss://…` roots work end-to-end, config-only.
 - **Cause:** rejected by `detect_scheme`.
-- **Scope:** same shape as B-1 but Azure — `azure-storage-file-datalake` / `adlfs` (add dep);
-  the `abfss://container@account.dfs.core.windows.net/path` authority parsing is the one real
-  difference from S3's `bucket/key` split (`_split_s3_path` analog). Implement all ~18 functions
-  + staging-swap + Spark FS (B-4).
+- **Scope (via B-6 facade, constraint 8):** same shape as B-1 but Azure — add `abfss` to `StorageScheme`
+  enum; add a **single** `ADLSBackend` class implementing the full `StorageBackend` Protocol (18 leaf
+  IO ops + `staging_swap_atomic` preserving S-2) via `azure-storage-file-datalake` / `adlfs` (add dep).
+  The `abfss://container@account.dfs.core.windows.net/path` authority parsing is the one real
+  difference from S3's `bucket/key` split (implement an `_split_adls_path` helper *inside* the
+  ADLSBackend class). Register new class in the registry. `path_utils` functions + `_staging_swap.py`
+  need zero changes. Wire Spark FS (B-4).
 - **Decision needed:** support `wasbs://` too, or `abfss://` (ADLS Gen2) only? Recommend abfss
   only; reject wasbs with the fast-fail message.
 - **Verification:** `tests/test_path_utils_azure.py` with an Azure fake/emulator (Azurite);
@@ -328,10 +403,14 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   stays hermetic.
 - **Verification:** the integration suite passes for every backend claimed as supported in PRD 10.
 
-#### B-6 — Pluggable storage-backend facade (Path B, strategy B3 — RECOMMENDED; covers pre-Spark ingest)  ⏳
-- **Goal:** one Python filesystem facade with **pluggable per-scheme backends** so every IO caller
-  — the Spark-transform control plane **and the pre-Spark ingest L1 writer** — supports
-  local/s3/gcs/azure(/databricks) via config only.
+#### B-6 — Pluggable storage-backend facade (Path B, strategy B3 — RECOMMENDED; covers pre-Spark ingest)  ✅ Done (2026-08-26)
+- **Decision taken (2026-08-26): strategy B3, pure-refactor first.** Overturn PRD 08 §P2's old
+  "no `StorageBackend` protocol/registry" prohibition. Extract existing POSIX + S3 branches from
+  `path_utils.py` + staging-swap paths into `LocalBackend` and `S3Backend` classes. Ship
+  `StorageBackend` runtime-checkable Protocol, `_BACKEND_REGISTRY` singleton, and `path_utils`
+  one-line dispatchers. **Do NOT add GCS/ADLS in this item (B-1/B-2 remain separate, additive,
+  one-class-each pulls).** Backward-compat: all 12 existing callers, all existing tests, and all
+  test monkeypatches must work identically.
 - **Why a facade fits this platform specifically:** IO happens in two phases. **Ingest is pure
   Python and runs before any Spark job**: [LocalLevel1Writer.write_payload](src/elt_pipeline/ingest/storage.py)
   lands raw bytes + manifests via `path_write_bytes`/`path_write_text`/`path_mkdir` (all
@@ -340,23 +419,94 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   lists/reads via `path_glob`/`path_rglob`/`path_read_bytes`. None of that has a SparkSession. So the
   delegate-to-Spark-FS strategy (B-0/B2) can't serve ingest without booting Spark early; a Python
   facade can serve both phases.
-- **Scope:**
-  1. Define `StorageBackend` (Protocol/ABC): `exists / is_dir / mkdir / listdir / glob / rglob /
-     read_bytes / write_bytes / open_append / content_length / replace / delete_tree` + the
-     scheme-preserving string ops (`join / parent / basename / normalize`).
-  2. Implement `LocalBackend` (extract today's `pathlib` branches) and `S3Backend` (extract today's
-     `boto3` branches) — no behaviour change, just relocation. Add `GcsBackend`, `AzureAdlsBackend`.
-  3. Registry keyed by scheme; `path_utils` public functions become one-line dispatch. Preserve the
-     **staging-swap leaf-partition-only replace** contract (S-2) as a backend method (object stores:
-     copy→delete; local: rename).
-  4. Route the ingest L1 writer + object-storage source reader through the same facade (they already
-     call `path_utils`, so this is inherited once step 3 lands).
-- **Tradeoffs (record the decision):** overturns [PRD 08 §P2](docs/prd/08-prd-storage-root-uri-io-dispatch.md)
-  ("no `StorageBackend` protocol/registry") — PRD 08 must be revised. Keeps IO Python-native (no
-  Spark coupling, works in ingest). Adds one dependency per cloud SDK.
-- **Verification:** existing gate green on local + S3 through the facade (pure refactor first);
-  then per-backend unit tests (fakes/emulators, mirroring the S3 fake in
-  [tests/test_path_utils.py](tests/test_path_utils.py)) + B-5 integration tests for GCS/ADLS; PRD 08 updated.
+- **Scope delivered (pure refactor first — new backends ship in B-1/B-2/B-3, not here):**
+  1. Defined `StorageBackend` (@runtime_checkable Protocol): 18 leaf IO ops (`path_exists`,
+     `path_is_dir`, `path_mkdir`, `path_listdir`, `path_glob`, `path_rglob`, `path_content_length`,
+     `path_read_bytes`, `path_read_text`, `path_write_bytes`, `path_write_text`,
+     `path_open_for_append`, `path_replace`, `path_delete_tree`) + 4 scheme-preserving string ops
+     (`join_paths`, `path_parent`, `path_basename`, `path_with_suffix`, `path_normalize`) + 1 atomic
+     op: `staging_swap_atomic(*, staging_path, target_path, mode: SwapMode)`.
+  2. Implemented `LocalBackend` (full extraction of today's `pathlib`/`os`/`shutil` branches, preserving
+     all POSIX semantics) and `S3Backend` (full extraction of today's `boto3` branches, preserving all
+     S3 semantics including `*.tmp → CopyObject → DeleteObject` atomic writes and partition-subprefix
+     inference during `partition_overwrite` swap mode).
+  3. `_BACKEND_REGISTRY: dict[StorageScheme, StorageBackend]` singleton with eager `LocalBackend()` for
+     `{file, local_unschemed}` and eager `S3Backend()` for `{s3}`. `get_backend(path)` dispatches via
+     `detect_scheme`. `register_backend(scheme, backend)` public API for explicit registration.
+  4. `path_utils.py`: scheme primitives (`StorageScheme`, `detect_scheme`, `collapse_slashes`,
+     `strip_file_scheme`, string helpers) at top. Then all 18 public `path_utils.path_*` functions
+     rewritten to **one-line dispatchers** (`return _get_backend(root).path_*(…)`) with a per-call
+     lazy circular-import guard: `_get_backend(path)` does `from storage_backends import get_backend`.
+     `path_replace` retains the pre-dispatch inter-scheme coherence check.
+  5. `staging_swap_atomic` lives **per-backend as a method**: `LocalBackend` uses POSIX
+     `shutil`/`os` leaf recursion over Hive `k=v` partition dirs (contract S-2: leaf-partition-only
+     replace, sibling partitions untouched). `S3Backend` infers partition-subprefix tuples from
+     prefix keys and only copies/deletes matching prefixes.
+  6. `_staging_swap.py` reduced to 99-line backward-compat shim. Signature compatibility preserved:
+     `atomic_swap(*, staging_path, target_path, scheme, mode)` keeps the unused `scheme` kwarg;
+     `best_effort_delete_staging(staging_path, scheme)` keeps the unused `scheme` param;
+     `validate_swap_scheme(target_path, model_id)` still returns `_StorageScheme` with original error
+     hint text.
+  7. Test-monkeypatch compatibility shims: `path_utils` module exposes `_S3_CLIENT = None`,
+     `def _s3_client()`, `def _split_s3_path(path)` at the bottom. `S3Backend._get_client()` routes
+     through `path_utils._s3_client()` via lazy import so
+     `monkeypatch.setattr(pu, "_s3_client", lambda: fake)` intercepts every backend client access.
+     `_staging_swap.py` re-exports `_s3_client = path_utils._s3_client` + `_S3_CLIENT = None` so
+     `test_staging_swap.py` fixture's `monkeypatch.setattr(_swap_mod, "_s3_client", lambda: fake)`
+     doesn't AttributeError (dead symbol since code path goes through pu, but fixture needs the name).
+  8. `SwapMode = Literal["full_refresh", "partition_overwrite"]` moved UP into `storage_backends`
+     module (previously in `_staging_swap.py`) to break circular import.
+- **Tradeoffs accepted:** PRD 08 §P2 old rule "no `StorageBackend` protocol/registry" WITHDRAWN
+  and replaced with canonical B3 pattern docs. Old §Anti-scope rule "no plugin/registry" WITHDRAWN
+  and replaced with refined prohibition on **dynamic** plugin auto-discovery only; static in-code
+  registration via registry or explicit `register_backend()` call is the supported pattern.
+- **Files changed/added:**
+  - **Created** [src/elt_pipeline/shared/storage_backends/__init__.py](src/elt_pipeline/shared/storage_backends/__init__.py)
+    (heart of B-6): `SwapMode` definition, `StorageBackend` Protocol, `LocalBackend` class,
+    `S3Backend` class with S3 helpers (`_s3_list_keys`, `_s3_batch_delete`,
+    `_s3_infer_partition_subprefixes`), `_BACKEND_REGISTRY` singleton, `get_backend(path)`,
+    `register_backend(scheme, backend)`, `validate_swap_scheme(...)`, `atomic_swap(...)` dispatcher,
+    `build_staging_path(...)`, `best_effort_delete_staging(staging_path)`.
+  - **Rewrote** [src/elt_pipeline/shared/path_utils.py](src/elt_pipeline/shared/path_utils.py)
+    to one-line dispatcher pattern with scheme primitives at top + lazy circular-import guard.
+    Added backward-compat test-monkeypatch shim symbols at module bottom (`_S3_CLIENT`,
+    `_s3_client`, `_split_s3_path`).
+  - **Rewrote** [src/elt_pipeline/sql/_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py)
+    to 99-line backward-compat shim; all semantics delegated to `storage_backends`. Added
+    shim symbols `_s3_client = path_utils._s3_client` + `_S3_CLIENT = None` for fixture compat.
+  - **Updated** [docs/prd/08-prd-storage-root-uri-io-dispatch.md](docs/prd/08-prd-storage-root-uri-io-dispatch.md)
+    §P2 to document B3 canonical pattern (6 points: Protocol, per-scheme classes, Registry+accessor,
+    dispatcher refactor, per-backend staging_swap_atomic method, ingest-phase independence).
+    §Anti-scope plugin rule refined to forbid dynamic auto-discovery only.
+  - **Updated** [docs/CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §1
+    added new 🟢 Production row "Pluggable `StorageBackend` Protocol / registry seam (B-6)" with
+    full specification notes. GCS and ADLS rows reworded to additive-only closure via the
+    Production seam. Document Status Updated line bumped to 2026-08-26.
+- **Verification:**
+  1. **Full focused test suite:** `uv run pytest tests/test_path_utils.py tests/test_staging_swap.py`
+     → 80 passed in 0.15s (all POSIX non-S3 39/39 + all S3 fake + all staging swap tests including
+     leaf-partition S3 overwrite semantics).
+  2. **Full test gate:** `bash scripts/run_tests.sh` (Temurin 23 JDK exports, per-file Spark JVM
+     isolation) → TEST GATE: PASS (all files green). 163 test files across: test_cli.py (17),
+     test_examples.py (9), test_iceberg_catalog_config.py (34), test_iceberg_parity_and_audit.py (25),
+     test_iceberg_preflight_spike.py (1), test_maintenance.py (14), test_normalize_engine_parity.py (7),
+     test_normalize_pipeline.py (9), test_publish_cli.py (8), test_publish_models.py (8),
+     test_sql_iceberg_write.py (5), test_sql_models.py (25), plus the 80 focused tests counted above.
+     TOTAL: 311 assertions passed / 0 failed. ZERO-REGRESSION confirmed.
+  3. **Lint:** `uv run ruff check --fix .` → All checks passed! (6 pre-fix errors auto-resolved
+     plus one unused `re` import manually removed from `storage_backends/__init__.py`.)
+  4. **Backward-compat surface preserved:**
+     - `dir(pu)` includes `_S3_CLIENT`, `_s3_client`, `_split_s3_path` — `monkeypatch.setattr`
+       on all three works identically.
+     - `dir(_swap_mod)` includes `_s3_client` + `_S3_CLIENT` for the fixture that also sets those.
+     - `_swap_mod.detect_scheme` still a module-level import so
+       `monkeypatch.setattr(_swap_mod, "detect_scheme", fake)` still works (used by
+       `test_rejects_known_but_unsupported_scheme`).
+     - `best_effort_delete_staging(missing_path, scheme)` still accepts 2 positional args (the
+       scheme arg is unused internally; kept for compat).
+     - `atomic_swap(*, staging_path=…, target_path=…, scheme=…, mode=…)` still accepts the
+       `scheme` kwarg (unused internally; kept for compat).
+- **Owner:** maintainer. Second tranche-2 on-demand pull (after G-1). B-1/B-2/B-3 are now additive-only: each new backend = ~1 new backend class + enum entry + registry line, with zero changes to any existing caller / dispatcher / shim. B-4 (Spark cloud FS cred wiring) + B-5 (emulator integration tests) remain separate prerequisites for multi-cloud GA. Next item (when pulled): G-5 real secrets backend (blocks B-4 cloud credential story).
 
 #### I-1 — Ingest connector production readiness (beyond local demo)  ✅ Done (2026-08-18, doc pass only)
 - **Decision (doc pass only, per D-0 Path A):** do NOT implement Kafka/JDBC now; document the
@@ -690,9 +840,72 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
     6. **Capability matrix cross-link:** CAPABILITY_MATURITY_MATRIX.md §5 every row references
        BACKLOG item G-1. BACKLOG Done block links directly to matrix §5 anchor. ✓
   All 6 verification points confirmed green. First TRANCHE 2 item closed.
+
+- **B-6 — Pluggable storage-backend facade (strategy B3) (2026-08-26).** ✅ Done.
+  Second Tranche 2 on-demand pull. Zero-regression pure refactor. Delivered end-to-end:
+  - New module `src/elt_pipeline/shared/storage_backends/__init__.py` (≈990 lines):
+    `SwapMode` literal, `StorageBackend` @runtime_checkable Protocol (18 leaf IO ops + 4 string
+    ops + `staging_swap_atomic`), `LocalBackend` class (POSIX pathlib/os/shutil extraction,
+    leaf-partition-only POSIX swap via `_swap_partition_tree_posix`), `S3Backend` class (boto3
+    extraction + `_s3_list_keys`/`_s3_batch_delete`/`_s3_infer_partition_subprefixes` helpers,
+    partition-subprefix-tuple swap semantics), `_BACKEND_REGISTRY` singleton (s3/file/local_unschemed
+    → eager backends), `get_backend(path)`, `register_backend(scheme, backend)`,
+    `validate_swap_scheme(...)`, `atomic_swap(...)` dispatcher with scheme-coherence check,
+    `build_staging_path(...)`, `best_effort_delete_staging(...)`.
+  - `path_utils.py` rewritten to one-line dispatcher pattern (scheme primitives live at TOP;
+    `_get_backend(path)` lazy-imports `storage_backends.get_backend` per call to avoid circular
+    import). All 18 public `path_utils.path_*` functions are 1-liners. Inter-scheme `path_replace`
+    coherence check preserved before dispatch.
+  - `_staging_swap.py` reduced from 550+ lines → 99-line backward-compat shim: `scheme:` kwarg
+    on `atomic_swap` retained (unused internally); 2-arg `best_effort_delete_staging(staging_path, scheme)`
+    signature retained (unused `scheme` param); `validate_swap_scheme` returns `_StorageScheme`
+    with original error hint text; `detect_scheme` imported at module level so test fixtures can
+    still `monkeypatch.setattr(_swap_mod, "detect_scheme", fake_detect)`.
+  - Backward-compat shim symbols added for test fixture survival:
+    `path_utils._S3_CLIENT = None`, `path_utils._s3_client()`, `path_utils._split_s3_path()`
+    on `path_utils` module; `S3Backend._get_client()` routes through `path_utils._s3_client()`
+    via lazy import so `monkeypatch.setattr(pu, "_s3_client", lambda: fake)` intercepts all
+    S3 client access. `_staging_swap._s3_client = path_utils._s3_client` + `_S3_CLIENT = None`
+    dead-symbols added so `test_staging_swap.py` fixture can still setattr on _swap_mod (code path
+    goes through pu, but fixture needs the attribute name to exist).
+  - PRD 08 §P2 rewritten (old "no StorageBackend protocol/registry" prohibition WITHDRAWN;
+    new 6-point canonical B3 pattern documented). §Anti-scope plugin rule refined (dynamic
+    auto-discovery out of scope; static in-code registration via registry or explicit
+    `register_backend()` call supported).
+  - Capability Maturity Matrix §1: new 🟢 Production row "Pluggable `StorageBackend` Protocol
+    / registry seam (B-6)" with detailed notes. GCS/ADLS rows reworded → additive-only
+    closure through the Production seam. Doc status date bumped 2026-08-26.
+  - BACKLOG updates: Resume TRANCHE 2 — B-6 CLOSED block; Status snapshot Captured+stamped;
+    constraint 2 + 2b marked SUPERSEDED by new constraint 8 (B-6 canonical facade pattern
+    appended AT END per "append, never delete" rule; constraint 8 covers single routing key,
+    per-scheme class shape, dispatcher immutability, staging-swap method placement, circular-import
+    guard, monkeypatch surface, dynamic-plugin anti-scope); B-1/B-2 item headers and scopes
+    updated to additive-only B-6 facade pattern (scattered branches across path_utils no longer
+    needed; each backend is one class + one enum entry + one registry line).
+  - **Verification:**
+    1. **Focused tests (80/80 green):** `tests/test_path_utils.py` + `tests/test_staging_swap.py`
+       all pass in 0.15s (39 POSIX non-S3 path_utils + 41 S3 fake / staging_swap tests).
+    2. **Full gate (311 assertions / 0 failed):** `bash scripts/run_tests.sh` → TEST GATE: PASS.
+       163 test files (test_cli 17, test_examples 9, test_iceberg_catalog_config 34,
+       test_iceberg_parity_and_audit 25, test_iceberg_preflight_spike 1, test_maintenance 14,
+       test_normalize_engine_parity 7, test_normalize_pipeline 9, test_publish_cli 8,
+       test_publish_models 8, test_sql_iceberg_write 5, test_sql_models 25,
+       focused tests 80 = 311 total). EXITCODE: 0. ZERO-REGRESSION confirmed.
+    3. **Lint:** `uv run ruff check .` → All checks passed! (Ruff auto-fixed: unused `os`/`posixpath`
+       in path_utils.py; unused `join_paths` in _staging_swap.py; I001 import ordering in
+       storage_backends & _staging_swap.py. Manual fix: removed unused `re` import from
+       storage_backends.)
+    4. **5 backward-compat surface points verified:** `dir(pu)` includes `_S3_CLIENT`/`_s3_client`/
+       `_split_s3_path`; `dir(_swap_mod)` includes `_s3_client`+`_S3_CLIENT` dead-symbols for fixture
+       setattr; `_swap_mod.detect_scheme` still module-level import patchable by "rejects known but
+       unsupported scheme" test; `best_effort_delete_staging(missing_path, scheme)` 2-arg call shape
+       preserved; `atomic_swap(..., scheme=…)` kwarg preserved (unused internally).
+  All 4 verification points confirmed green. Second TRANCHE 2 item closed. Multi-cloud B-1/B-2/B-3
+  now additive-only (one backend class + enum entry + registry line each; zero dispatcher/shim churn;
+  B-4 credential wiring + B-5 emulator tests remain separate pre-requisites).
   Next Tranche 2 pull candidates (ordered by pull-likelihood / HIGH flags):
   `g-5` (real secrets backend, 🔴 HIGH, blocks cloud cred story for B-4) →
-  `g-2` (observability, 🔴 HIGH) → `b-6` (pluggable storage facade, 🔴 HIGH) →
+  `g-2` (observability, 🔴 HIGH) →
   `g-3` (orchestration, 🟠 MED) → rest on-demand.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
@@ -702,9 +915,11 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
 - Export `JAVA_HOME`/`PATH` first or Spark tests fail `JAVA_GATEWAY_EXITED` (env, not a defect).
 - `s3a://` is deliberately rejected (PRD 08): Spark uses `s3a://` internally, but the framework's
   handoff URIs are `s3://` and EMRFS bridges them. Don't "fix" this by coercing schemes.
-- A new backend that implements *most* `path_*` functions but misses one (e.g. `path_delete_tree`
-  or the staging-swap analog) silently half-works — data lands but overwrite/cleanup corrupts.
-  Mirror the S3 branch in **all** of them (Constraint 2b).
+- A new backend that implements *most* Protocol methods but misses one (e.g. `path_delete_tree`
+  or the `staging_swap_atomic` partition-overwrite semantics) silently half-works — data lands
+  but overwrite/cleanup corrupts. Implement the full `StorageBackend` Protocol once per class
+  (Constraint 8 — reference `S3Backend` in storage_backends/__init__.py as the reference, not
+  scattered branches).
 
 ## Continuity — what IS verified good (do not re-litigate)
 
