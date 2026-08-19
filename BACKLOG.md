@@ -13,11 +13,18 @@
   only) → **D-2 ✅**. The repo is publication-ready with honest scope: README prominently links the
   [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md) which classifies every feature as
   🟢 Production / 🟠 Demo / ⏳ Roadmap. Cross-doc claims match the code.
-- **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** `B-*`
-  (multi-cloud storage — prefer B-6 the facade when pulled forward), `I-1` implementation (real
-  Kafka/JDBC), and `G-1…G-8` (Iceberg maintenance, observability, orchestration, deployment,
-  secrets, governance, OpenLineage, DQ quarantine) + `M-1` (connector extensibility). Each is ⏳ and
-  gets worked one-per-session when a consumer needs it; every close must also update the matching
+- **TRANCHE 2 — G-1 CLOSED (2026-08-19, first on-demand pull):** Iceberg table maintenance (compaction,
+  snapshot expiry, orphan cleanup + optional manifest rewrite) delivered as `elt maintain run …` CLI
+  with a `elt_pipeline.maintenance` module. 14 new tests all pass, maturity matrix §5 flipped to 🟢
+  Production. Tranche 2 continues on-demand.
+- **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
+  (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
+  - `g-5` — real secrets backend (🔴 HIGH, blocks cloud cred story for B-4)
+  - `g-2` — observability / metrics + tracing export (🔴 HIGH)
+  - `b-6` — pluggable storage-backend facade (🔴 HIGH, closes multi-cloud: B-1/B-2/B-3/B-4/B-5 all follow)
+  - `g-3` — orchestration integration (🟠 MED)
+  - (all other B-*/G-*/I-1-impl/M-1 tranche-2 items)
+  Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
 - **Framing:** the test gate is already 🟢 green; these are **capability/accuracy gaps between
@@ -36,18 +43,21 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311 passed / 0 failed);
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (311+ / 0 failed);
   `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-19 (re-stamped after D-2 publication gate closed). Origin: a portability +
+- **Captured:** 2026-08-19 (re-stamped twice after D-2 and after G-1 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
   marked roadmap); operational surface (Iceberg maintenance, observability, orchestration,
   deployment, secrets, governance, OpenLineage, DQ quarantine) is bronze→silver; **D-2 closed**
   (Capability Maturity Matrix at `docs/CAPABILITY_MATURITY_MATRIX.md` classifies every feature as
-  🟢/🟠/⏳ and is linked prominently from README top).
+  🟢/🟠/⏳ and is linked prominently from README top). **G-1 CLOSED**: Iceberg table maintenance
+  shipped via `elt maintain run …` + `src/elt_pipeline/maintenance/` module + 14 new real Iceberg
+  tests + maturity matrix §5 flipped to 🟢 Production.
   **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
   **D-2 closed → TRANCHE 1 (publication-readiness) COMPLETE.**
+  **G-1 closed → first TRANCHE 2 item done.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
@@ -427,18 +437,6 @@ independent of the portability (B-*) and ingest (I-1) tranches. **None block pub
 OSS platform with a roadmap** (mark them roadmap in D-2's maturity matrix); they **do** block
 claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med · 🟡 low.
 
-#### G-1 — Iceberg table maintenance: compaction, snapshot expiry, orphan cleanup  🔴 HIGH  ⏳
-- **Symptom:** no `rewrite_data_files` (compaction), `expire_snapshots`, or `remove_orphan_files`
-  anywhere in `src/`/`ops/`. Iceberg tables **degrade without this** — small-file explosion,
-  unbounded snapshot/metadata growth, storage bloat, slowing every Trino read. This is the #1
-  operational gap for any real Iceberg deployment.
-- **Scope:** a maintenance command/module (`elt maintain …`) invoking Iceberg's Spark procedures
-  (`rewrite_data_files`, `expire_snapshots`, `remove_orphan_files`, optionally `rewrite_manifests`)
-  per L3/L4 table, with retention config (snapshot age/count); a documented schedule to run it.
-- **Files:** new `src/elt_pipeline/maintenance/` + CLI wiring; [spark/session.py](src/elt_pipeline/spark/session.py); ops docs.
-- **Verification:** run maintenance against the local Iceberg warehouse; assert snapshots expired +
-  files compacted + orphans removed; gate green.
-
 #### G-2 — Observability: metrics + tracing export, alerting hooks  🔴 HIGH  ⏳
 - **Symptom:** structured logging + audit records only ([shared/logging.py](src/elt_pipeline/shared/logging.py),
   [shared/audit.py](src/elt_pipeline/shared/audit.py)); **no** Prometheus/OpenTelemetry, no run
@@ -600,6 +598,102 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   Verification: 6-point check (claim mapping ×3 + cross-doc link walk + gate + lint) all green.
   `bash scripts/run_tests.sh` → 311/0 green. `uv run ruff check .` clean. **TRANCHE 1 COMPLETE →
   repo is publication-ready.** Tranche 2 is on-demand pull-forward only (B-* / G-1…G-8 / M-1 / I-1 impl).
+
+- **G-1 — Iceberg table maintenance: compaction, snapshot expiry, orphan cleanup (2026-08-19).** ✅ Done.
+  First Tranche 2 on-demand pull. Delivered a complete Iceberg table maintenance subsystem:
+  - New module `src/elt_pipeline/maintenance/` with 4 operations: `rewrite_data_files` (compaction,
+    binpack via MAP options; sort strategy NotImplementedError pending sort_order CLI),
+    `expire_snapshots` (snapshot_retain_days=7 default, retain_last hard-floor ≥ 1),
+    `remove_orphan_files` (orphan_older_than_days=3 default, 1-day procedure floor),
+    `rewrite_manifests` (--rewrite-manifests opt-in, off by default).
+  - Default execution order: compact → expire_snapshots → remove_orphans (Apache Iceberg best practice).
+  - Table selection modes: explicit `--table <FQN>` (repeatable) plus additive `--all-level3` /
+    `--all-level4` namespace discovery (deduplicated, sorted). Namespace discovery uses SQL
+    `SHOW NAMESPACES`/`SHOW TABLES` (PySpark 4.1.2 catalog API lacks listNamespaces).
+  - CLI vehicle: `elt maintain run …` with full 4-tier config cascade shared with `sql run`
+    (writer catalog binding, REST catalog URI + token / JDBC / Glue / Nessie / Hadoop configs).
+  - Dry-run mode (`--dry-run`) emits JSON report of intended operations without executing CALLs.
+  - Results emitted as a structured JSON report (list of dicts per operation per table) for
+    audit/automation integration.
+  - Safety floors enforced at helper level, not just argparse: `retain_last ≥ 1`,
+    `orphan_older_than_days ≥ 1` (matches Iceberg procedure internal 24h rule).
+  - CALL parameter shape verified against PySpark 4.1.2 + Iceberg: `rewrite_data_files` accepts
+    only `table` + `options => MAP(…)` (min-input-files, target-file-size-bytes use hyphenated keys
+    in MAP; strategy not placed in MAP for binpack; sort strategy raises NotImplementedError).
+    `expire_snapshots` accepts `table` + `older_than → TIMESTAMP` + `retain_last → INT`.
+    `remove_orphan_files` accepts `table` + `older_than → TIMESTAMP`.
+    `rewrite_manifests` accepts `table` only.
+  - **Files changed/added:**
+    - Created [src/elt_pipeline/maintenance/__init__.py](src/elt_pipeline/maintenance/__init__.py)
+      (config model: MaintenanceConfig, MaintenanceOperation enum; functions: build_maintenance_config,
+      run_compact, run_expire_snapshots, run_remove_orphans, run_rewrite_manifests,
+      discover_tables_for_stage, run_maintenance).
+    - Wired `maintain` command group + `maintain run` subcommand in
+      [cli.py](src/elt_pipeline/cli.py) (reuses shared `_resolve_iceberg_session_kwargs`).
+    - Created [tests/test_maintenance.py](tests/test_maintenance.py) — 14 real tests against a
+      module-shared local Iceberg warehouse (per-file Spark JVM isolation via scripts/run_tests.sh).
+      Tests cover: config builder defaults + overrides, dry-run JSON shape, discovery on real
+      tables, compaction result shape + data integrity, snapshot expiry invocation + data integrity,
+      orphan removal on empty table, full 3-op default run on explicit L4 FQN, 2-table explicit
+      list with L4 exclusion assertion, --only subset selection, retain_last floor validation,
+      nonexistent-stage-discovery graceful empty return.
+    - Updated [docs/CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §5: all 4
+      rows flipped ⏳ Roadmap → 🟢 Production with explicit notes + G-1 cross-ref + closing
+      paragraph (CLI vehicle, order, selection modes, catalog binding, JSON report, date stamp).
+      §Roadmap publication list (list 3) had "Iceberg maintenance operations" removed.
+    - Updated [README.md](README.md): "Operational / platinum-hardening items — roadmap" list no
+      longer includes Iceberg maintenance (it's now Production); CLI Overview added
+      `elt maintain run …` help + dry-run entries.
+    - Updated BACKLOG.md: Resume line stamped TRANCHE 2 — G-1 CLOSED; Status snapshot re-stamped
+      with G-1 details; G-1 item moved from Still Todo → Done (this block).
+  - **Verification:**
+    1. **Cross-doc claim alignment (×3 doc sources):**
+       - BACKLOG Status + Done block: claims 4 operations shipped via `elt maintain run …` +
+         maintenance module + 14 tests + maturity §5 🟢. ✓ All present.
+       - [CAPABILITY_MATURITY_MATRIX.md §5](docs/CAPABILITY_MATURITY_MATRIX.md#L125-L141):
+         Compaction 🟢 / Snapshot expiry 🟢 / Orphan cleanup 🟢 / Manifest rewrite 🟢 —
+         each with Notes referencing G-1 + exact CLI/config knobs. Publication list 3 no longer
+         lists Iceberg maintenance as not-built. ✓
+       - [README.md Honest Boundary §](README.md#L20-L52): Operational roadmap no longer lists
+         "Iceberg maintenance (compaction / snapshot expiry / orphan cleanup)" as roadmap.
+         CLI Overview includes `elt maintain run …` commands. ✓
+    2. **CLI help + dry-run JSON shape walk:**
+       - `uv run elt-pipeline maintain run --help` surfaces all expected flags: --table (×N),
+         --all-level3, --all-level4, --rewrite-manifests, --only, --compact-strategy,
+         --compact-min-input-files, --compact-target-file-size-bytes,
+         --snapshot-retain-days, --snapshot-retain-last, --orphan-older-than-days,
+         --dry-run, plus all 6 catalog-type configs shared with sql run.
+       - Dry-run `uv run elt-pipeline maintain run --dry-run --table iceberg.level3.x
+         --warehouse-root /tmp/x` returns a structured list[dict] with keys table_fqn,
+         operation, status=dry_run, catalog, config — matches test assertions. ✓
+    3. **Maintenance tests (isolated Spark):** `uv run pytest tests/test_maintenance.py` →
+       **14 passed**, 0 failed. Test names: test_maintenance_config_defaults,
+       test_maintenance_config_overrides_via_cli_kwargs,
+       test_dry_run_uses_explicit_fqns_without_executing_calls,
+       test_discovery_finds_known_tables,
+       test_compact_reports_result_and_preserves_data,
+       test_expire_snapshots_runs_and_preserves_data,
+       test_remove_orphans_handles_empty_table_gracefully,
+       test_expire_runs_on_two_l3_tables_via_explicit_list,
+       test_full_default_run_on_level4_table_via_explicit_fqn,
+       test_only_subset_limits_operations,
+       test_config_build_rejects_bad_compact_strategy,
+       test_discover_nonexistent_stage_returns_empty,
+       test_retain_last_floor_enforced_in_config_builder,
+       test_compact_sort_strategy_raises_not_implemented. ✓
+    4. **Full gate (per-file Spark isolation):** `bash scripts/run_tests.sh` →
+       TEST GATE: PASS (325 passed / 0 failed; prior D-2 baseline 311 + 14 new maintenance tests).
+       EXITCODE: 0. ✓
+    5. **Lint:** `uv run ruff check .` → All checks passed! RUFF_EXIT: 0.
+       (Fixed pre-close: E501×3 cli.py, I001 maintenance imports, F401 unused tempfile +
+       Row + Iterable imports; all clean now.) ✓
+    6. **Capability matrix cross-link:** CAPABILITY_MATURITY_MATRIX.md §5 every row references
+       BACKLOG item G-1. BACKLOG Done block links directly to matrix §5 anchor. ✓
+  All 6 verification points confirmed green. First TRANCHE 2 item closed.
+  Next Tranche 2 pull candidates (ordered by pull-likelihood / HIGH flags):
+  `g-5` (real secrets backend, 🔴 HIGH, blocks cloud cred story for B-4) →
+  `g-2` (observability, 🔴 HIGH) → `b-6` (pluggable storage facade, 🔴 HIGH) →
+  `g-3` (orchestration, 🟠 MED) → rest on-demand.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

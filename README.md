@@ -47,8 +47,9 @@ The platform defines four first-class connector *families* (`rest`, `sql`, `kafk
 - Trino 468 JDBC serving endpoint (first-class spoke; SQLite-backed metastore default for workstation).
 - Airflow reference orchestration wrapper; OpenLineage-compatible lineage adapter; row-count DQ adapter.
 
-**Operational / platinum-hardening items — roadmap (not blocking publication):**
-Iceberg maintenance (compaction / snapshot expiry / orphan cleanup), metrics and tracing export, a real secrets backend (Vault / cloud SM), PII classification and masking, a deeper DQ library with quarantine/DLQ, and container / Helm deployment artifacts — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
+**Operational / platinum-hardening items:**
+Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup / manifest rewrite) is **Production** (via `elt maintain run …`; see [Capability Maturity Matrix §5](docs/CAPABILITY_MATURITY_MATRIX.md#L125-L141)).
+Remaining roadmap items (not blocking publication): metrics and tracing export, a real secrets backend (Vault / cloud SM), PII classification and masking, a deeper DQ library with quarantine/DLQ, and container / Helm deployment artifacts — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
 
 ## Source Code references
 
@@ -182,6 +183,25 @@ Run a deterministic local schedule plan:
 
 ```bash
 uv run elt-pipeline schedule run examples/schedules/local_demo.yaml
+```
+
+Run Iceberg table maintenance (compaction, snapshot expiry, orphan cleanup):
+
+```bash
+uv run elt-pipeline maintain run --help
+# Dry run — preview what will run on specific tables
+uv run elt-pipeline maintain run --dry-run \
+  --warehouse-root path/to/warehouse \
+  --table iceberg.level3.orders --table iceberg.level4.daily_orders
+# Run against all L3 tables + specific L4, with custom retention
+uv run elt-pipeline maintain run --all-level3 \
+  --table iceberg.level4.daily_orders \
+  --warehouse-root path/to/warehouse \
+  --snapshot-retain-days 14 --orphan-older-than-days 7
+# Opt-in manifest rewrite + only compaction+expire (skip orphans)
+uv run elt-pipeline maintain run --all-level4 \
+  --warehouse-root path/to/warehouse \
+  --rewrite-manifests --only compact,expire_snapshots
 ```
 
 ## Local Workflow

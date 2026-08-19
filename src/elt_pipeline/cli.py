@@ -37,6 +37,12 @@ from elt_pipeline.integrations import (
     build_lineage_adapter,
     load_orchestration_metadata_from_env,
 )
+from elt_pipeline.maintenance import (
+    DEFAULT_OPERATIONS,
+    MaintenanceConfig,
+    MaintenanceOperation,
+    run_maintenance,
+)
 from elt_pipeline.normalize.partitioning import PartitionMode, PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.publish import (
@@ -1366,6 +1372,208 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    maintain_parser = subparsers.add_parser(
+        "maintain",
+        help="Run Iceberg table maintenance (compaction, snapshot expiry, orphan cleanup).",
+    )
+    maintain_subparsers = maintain_parser.add_subparsers(
+        dest="maintain_command",
+        required=True,
+    )
+    maintain_run_parser = maintain_subparsers.add_parser(
+        "run",
+        help="Run Iceberg table maintenance on the selected L3/L4 table set.",
+    )
+    maintain_run_parser.add_argument(
+        "--table",
+        dest="maintain_tables",
+        action="append",
+        default=[],
+        help=(
+            "Fully-qualified Iceberg table name (catalog.stage.name) to maintain. "
+            "May be passed multiple times. Combined with --all-level3 / --all-level4."
+        ),
+    )
+    maintain_run_parser.add_argument(
+        "--all-level3",
+        dest="maintain_all_level3",
+        action="store_true",
+        help="Include every Iceberg table under the level3 namespace.",
+    )
+    maintain_run_parser.add_argument(
+        "--all-level4",
+        dest="maintain_all_level4",
+        action="store_true",
+        help="Include every Iceberg table under the level4 namespace.",
+    )
+    maintain_run_parser.add_argument(
+        "--only",
+        dest="maintain_only",
+        default=None,
+        help=(
+            "Comma-separated list of operations to run (compact, expire_snapshots, "
+            "remove_orphans, rewrite_manifests). Default: compact+expire_snapshots+remove_orphans."
+        ),
+    )
+    maintain_run_parser.add_argument(
+        "--compact",
+        dest="maintain_do_compact",
+        action="store_true",
+        default=None,
+        help="Enable file compaction (rewrite_data_files). Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--no-compact",
+        dest="maintain_do_compact",
+        action="store_false",
+        default=None,
+        help="Disable file compaction. Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--expire-snapshots",
+        dest="maintain_do_expire",
+        action="store_true",
+        default=None,
+        help="Enable snapshot expiry. Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--no-expire-snapshots",
+        dest="maintain_do_expire",
+        action="store_false",
+        default=None,
+        help="Disable snapshot expiry. Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--remove-orphans",
+        dest="maintain_do_orphans",
+        action="store_true",
+        default=None,
+        help="Enable orphan file removal. Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--no-remove-orphans",
+        dest="maintain_do_orphans",
+        action="store_false",
+        default=None,
+        help="Disable orphan file removal. Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--rewrite-manifests",
+        dest="maintain_do_manifests",
+        action="store_true",
+        default=None,
+        help="Enable manifest rewrites (off by default). Overrides --only.",
+    )
+    maintain_run_parser.add_argument(
+        "--snapshot-retain-days",
+        type=int,
+        default=None,
+        help="Expire snapshots older than N days. Default 7.",
+    )
+    maintain_run_parser.add_argument(
+        "--snapshot-retain-last",
+        type=int,
+        default=None,
+        help="Always keep at least N most recent snapshots. Default 1.",
+    )
+    maintain_run_parser.add_argument(
+        "--orphan-older-than-days",
+        type=int,
+        default=None,
+        help="Remove orphan files older than N days. Default 3 (safety buffer).",
+    )
+    maintain_run_parser.add_argument(
+        "--compact-strategy",
+        choices=["binpack", "sort"],
+        default=None,
+        help="rewrite_data_files strategy. Default binpack.",
+    )
+    maintain_run_parser.add_argument(
+        "--compact-min-input-files",
+        type=int,
+        default=None,
+        help="Minimum number of input files before compaction runs. Default 5.",
+    )
+    maintain_run_parser.add_argument(
+        "--compact-target-file-size-mb",
+        type=int,
+        default=None,
+        help="Target output file size in MiB. Defaults to the Iceberg catalog default.",
+    )
+    maintain_run_parser.add_argument(
+        "--dry-run",
+        dest="maintain_dry_run",
+        action="store_true",
+        help="List selected tables and requested operations without executing CALLs.",
+    )
+    maintain_run_parser.add_argument(
+        "--root-path",
+        type=str,
+        default=_DEFAULT_ROOT_PATH_EVAL,
+        help=(
+            "Pipeline runtime root (for consistency with sql runs; not used by "
+            "maintenance procedures directly, but included in context resolution)."
+        ),
+    )
+    maintain_run_parser.add_argument(
+        "--warehouse-root",
+        type=str,
+        default=_DEFAULT_WAREHOUSE_ROOT_EVAL,
+        help=(
+            "SQL warehouse root for level3/level4 output. Defaults to "
+            "ELT_PIPELINE_REPO_RUN_DIR/warehouse if repo_run is available, else "
+            ".ignore/warehouse. Used to auto-derive --iceberg-warehouse-dir when omitted."
+        ),
+    )
+    maintain_run_parser.add_argument(
+        "--environment", default="default", dest="maintain_environment",
+    )
+    maintain_run_parser.add_argument(
+        "--iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_true",
+        default=None,
+        help="Enable Iceberg (required for maintenance; normally the default).",
+    )
+    maintain_run_parser.add_argument(
+        "--no-iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_false",
+        default=None,
+        help="Explicitly disable Iceberg (maintenance has no effect).",
+    )
+    maintain_run_parser.add_argument("--iceberg-catalog-name", default=None)
+    maintain_run_parser.add_argument(
+        "--iceberg-catalog-type",
+        default=None,
+        choices=["hadoop", "hive_metastore", "jdbc", "nessie", "rest", "glue"],
+    )
+    maintain_run_parser.add_argument("--iceberg-catalog-uri", default=None)
+    maintain_run_parser.add_argument(
+        "--iceberg-rest-token", default=None, dest="iceberg_rest_token",
+    )
+    maintain_run_parser.add_argument(
+        "--iceberg-rest-warehouse", default=None, dest="iceberg_rest_warehouse",
+    )
+    maintain_run_parser.add_argument(
+        "--iceberg-glue-region", default=None, dest="iceberg_glue_region",
+    )
+    maintain_run_parser.add_argument(
+        "--iceberg-hive-metastore-uri",
+        default=None,
+        dest="iceberg_hive_metastore_uri",
+    )
+    maintain_run_parser.add_argument("--iceberg-warehouse-dir", default=None)
+    maintain_run_parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=None,
+        help=(
+            "Optional pipeline YAML config path for runtime infrastructure overrides "
+            "(Spark, Iceberg). Auto-resolves from env ELT_PIPELINE_CONFIG_PATH."
+        ),
+    )
+
     schedule_parser = subparsers.add_parser(
         "schedule",
         help="Execute ordered local schedule plans by calling existing CLI commands.",
@@ -2276,6 +2484,38 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(payload, indent=2))
                 return 0
 
+        if args.command == "maintain":
+            if not _iceberg_effective_enabled(args):
+                raise ConfigValidationError(
+                    message="maintain: Iceberg must be enabled (it is OFF). "
+                            "Remove --no-iceberg-enabled or set YAML/ENV iceberg enabled."
+                )
+            maintenance_cfg = _build_maintenance_config(args)
+            has_tables = (
+                bool(maintenance_cfg.table_fqns)
+                or maintenance_cfg.all_level3
+                or maintenance_cfg.all_level4
+            )
+            if not has_tables:
+                raise ConfigValidationError(
+                    message="maintain: no tables selected. Pass --all-level3, --all-level4, "
+                            "and/or one or more --table flags."
+                )
+            session_kwargs = _resolve_iceberg_session_kwargs(
+                args=args, app_name="elt_pipeline_maintain",
+            )
+            spark = build_spark_session(**session_kwargs)
+            try:
+                report = run_maintenance(spark=spark, config=maintenance_cfg)
+            finally:
+                spark.stop()
+            print(json.dumps(
+                {"command": "maintain.run", **report.to_dict()},
+                indent=2,
+                default=str,
+            ))
+            return 0
+
         if args.command == "schedule":
             plan = load_schedule_plan(args.plan_path)
             continue_on_error = args.continue_on_error or plan.continue_on_error
@@ -2396,6 +2636,96 @@ def _invoke_cli_job(argv: list[str]) -> tuple[int, str, str]:
         text=True,
     )
     return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def _build_maintenance_config(args: Any) -> MaintenanceConfig:
+    """Build MaintenanceConfig from argparse args, honouring the DEFAULT_OPERATIONS floor
+    and the per-operation --<op>/--no-<op> overrides over --only."""
+    explicit: dict[str, bool] = {}
+    if getattr(args, "maintain_do_compact", None) is not None:
+        explicit[MaintenanceOperation.compact.value] = bool(args.maintain_do_compact)
+    if getattr(args, "maintain_do_expire", None) is not None:
+        explicit[MaintenanceOperation.expire_snapshots.value] = bool(args.maintain_do_expire)
+    if getattr(args, "maintain_do_orphans", None) is not None:
+        explicit[MaintenanceOperation.remove_orphans.value] = bool(args.maintain_do_orphans)
+    if getattr(args, "maintain_do_manifests", None) is not None:
+        explicit[MaintenanceOperation.rewrite_manifests.value] = bool(args.maintain_do_manifests)
+
+    only_raw = getattr(args, "maintain_only", None)
+    if only_raw and only_raw.strip():
+        names = [part.strip() for part in only_raw.split(",") if part.strip()]
+        valid = {op.value for op in MaintenanceOperation}
+        invalid = [n for n in names if n not in valid]
+        if invalid:
+            raise ConfigValidationError(
+                message=(
+                    "maintain --only: unknown operation(s): "
+                    + ", ".join(invalid)
+                    + ". Valid: "
+                    + ", ".join(sorted(valid))
+                ),
+                context={"--only": only_raw, "invalid": invalid},
+            )
+        chosen_ops: list[MaintenanceOperation] = [MaintenanceOperation(n) for n in names]
+    else:
+        chosen_ops = list(DEFAULT_OPERATIONS)
+
+    for name, enabled in explicit.items():
+        op = MaintenanceOperation(name)
+        if enabled and op not in chosen_ops:
+            chosen_ops.append(op)
+        elif not enabled and op in chosen_ops:
+            chosen_ops.remove(op)
+
+    if not chosen_ops:
+        raise ConfigValidationError(
+            message="maintain: zero operations selected. Use --only or the --<op> flags."
+        )
+
+    target_mb = getattr(args, "compact_target_file_size_mb", None)
+    target_bytes: int | None = None
+    if target_mb is not None:
+        mb_int = int(target_mb)
+        if mb_int <= 0:
+            raise ConfigValidationError(
+                message="--compact-target-file-size-mb must be a positive integer",
+                context={"compact_target_file_size_mb": target_mb},
+            )
+        target_bytes = mb_int * 1024 * 1024
+
+    return MaintenanceConfig(
+        table_fqns=list(getattr(args, "maintain_tables", None) or []),
+        all_level3=bool(getattr(args, "maintain_all_level3", False)),
+        all_level4=bool(getattr(args, "maintain_all_level4", False)),
+        operations=tuple(chosen_ops),
+        snapshot_retain_days=(
+            int(args.snapshot_retain_days)
+            if getattr(args, "snapshot_retain_days", None) is not None
+            else 7
+        ),
+        snapshot_retain_last=(
+            max(1, int(args.snapshot_retain_last))
+            if getattr(args, "snapshot_retain_last", None) is not None
+            else 1
+        ),
+        orphan_older_than_days=(
+            max(0, int(args.orphan_older_than_days))
+            if getattr(args, "orphan_older_than_days", None) is not None
+            else 3
+        ),
+        compact_strategy=(
+            str(args.compact_strategy)
+            if getattr(args, "compact_strategy", None)
+            else "binpack"
+        ),
+        compact_min_input_files=(
+            max(1, int(args.compact_min_input_files))
+            if getattr(args, "compact_min_input_files", None) is not None
+            else 5
+        ),
+        compact_target_file_size_bytes=target_bytes,
+        dry_run=bool(getattr(args, "maintain_dry_run", False)),
+    )
 
 
 def _parse_vars_json(raw_value: str | None) -> dict[str, Any]:

@@ -3,7 +3,7 @@
 ## Document Status
 
 - Status: Canonical reference
-- Updated: 2026-08-19 (publication-readiness pass)
+- Updated: 2026-08-19 (publication-readiness pass + G-1 Iceberg maintenance closed)
 - Owner: maintainer
 
 ## Purpose
@@ -126,14 +126,19 @@ correctly). Combining them with a non-S3 / non-local storage scheme (e.g., `gs:/
 
 | Capability | Maturity | Notes |
 |---|---|---|
-| Data file compaction (`rewrite_data_files`) | ⏳ Roadmap | Critical operational gap. Iceberg tables degrade without compaction (small-file explosion, slow queries). |
-| Snapshot expiry (`expire_snapshots`) | ⏳ Roadmap | Unbounded snapshot + metadata growth without this. |
-| Orphan file cleanup (`remove_orphan_files`) | ⏳ Roadmap | Storage bloat from failed writes and GC. |
-| Manifest rewrite (`rewrite_manifests`) | ⏳ Roadmap | Add-on; lower priority than the three above. |
+| Data file compaction (`rewrite_data_files`) | 🟢 Production | `elt maintain run …` wraps `CALL catalog.system.rewrite_data_files` with MAP-based options (binpack strategy; min-input-files / target-file-size-bytes config). Sort strategy requires an explicit sort-order expression and is gated with NotImplementedError today. Default: binpack, 5-file minimum threshold. See BACKLOG item **G-1** (closed 2026-08-19). |
+| Snapshot expiry (`expire_snapshots`) | 🟢 Production | `elt maintain run …` wraps `CALL catalog.system.expire_snapshots`. Retention = `snapshot_retain_days` (default 7) + hard-floor `retain_last ≥ 1` (default 1) so the latest snapshot can never be dropped. See BACKLOG item **G-1**. |
+| Orphan file cleanup (`remove_orphan_files`) | 🟢 Production | `elt maintain run …` wraps `CALL catalog.system.remove_orphan_files`. Floor `orphan_older_than_days ≥ 1` day (default 3) to match Iceberg's procedure-enforced 24-hour race-condition guard. See BACKLOG item **G-1**. |
+| Manifest rewrite (`rewrite_manifests`) | 🟢 Production | `elt maintain run … --rewrite-manifests` wraps `CALL catalog.system.rewrite_manifests`. Opt-in (off by default) because most tables do not need a dedicated manifest pass after compaction+expiry. See BACKLOG item **G-1**. |
 
-All four share a delivery vehicle: a `elt maintain …` CLI module invoking Iceberg's
+All four share a delivery vehicle: the `elt maintain …` CLI module invoking Iceberg's
 Spark procedures per L3/L4 table with retention config, plus a documented schedule.
-See BACKLOG item **G-1**.
+Default execution order: compact → expire_snapshots → remove_orphans. Table selection
+supports explicit `--table <fq>` (repeatable) plus additive `--all-level3` /
+`--all-level4` namespace discovery (deduplicated and sorted). Maintenance always runs
+against the writer catalog (the same one `build_spark_session` wires for writes);
+results are emitted as a JSON report by the CLI for audit/automation.
+Closed 2026-08-19 in BACKLOG item **G-1**.
 
 ---
 
@@ -243,7 +248,7 @@ For a public consumer walking in cold:
 
 1. **What works today (🟢 Production):** local + AWS S3 storage, REST + object-storage ingest, all 6+6 Iceberg catalog bindings, Trino JDBC serving, the 4-tier SQL validity chain, replayable idempotent writes, the 4-tier config cascade, clean seams for DQ/lineage/audit. This is a usable platform — it runs the full end-to-end loop on a laptop or on AWS.
 2. **What ships but is demo-only (🟠 Demo):** SQLite SQL source, JSONL Kafka source, the basic schedule runner, the row-count DQ adapter, the bespoke lineage emitter, the stub secrets resolver. All of these *work* for a zero-dependency bundled demo; none are intended as-is for production deployments.
-3. **What is not built yet (⏳ Roadmap):** GCS / ADLS / DBFS / HDFS storage, real JDBC DB sources, real Kafka broker, Iceberg maintenance operations, metrics/tracing/alerting, real secrets backends, PII masking, DQ quarantine + check library, OpenLineage wire compatibility, container deployment artifacts, a connector plugin registry. All are well-scoped adds behind existing seams (or explicit roadmap items) and tracked when pulled forward.
+3. **What is not built yet (⏳ Roadmap):** GCS / ADLS / DBFS / HDFS storage, real JDBC DB sources, real Kafka broker, metrics/tracing/alerting, real secrets backends, PII masking/retention/erasure, DQ quarantine + built-in check library, OpenLineage wire compatibility, container deployment artifacts, a connector plugin registry. All are well-scoped adds behind existing seams (or explicit roadmap items) and tracked when pulled forward.
 
 To update this matrix as a capability closes: move its row to the correct 🟢/🟠/⏳ column,
 stamp the date, and cross-reference the closed BACKLOG item in the "Notes" column.
