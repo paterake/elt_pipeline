@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
 
 from elt_pipeline.shared.secrets import (
-    _PROVIDER_REGISTRY,
     EnvVarSecrets,
     FileSecrets,
+    ParsedSecretRef,
     SecretNotFoundError,
     SecretRefSyntaxError,
     SecretScheme,
@@ -15,6 +17,7 @@ from elt_pipeline.shared.secrets import (
     SecretsNotImplementedError,
     SecretsProvider,
     SecretValue,
+    _PROVIDER_REGISTRY,
     get_provider,
     parse_secret_ref,
     redact_secret,
@@ -22,6 +25,7 @@ from elt_pipeline.shared.secrets import (
     resolve_secret_ref,
     resolve_secret_refs,
 )
+
 
 # ---------------------------------------------------------------------------
 # SecretValue redaction
