@@ -148,10 +148,21 @@ Closed 2026-08-19 in BACKLOG item **G-1**.
 
 | Capability | Maturity | Notes |
 |---|---|---|
-| Structured logging + audit records | 🟠 Demo | `logging.py` + `audit.py` produce lineaged run records (run duration, rows in/out per level, quality pass/fail, endpoints). Consumable as JSON but no export path. |
-| Prometheus / OpenTelemetry metrics export | ⏳ Roadmap | Emit run metrics from the existing audit + `MetricsSummary` data to a pluggable backend (OTLP / Prometheus scrape). Keep it a seam like DQ/lineage so backends are swappable. |
-| Distributed tracing export | ⏳ Roadmap | Traces spanning ingest → normalize → sql → publish, tied to `run_id`. |
-| Alerting hooks | ⏳ Roadmap | Pluggable failure/quality-failure alerting seam on top of metrics/tracing. |
+| Structured logging + audit records | 🟢 Committed | `logging.py` + `audit.py` produce lineaged run records (run duration, rows in/out per level, quality pass/fail, endpoints). Promoted after G-2. |
+| Prometheus / OpenTelemetry metrics export | 🟢 Committed | Prometheus remote_write via `ELT_PIPELINE_METRICS_*` env → auto-derives run metrics: duration, records read/written/files, status gauge, extra numeric extras, per-validation counters. `MetricsExporter` protocol; backends swappable. |
+| Distributed tracing export | 🟢 Committed | OTLP HTTP via `ELT_PIPELINE_TRACING_*` env → auto-derives a run-level span per stage (trace_id = sha256("trace:run_id")[:32], status=ok/error). `TraceExporter` protocol + `OtlpHttpTraceExporter` zero-deps urllib implementation. |
+| Alerting hooks | 🟢 Committed | Webhook POST via `ELT_PIPELINE_ALERTS_*` env → failure-triggered `AlertEvent`: severity=critical for hard errors, warning for RETRY/TIMEOUT codes. `AlertHook` protocol + `WebhookAlertHook` implementation. |
+
+Local per-stage JSONL sinks (`metrics.jsonl`, `traces.jsonl`, `alerts.jsonl`) always written regardless of backend config; HTTP export is controlled independently per-subsystem (env BACKEND var set → enabled). Subsystems disabled by default — zero behaviour change unless explicitly configured.
+
+**Env contract per subsystem (metrics / tracing / alerts), each with 5 vars:**
+- `ELT_PIPELINE_{SYSTEM}_BACKEND` — prometheus_remote_write / otlp_http / webhook respectively
+- `ELT_PIPELINE_{SYSTEM}_URL` — http(s) endpoint
+- `ELT_PIPELINE_{SYSTEM}_POLICY` — best_effort (warn-only, default) / blocking (fail run on export failure)
+- `ELT_PIPELINE_{SYSTEM}_TIMEOUT_SECONDS` — default 10s, positive integer
+- `ELT_PIPELINE_{SYSTEM}_AUTH_HEADER` — optional bearer token / auth header for outbound POSTs
+
+Factory: `build_observability_adapter(root_path)` — builds from env; each of the 3 Protocol backends can also be injected via DI (tests, advanced users). Single call-site per stage: `observability_adapter.on_run_complete(run_context=, environment=, audit_record=)` — takes an already-built AuditRecord and auto-derives all metrics/spans/alerts.
 
 See BACKLOG item **G-2**.
 

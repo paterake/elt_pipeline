@@ -13,6 +13,7 @@ from elt_pipeline.shared.audit import AuditRecord
 from elt_pipeline.shared.errors import ErrorCategory, ErrorRecord, PipelineError
 from elt_pipeline.shared.lineage import LineageEvent
 from elt_pipeline.shared.logging import ExecutionLogEvent
+from elt_pipeline.shared.observability import AlertEvent, MetricPoint, TraceSpan
 from elt_pipeline.shared.path_utils import (
     join_paths,
     path_basename,
@@ -281,4 +282,46 @@ class LocalArtifactStore:
             "lineage.jsonl",
         )
         _append_jsonl_file(path, lineage_event)
+        return path
+
+    def append_metrics_point(
+        self,
+        *,
+        run_context: RunContext,
+        environment: str,
+        metrics_point: MetricPoint,
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "metrics.jsonl",
+        )
+        _append_jsonl_file(path, metrics_point)
+        return path
+
+    def append_trace_span(
+        self,
+        *,
+        run_context: RunContext,
+        environment: str,
+        trace_span: TraceSpan,
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "traces.jsonl",
+        )
+        _append_jsonl_file(path, trace_span)
+        return path
+
+    def append_alert_event(
+        self,
+        *,
+        run_context: RunContext,
+        environment: str,
+        alert_event: AlertEvent,
+    ) -> str:
+        path = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "alerts.jsonl",
+        )
+        _append_jsonl_file(path, alert_event)
         return path

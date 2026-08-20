@@ -7,6 +7,17 @@ from elt_pipeline.integrations.lineage import (
     OpenLineageHttpEmitter,
     build_lineage_adapter,
 )
+from elt_pipeline.integrations.metrics import (
+    AlertHook,
+    MetricsExporter,
+    ObservabilityAdapter,
+    ObservabilityPolicy,
+    OtlpHttpTraceExporter,
+    PrometheusRemoteWriteExporter,
+    TraceExporter,
+    WebhookAlertHook,
+    build_observability_adapter,
+)
 from elt_pipeline.integrations.orchestration import (
     AirflowCliWrapper,
     CliInvocationRequest,
@@ -38,6 +49,15 @@ __all__ = [
     "LineageRemoteEmitter",
     "OpenLineageHttpEmitter",
     "build_lineage_adapter",
+    "AlertHook",
+    "MetricsExporter",
+    "ObservabilityAdapter",
+    "ObservabilityPolicy",
+    "OtlpHttpTraceExporter",
+    "PrometheusRemoteWriteExporter",
+    "TraceExporter",
+    "WebhookAlertHook",
+    "build_observability_adapter",
     "AirflowCliWrapper",
     "CliInvocationRequest",
     "CliInvocationResult",

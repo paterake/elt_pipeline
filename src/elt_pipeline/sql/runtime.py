@@ -15,6 +15,7 @@ from elt_pipeline.integrations import (
     QualityHookRequest,
     QualityHookSummary,
     build_lineage_adapter,
+    build_observability_adapter,
     build_quality_hook,
     quality_error_already_recorded,
     raise_for_blocking_quality_failures,
@@ -63,6 +64,7 @@ def run_sql_models_locally(
 
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    observability_adapter = build_observability_adapter(root_path)
     quality_adapter = quality_hook or build_quality_hook(root_path)
     artifacts = SqlRunArtifacts(
         artifact_root=root_path,
@@ -220,46 +222,52 @@ def run_sql_models_locally(
         for record in execution_result.executed_models:
             metrics.extra[f"model.{record.model_id}.row_count"] = record.row_count
 
+        audit = AuditRecord(
+            run_id=run_context.run_id,
+            stage=run_context.stage.value,
+            job_name=run_context.job_name,
+            trigger_type=run_context.trigger_type,
+            started_at=run_context.started_at,
+            completed_at=completed_at,
+            status=status,
+            config_version=None,
+            metrics_summary=metrics,
+            error_summary=error_summary,
+            validation_results=[
+                summary.model_dump(mode="json")
+                for summary in execution_result.model_validations
+            ]
+            + (
+                [quality_summary.model_dump(mode="json")]
+                if quality_summary is not None
+                else []
+            ),
+            context=_build_audit_context(
+                environment=environment,
+                package_path=package_path,
+                warehouse_root=warehouse_root,
+                root_path=root_path,
+                compiled_models=compiled_models,
+                partition_values=partition_values,
+                extra_values=extra_values,
+                selection_stage=selection_stage,
+                selection_domain=selection_domain,
+                selection_model=selection_model,
+                include_dependencies=include_dependencies,
+                run_context=run_context,
+                quality_summary=quality_summary,
+                serving_endpoint=serving_endpoint,
+            ),
+        )
         artifacts.audit_path = artifact_store.write_audit_record(
             run_context=run_context,
             environment=environment,
-            audit_record=AuditRecord(
-                run_id=run_context.run_id,
-                stage=run_context.stage.value,
-                job_name=run_context.job_name,
-                trigger_type=run_context.trigger_type,
-                started_at=run_context.started_at,
-                completed_at=completed_at,
-                status=status,
-                config_version=None,
-                metrics_summary=metrics,
-                error_summary=error_summary,
-                validation_results=[
-                    summary.model_dump(mode="json")
-                    for summary in execution_result.model_validations
-                ]
-                + (
-                    [quality_summary.model_dump(mode="json")]
-                    if quality_summary is not None
-                    else []
-                ),
-                context=_build_audit_context(
-                    environment=environment,
-                    package_path=package_path,
-                    warehouse_root=warehouse_root,
-                    root_path=root_path,
-                    compiled_models=compiled_models,
-                    partition_values=partition_values,
-                    extra_values=extra_values,
-                    selection_stage=selection_stage,
-                    selection_domain=selection_domain,
-                    selection_model=selection_model,
-                    include_dependencies=include_dependencies,
-                    run_context=run_context,
-                    quality_summary=quality_summary,
-                    serving_endpoint=serving_endpoint,
-                ),
-            ),
+            audit_record=audit,
+        )
+        observability_adapter.on_run_complete(
+            run_context=run_context,
+            environment=environment,
+            audit_record=audit,
         )
         artifacts.lineage_path = lineage_adapter.emit(
             run_context=run_context,

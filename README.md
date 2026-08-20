@@ -49,7 +49,7 @@ The platform defines four first-class connector *families* (`rest`, `sql`, `kafk
 
 **Operational / platinum-hardening items:**
 Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup / manifest rewrite) is **Production** (via `elt maintain run …`; see [Capability Maturity Matrix §5](docs/CAPABILITY_MATURITY_MATRIX.md#L125-L141)).
-Remaining roadmap items (not blocking publication): metrics and tracing export, a real secrets backend (Vault / cloud SM), PII classification and masking, a deeper DQ library with quarantine/DLQ, and container / Helm deployment artifacts — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
+Observability (Prometheus metrics, OTLP tracing, webhook alerting) is **Production** via env-driven backends behind the `ObservabilityAdapter` seam; see [Capability Maturity Matrix §6](docs/CAPABILITY_MATURITY_MATRIX.md#L147-L167).  Remaining roadmap items (not blocking publication): a real secrets backend (Vault / cloud SM), PII classification and masking, a deeper DQ library with quarantine/DLQ, and container / Helm deployment artifacts — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
 
 ## Source Code references
 

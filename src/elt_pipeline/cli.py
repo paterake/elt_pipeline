@@ -35,6 +35,7 @@ from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.integrations import (
     build_lineage_adapter,
+    build_observability_adapter,
     load_orchestration_metadata_from_env,
 )
 from elt_pipeline.maintenance import (
@@ -2994,6 +2995,7 @@ def _run_ingest_entity(
 
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    observability_adapter = build_observability_adapter(root_path)
     artifact_store.append_log_event(
         run_context=run_context,
         environment=resolved_config.environment,
@@ -3166,37 +3168,43 @@ def _run_ingest_entity(
             if isinstance(value, (int, float)):
                 metrics_extra[field_name] = value
 
+        audit = AuditRecord(
+            run_id=run_context.run_id,
+            stage=run_context.stage.value,
+            job_name=run_context.job_name,
+            trigger_type=run_context.trigger_type,
+            started_at=run_context.started_at,
+            completed_at=completed_at,
+            status=status,
+            config_version=None,
+            metrics_summary=MetricsSummary(
+                records_read=records_written,
+                records_written=records_written,
+                files_written=len(manifests),
+                extra=metrics_extra,
+            ),
+            error_summary=error_summary,
+            context={
+                "environment": resolved_config.environment,
+                "source_name": resolved_config.source_name,
+                "entity_name": resolved_config.entity_name,
+                "connector_type": connector_type,
+                "root_path": str(root_path),
+                "window_start": _serialize_datetime(cli_window.start) or "",
+                "window_end": _serialize_datetime(cli_window.end) or "",
+                "window_label": cli_window.label or "",
+                "checkpoint_seeded": str(checkpoint_override.active).lower(),
+            },
+        )
         artifact_store.write_audit_record(
             run_context=run_context,
             environment=resolved_config.environment,
-            audit_record=AuditRecord(
-                run_id=run_context.run_id,
-                stage=run_context.stage.value,
-                job_name=run_context.job_name,
-                trigger_type=run_context.trigger_type,
-                started_at=run_context.started_at,
-                completed_at=completed_at,
-                status=status,
-                config_version=None,
-                metrics_summary=MetricsSummary(
-                    records_read=records_written,
-                    records_written=records_written,
-                    files_written=len(manifests),
-                    extra=metrics_extra,
-                ),
-                error_summary=error_summary,
-                context={
-                    "environment": resolved_config.environment,
-                    "source_name": resolved_config.source_name,
-                    "entity_name": resolved_config.entity_name,
-                    "connector_type": connector_type,
-                    "root_path": str(root_path),
-                    "window_start": _serialize_datetime(cli_window.start) or "",
-                    "window_end": _serialize_datetime(cli_window.end) or "",
-                    "window_label": cli_window.label or "",
-                    "checkpoint_seeded": str(checkpoint_override.active).lower(),
-                },
-            ),
+            audit_record=audit,
+        )
+        observability_adapter.on_run_complete(
+            run_context=run_context,
+            environment=resolved_config.environment,
+            audit_record=audit,
         )
         lineage_adapter.emit(
             run_context=run_context,
@@ -3674,6 +3682,7 @@ def _bypass_normalize_manifest(
 ) -> dict[str, Any]:
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    observability_adapter = build_observability_adapter(root_path)
 
     artifact_store.append_log_event(
         run_context=run_context,
@@ -3744,6 +3753,11 @@ def _bypass_normalize_manifest(
     if rerun_run_id:
         audit.context["rerun_of_run_id"] = rerun_run_id
     artifact_store.write_audit_record(
+        run_context=run_context,
+        environment=manifest.environment,
+        audit_record=audit,
+    )
+    observability_adapter.on_run_complete(
         run_context=run_context,
         environment=manifest.environment,
         audit_record=audit,

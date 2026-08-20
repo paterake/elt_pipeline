@@ -13,6 +13,7 @@ class ErrorCategory(str, Enum):
     processing_error = "processing_error"
     storage_write_error = "storage_write_error"
     lineage_error = "lineage_error"
+    observability_error = "observability_error"
     unexpected_runtime_error = "unexpected_runtime_error"
 
 

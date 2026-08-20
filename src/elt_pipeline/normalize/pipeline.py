@@ -14,6 +14,7 @@ from elt_pipeline.integrations import (
     QualityHookRequest,
     QualityHookSummary,
     build_lineage_adapter,
+    build_observability_adapter,
     build_quality_hook,
     quality_error_already_recorded,
     raise_for_blocking_quality_failures,
@@ -118,6 +119,7 @@ def normalize_level1_to_local_level2(
     partition_strategy = partition_strategy or PartitionStrategy()
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    observability_adapter = build_observability_adapter(root_path)
     quality_adapter = quality_hook or build_quality_hook(root_path)
     mapping_store = LocalMappingCatalogStore(root_path)
     level2_writer = SparkLevel2Writer(root_path, spark)
@@ -354,6 +356,11 @@ def normalize_level1_to_local_level2(
         if isinstance(rerun_of_run_id, str) and rerun_of_run_id:
             audit.context["rerun_of_run_id"] = rerun_of_run_id
         artifact_store.write_audit_record(
+            run_context=run_context,
+            environment=environment,
+            audit_record=audit,
+        )
+        observability_adapter.on_run_complete(
             run_context=run_context,
             environment=environment,
             audit_record=audit,

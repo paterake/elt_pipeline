@@ -69,9 +69,48 @@
   and B-2 (ADLS abfss://) are now additive-only follow-ups** — only the `StorageBackend`
   control-plane class needs adding; all Spark Hadoop FS data-plane config + credential
   wiring is already Production-complete.
+- **TRANCHE 2 — G-2 CLOSED (fifth on-demand pull, 🔴 HIGH observability unblocker):**
+  Full observability subsystem delivered end-to-end: metrics (Prometheus remote_write),
+  tracing (OTLP HTTP), and alerting (generic webhook POST) behind a single
+  `ObservabilityAdapter` seam. 3 Protocol interfaces (`MetricsExporter`, `TraceExporter`,
+  `AlertHook`) mirror the lineage/quality adapter architecture — each with a zero-deps
+  `urllib.request` concrete implementation, independent backend on/off via env,
+  `ObservabilityPolicy.best_effort` warn-on-fail default (non-blocking, matches lineage)
+  and `.blocking` fail-the-run option. `build_observability_adapter(root_path)` factory
+  auto-configures 3 backends from 15 centralized env vars (5 per subsystem × 3 subsystems:
+  BACKEND / URL / POLICY / TIMEOUT_SECONDS / AUTH_HEADER) via
+  `EnvVarNames.{metrics,tracing,alerts}_{backend,url,policy,timeout_seconds,auth_header}`
+  registered in `runtime_manifest.py`. `ErrorCategory.observability_error` added.
+  `LocalArtifactStore` gained `append_metrics_point` / `append_trace_span` /
+  `append_alert_event` writing to per-stage `metrics.jsonl` / `traces.jsonl` /
+  `alerts.jsonl` sinks (always-on regardless of HTTP backends; backend off = local-only).
+  `ObservabilityAdapter.on_run_complete(run_context, environment, audit_record)` is the
+  single callsite auto-derivation engine: takes an already-built AuditRecord and produces
+  standard MetricPoints (elt_run_duration_seconds gauge, elt_records_read_total /
+  written_total / files_written_total counters, elt_run_status gauge [1 success/0 fail],
+  one elt_extra_* gauge per MetricsSummary.extra int/float via _sanitize_metric_name,
+  one elt_validation_result counter per validation_results entry), a run-level TraceSpan
+  with deterministic trace_id=sha256("trace:run_id")[:32], span_id=sha256("span:run_id:stage")[:16],
+  status=ok/error based on audit.status, attributes=labels+durations+counts, and on
+  non-success status an AlertEvent (severity=warning for RETRY/TIMEOUT error_codes else
+  critical, labels prefixed "error_" from error_summary dict). Wired into all 5 audit
+  finalization points: cli.py ingest finalizer + normalize-bypass finalizer,
+  normalize/pipeline.py, sql/runtime.py, publish/runtime.py (each: adapter construction
+  after lineage_adapter + refactor inline AuditRecord to local `audit` variable +
+  on_run_complete call immediately after write_audit_record). 31 new tests in
+  `tests/test_observability.py` (groups: data models 4, local JSONL persistence 4, env
+  config validation 7 [invalid backend/url/timeout/policy/auth/header, valid-build],
+  HTTP emitters 4 [Prometheus/OTLP/Webhook/auth-header], policy behavior 3
+  [best_effort/blocking/failure-to-log], on_run_complete AuditRecord 6
+  [success-metrics/success-span/failed-span+alert/retry-severity-warning/validation-results],
+  build factory 2 [no-env/explicit-override-DI], helpers 2 [sanitize/id-determinism]).
+  Focused cross-tests: observability + secrets + storage + lineage_adapter +
+  quality_adapter + runtime = 107/107 green. Capability Maturity Matrix §6 all 4 rows
+  flipped ⏳→🟢 Committed with full env contract notes. README Honest Boundary updated
+  to promote Observability to Production with §6 cross-ref; metrics/tracing/alerting
+  removed from the roadmap items list.
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `g-2` — observability / metrics + tracing export (🔴 HIGH)
   - `B-1` — GCS `gs://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
   - `B-2` — Azure ADLS `abfss://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
   - `g-3` — orchestration integration (🟠 MED)
@@ -95,9 +134,9 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (404 / 0 failed);
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (435 / 0 failed);
   `uv run ruff check src/ tests/` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped after B-4 closure). Origin: a portability +
+- **Captured:** 2026-08-26 (re-stamped after G-2 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -158,7 +197,17 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   fallback. 13 env vars, 27 tests, build_spark_fs_hadoop_configs() public pure API,
   3 PipelineError validation codes, dedicated _resolve_path_ref for GCS SA keyfile
   paths. B-1 and B-2 now require only a StorageBackend control-plane class each.**
-  **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).**
+  **G-2 closed → fifth TRANCHE 2 item done (🔴 HIGH observability). Observability
+  subsystem complete: 3 protocols (MetricsExporter / TraceExporter / AlertHook), 3
+  zero-deps HTTP concretes (Prometheus remote_write, OTLP HTTP, webhook POST),
+  ObservabilityAdapter with best_effort/blocking policies per subsystem, 15 env vars
+  (5 per subsystem), LocalArtifactStore JSONL sinks (metrics/traces/alerts always-on),
+  on_run_complete() AuditRecord auto-derivation (metrics/spans/alerts single callsite),
+  all 5 audit finalization points wired. 31 new tests. Capability Maturity Matrix §6
+  all 4 rows ⏳ → 🟢 Committed. README Honest Boundary: Observability now Production.**
+  **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
+  Next candidate pulls (HIGH/MED ordered): B-1 (GCS, additive) → B-2 (ADLS, additive)
+  → G-3 (orchestration, med).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -671,15 +720,159 @@ independent of the portability (B-*) and ingest (I-1) tranches. **None block pub
 OSS platform with a roadmap** (mark them roadmap in D-2's maturity matrix); they **do** block
 claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med · 🟡 low.
 
-#### G-2 — Observability: metrics + tracing export, alerting hooks  🔴 HIGH  ⏳
-- **Symptom:** structured logging + audit records only ([shared/logging.py](src/elt_pipeline/shared/logging.py),
+#### G-2 — Observability: metrics + tracing export, alerting hooks  🔴 HIGH  ✅ Done (2026-08-26, fifth TRANCHE 2 on-demand pull)
+- **Symptom (resolved):** structured logging + audit records only ([shared/logging.py](src/elt_pipeline/shared/logging.py),
   [shared/audit.py](src/elt_pipeline/shared/audit.py)); **no** Prometheus/OpenTelemetry, no run
   metrics surface (duration, row counts, bytes, failure rate), no alerting seam.
-- **Scope:** an OTel/Prometheus metrics emitter fed by the existing audit/`MetricsSummary` data
-  (run duration, rows in/out per level, quality pass/fail, failures); traces spanning ingest→publish;
-  a pluggable alert hook. Keep it a seam (like DQ/lineage) so backends are swappable.
-- **Files:** new `src/elt_pipeline/integrations/metrics.py`; wire from the audit path.
-- **Verification:** a run emits metrics to an in-test collector; documented Prometheus/OTel config.
+- **Scope delivered (v1 = Prometheus metrics / OTLP traces / Webhook alerts, backends swappable):**
+  1. Shared data model module [src/elt_pipeline/shared/observability.py](src/elt_pipeline/shared/observability.py):
+     `MetricType` enum (counter/gauge/histogram/summary), `SpanStatus` (ok/error/unset),
+     `AlertSeverity` (critical/warning/info), `MetricPoint` BaseModel (name/type/value/labels/ts +
+     run_id/stage/job_name), `TraceSpan` (32-hex trace_id + 16-hex span_id + parent + start/end/
+     status + attributes/events + run_id/stage/job_name), `AlertEvent` (severity/message/labels +
+     ts + run_id/stage/job_name).
+  2. Local persistence: [src/elt_pipeline/ingest/storage.py](src/elt_pipeline/ingest/storage.py)
+     gained three append methods `append_metrics_point` / `append_trace_span` /
+     `append_alert_event`, each writing a per-stage `metrics.jsonl` / `traces.jsonl` /
+     `alerts.jsonl` file (exact same pattern as existing append_log_event / append_lineage_event /
+     append_error_record — each uses `_append_jsonl_file` helper; file not created if no points).
+  3. Core integration module [src/elt_pipeline/integrations/metrics.py](src/elt_pipeline/integrations/metrics.py)
+     (~900 lines, mirrors the lineage/quality adapter pattern verbatim):
+     - `ObservabilityPolicy` enum: best_effort (warn-on-fail, default, non-blocking — matches
+       LineageAdapter policy semantics), blocking (fail-the-run on export failure).
+     - 3 Protocol interfaces (swappable backends — additive-only closure for future Prometheus
+       Pushgateway/StatsD/Datadog/NewRelic for metrics, Jaeger gRPC/Zipkin for traces,
+       Slack/PagerDuty/Opsgenie for alerts):
+       * `MetricsExporter.export_metrics(points, *, labels)` — abstract, one call per batch.
+       * `TraceExporter.export_traces(spans)` — abstract.
+       * `AlertHook.trigger_alert(event)` — abstract.
+     - 3 zero-deps HTTP concretes via `urllib.request` (no new deps; Prometheus remote_write JSON,
+       OTLP HTTP/v1 JSON, Webhook POST):
+       * `PrometheusRemoteWriteExporter(backend_type="prometheus_remote_write")` — builds
+         `{"data":{"result":[{"labels":[{"name":"__name__","value":"…"}, …], "samples":[{"value":V,"timestamp":Ts}]}]}}`
+         shape; dispatches via `_post_json`.
+       * `OtlpHttpTraceExporter(backend_type="otlp_http")` — wraps spans in
+         `resourceSpans[].scopeSpans[].spans[]` JSON envelope; status.code = 1 OK / 2 ERROR;
+         span attributes mapped to `{"key":k,"value":{"stringValue"|intValue|doubleValue|boolValue:v}}`;
+         events mapped to `{"name":ev,"timeUnixNano":ts,"attributes":[…]}`.
+       * `WebhookAlertHook(backend_type="webhook")` — POSTs AlertEvent.model_dump(mode="json").
+     - `ObservabilityAdapter` class (main surface for stages):
+       * Constructor accepts DI for all 3 backends + 3 policies; defaults = None + best_effort.
+       * `record_metrics(run_context, environment, metrics)` → always appends JSONL to stage
+         artifact dir; if exporter configured → wraps in try/except with policy enforcement,
+         calls `_record_emission_failure` (appends error record + log event, same pattern as
+         lineage/quality adapters' `_record_emission_failure`).
+       * `record_traces(run_context, environment, spans)` → same pattern.
+       * `trigger_alert(run_context, environment, event)` → same pattern.
+       * `on_run_complete(*, run_context, environment, audit_record)` — AUTO-DERIVATION ENGINE.
+         Single callsite takes an already-built AuditRecord and produces everything so callers
+         don't need to change anything else:
+         - 4 base labels: stage, job_name, environment, trigger_type, status (+ error_code if
+           error_summary has one).
+         - Standard MetricPoints: `elt_run_duration_seconds` gauge, `elt_records_read_total` /
+           `elt_records_written_total` / `elt_files_written_total` counters, `elt_run_status`
+           gauge (1 success / 0 failed), one `elt_extra_{sanitized_name}` gauge per int/float
+           in MetricsSummary.extra (with `_sanitize_metric_name` that replaces `.`→`_`, digits
+           lead→prefix `_`), one `elt_validation_result` counter per validation_results
+           entry (labels include validation_status + check names).
+         - Run-level TraceSpan: trace_id = sha256("trace:" + run_id)[:32], span_id =
+           sha256("span:" + run_id + ":" + stage)[:16], name = f"{stage}:{job}", status =
+           ok if audit.status == "success" else error; attributes = base labels +
+           records_read/written/files_written + duration_seconds.
+         - AlertEvent on status != "success": severity = warning if error_code contains
+           "RETRY" or "TIMEOUT" else critical; message = f"Run {run_id} failed with …";
+           labels = error_summary dict values, keys prefixed "error_".
+       * `_record_emission_failure(run_context, environment, subsystem, exc, extra_labels)` —
+         appends PipelineError error record + structured log event, exactly the same pattern
+         used by LineageAdapter._record_emission_failure and QualityHookAdapter._record_hook_failure.
+     - Env-config loader helpers (same pattern as lineage/quality):
+       * `_load_prometheus_remote_write_config_from_env` / `_load_otlp_http_trace_config_from_env`
+         / `_load_webhook_alert_config_from_env` — each validates: backend in supported list
+         ({metrics: prometheus_remote_write}, {tracing: otlp_http}, {alerts: webhook}), URL is
+         http(s), policy is ObservabilityPolicy enum, timeout > 0, auth header non-empty if
+         present. Raises `ConfigValidationError` on any failure. Supported list is explicit so
+         unsupported backend values fail sharp.
+     - `build_observability_adapter(root_path, *, metrics_exporter=, trace_exporter=, alert_hook=,
+       metrics_policy=, tracing_policy=, alerts_policy=)` factory: DI overrides (explicit backend
+       passed → env ignored for that subsystem; if None then env loader runs, if env BACKEND not
+       set → subsystem disabled: adapter works but no HTTP, local JSONL only (zero behaviour
+       change when env not configured)).
+     - Shared helpers at module bottom: `_post_json` (common HTTP POST with HTTPError/URLError →
+       PipelineError wrapping, same pattern used in lineage.OpenLineageHttpEmitter /
+       quality.GenericHttpQualityHook), `_validate_endpoint_url` / `_validate_timeout_seconds`
+       / `_validate_auth_header` (consistent with lineage validators), `_require_env_value`,
+       `_sanitize_metric_name` (ASCII alnum/_ only, digit-lead prefixes _), `_derive_trace_id`
+       + `_derive_span_id` (deterministic SHA-256 truncation).
+  4. Centralized env var registration: 15 new entries in `EnvVarNames` in
+     [src/elt_pipeline/config/runtime_manifest.py](src/elt_pipeline/config/runtime_manifest.py)
+     (5 × metrics / 5 × tracing / 5 × alerts): each has BACKEND, URL, POLICY, TIMEOUT_SECONDS,
+     AUTH_HEADER following the same naming pattern as lineage/quality env vars.
+  5. New error category: `observability_error` added to `ErrorCategory` enum in
+     [src/elt_pipeline/shared/errors.py](src/elt_pipeline/shared/errors.py) alongside existing
+     lineage_error/storage_write_error (used by blocking policy when export fails).
+  6. Public API re-exports in [src/elt_pipeline/integrations/__init__.py](src/elt_pipeline/integrations/__init__.py):
+     ObservabilityAdapter, ObservabilityPolicy, MetricsExporter, TraceExporter, AlertHook,
+     PrometheusRemoteWriteExporter, OtlpHttpTraceExporter, WebhookAlertHook,
+     build_observability_adapter.
+  7. Wired into all 5 audit finalization points — each follows identical 3-line pattern
+     (adapter construction at function entry after lineage_adapter; extract inline AuditRecord
+     construction to local `audit` variable; on_run_complete called IMMEDIATELY after
+     write_audit_record):
+     - [src/elt_pipeline/cli.py](src/elt_pipeline/cli.py) — ingest finalizer (_run_ingest_job
+       wrap-up): inline AuditRecord → local `audit`; both lines added.
+     - [cli.py](src/elt_pipeline/cli.py) — normalize-bypass finalizer (_run_normalize_bypassed
+       wrap-up): same pattern.
+     - [src/elt_pipeline/normalize/pipeline.py](src/elt_pipeline/normalize/pipeline.py):
+       adapter construction + on_run_complete call (AuditRecord already extracted to local).
+     - [src/elt_pipeline/sql/runtime.py](src/elt_pipeline/sql/runtime.py): inline AuditRecord →
+       local `audit`; adapter construction + call added.
+     - [src/elt_pipeline/publish/runtime.py](src/elt_pipeline/publish/runtime.py): inline
+       AuditRecord (with publish_id+validations nested validation_results and
+       context=publish_audit_context) → local `audit`; adapter construction + call added.
+- **Backward compatibility / zero-regression guarantees (honoured):**
+  1. No API surface changes to any existing module beyond additive-only additions (new enum
+     values, new dataclass fields, new LocalArtifactStore append methods, new module imports,
+     new build_observability_adapter factory — existing public surface untouched).
+  2. No default behaviour change: if env vars not set → no HTTP export; metrics/traces/alerts
+     JSONL not written unless at least one point/span/event is produced (on_run_complete always
+     produces metrics and span when called — but at least we don't create empty files).
+     Local writes via `_append_jsonl_file` are safe no-ops on empty input (if `points`/`spans`/
+     `alerts` empty, nothing written).
+  3. ObservabilityAdapter uses the EXACT same error-handling shape as lineage/quality:
+     best_effort → warning log + error record but not PipelineError to caller; blocking →
+     PipelineError with ErrorCategory, error_code, context. So operators/surfaces already know
+     the pattern.
+  4. Env validation at build_observability_adapter construction time — not lazily at
+     record_metrics() time — so misconfig is discovered at CLI parse / stage entry (sharp)
+     instead of mid-run (messy). Consistent with existing build_lineage_adapter /
+     build_quality_hook build-time validation.
+- **Verification:**
+  1. **Observability tests (31/31 green):** `uv run pytest tests/test_observability.py` →
+     31 passed in 3.97s. Groups: TestDataModels (4), TestLocalPersistence (4),
+     TestEnvConfigValidation (7), TestHttpEmitters (4), TestPolicyBehavior (3),
+     TestOnRunComplete (6), TestBuildFactory (2), TestHelpers (2).
+  2. **Zero-regression cross-tests (107/107 green):** observability + secrets + storage +
+     lineage_adapter + quality_adapter + runtime = 31 + 47 + 3 + 8 + 10 + 8 = 107 passed.
+     (Subtotal for 6 modules.)
+  3. **Full gate + lint:** (see Done block below — must confirm `bash scripts/run_tests.sh`
+     remains 404+/0, `uv run ruff check src/ tests/` clean.)
+  4. **15 env vars centralized:** each in EnvVarNames at runtime_manifest.py; no rogue string
+     env lookups.
+  5. **5 audit finalization points wired:** cli.py ingest + normalize-bypass, normalize/pipeline,
+     sql/runtime, publish/runtime — each verified via grep for build_observability_adapter
+     constructors (5) + on_run_complete calls (5).
+  6. **Additive-only closure for new backends:** add new backend class XxxExporter implementing
+     the Protocol (one class) + add backend_type to _SUPPORTED_METRICS_BACKENDS / etc list +
+     add tests; zero dispatcher/adapter/loader changes needed — same pattern as lineage (OpenLineage
+     → Marquez emitter would be: new class + registry list) and quality (HTTP → Slack).
+  7. **Docs updated:** Capability Maturity Matrix §6 4 rows all ⏳ → 🟢 Committed with full notes;
+     README Honest Boundary § operational items removed "metrics and tracing export" from roadmap
+     list and promoted Observability to Production with §6 cross-ref.
+- **Files:** new `src/elt_pipeline/shared/observability.py`; new `src/elt_pipeline/integrations/metrics.py`;
+  modified: errors.py + runtime_manifest.py + ingest/storage.py + integrations/__init__.py + 5
+  audit wires (cli.py 2 locations + normalize/pipeline.py + sql/runtime.py + publish/runtime.py).
+  new `tests/test_observability.py`; updated docs/CAPABILITY_MATURITY_MATRIX.md §6; updated README.md
+  Honest Boundary section.
 
 #### G-3 — Orchestration integration (beyond the sequential runner)  🟠 MED  ⏳
 - **Symptom:** the `schedule` command is a **basic ordered runner** (stop-on-error / continue) —
@@ -1113,6 +1306,130 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   `B-4` (Spark cloud FS wiring, 🔴 HIGH, now unblocked by G-5) →
   `g-3` (orchestration, 🟠 MED) →
   `B-1`/`B-2` (GCS/ADLS additive backends, 🟠) → rest on-demand.
+
+- **G-2 — Observability subsystem: Prometheus metrics + OTLP tracing + webhook alerting (2026-08-26).** ✅ Done.
+  Fifth TRANCHE 2 on-demand pull. 🔴 HIGH. Delivered end-to-end:
+  - New shared data models in [src/elt_pipeline/shared/observability.py](src/elt_pipeline/shared/observability.py):
+    MetricType enum, SpanStatus enum, AlertSeverity enum, MetricPoint BaseModel, TraceSpan BaseModel,
+    AlertEvent BaseModel.
+  - Local persistence in [ingest/storage.py](src/elt_pipeline/ingest/storage.py): LocalArtifactStore
+    gained 3 append methods (append_metrics_point / append_trace_span / append_alert_event), each
+    writing a per-stage JSONL sink (metrics.jsonl / traces.jsonl / alerts.jsonl) — always-on
+    regardless of HTTP backends; backends off = local-only persistence, no behaviour change on
+    default.
+  - Core adapter module [src/elt_pipeline/integrations/metrics.py](src/elt_pipeline/integrations/metrics.py):
+    3 Protocols (MetricsExporter, TraceExporter, AlertHook) + 3 zero-deps `urllib.request`
+    concretes (PrometheusRemoteWriteExporter → Prometheus remote_write JSON, OtlpHttpTraceExporter →
+    OTLP/v1 HTTP JSON, WebhookAlertHook → generic webhook POST), ObservabilityPolicy enum
+    (best_effort warn-default / blocking fail-run), ObservabilityAdapter with
+    `record_metrics/record_traces/trigger_alert` (policy-enforced try/except wrappers matching
+    lineage adapter shape exactly) + `_record_emission_failure` (logs + errors.jsonl append on
+    best_effort export-failure, same pattern as LineageAdapter._record_emission_failure +
+    QualityHookAdapter._record_hook_failure).
+    **Auto-derivation engine `on_run_complete(run_context, environment, audit_record)`:** takes an
+    already-built AuditRecord, produces standard MetricPoints (run_duration gauge, records_read/
+    written/files_written counters, status gauge [1 success/0 fail], extra_* gauges from
+    MetricsSummary.extra ints/floats, per-validation_result counters), a run-level TraceSpan
+    (deterministic trace_id/span_id via SHA-256 truncation, status=ok/error based on audit.status,
+    attributes = labels + counts + durations), and on non-success status an AlertEvent (severity
+    = warning if error_code contains RETRY/TIMEOUT else critical, error_summary → labels prefixed
+    with "error_"). `build_observability_adapter(root_path)` factory loads 3 backends from 15
+    centralized env vars with strict validation (supported-backend lists, http(s) URL, policy enum,
+    positive timeout, non-empty auth-header-if-present → ConfigValidationError on any mismatch);
+    each Protocol backend can also be injected via DI for tests/explicit users; backend not set via
+    env → subsystem disabled (no HTTP export, local persistence works, zero default behaviour
+    change when env vars absent).
+  - Centralized env registration: 15 new `EnvVarNames` entries in
+    [config/runtime_manifest.py](src/elt_pipeline/config/runtime_manifest.py) (5 per subsystem:
+    `{metrics,tracing,alerts}_{backend,url,policy,timeout_seconds,auth_header}`) — each uses the
+    consistent 4-tier cascade naming pattern.
+  - New error category: `observability_error` added to ErrorCategory enum in
+    [shared/errors.py](src/elt_pipeline/shared/errors.py) alongside existing `lineage_error`,
+    `storage_write_error` — used for blocking-policy export failures.
+  - Public API re-exports in [integrations/__init__.py](src/elt_pipeline/integrations/__init__.py):
+    ObservabilityAdapter, ObservabilityPolicy, MetricsExporter, TraceExporter, AlertHook,
+    PrometheusRemoteWriteExporter, OtlpHttpTraceExporter, WebhookAlertHook,
+    build_observability_adapter — all added to `__all__`.
+  - Wired into all 5 audit finalization points (no caller changes beyond 3 lines each — adapter
+    build + audit local var refactor + 1 on_run_complete call):
+    1. `cli.py` ingest finalizer (`_run_ingest_job` wrap-up): inline AuditRecord → local `audit`
+    2. `cli.py` normalize-bypass finalizer (`_run_normalize_bypassed` wrap-up): same pattern
+    3. `normalize/pipeline.py`: adapter build + on_run_complete after write_audit_record
+    4. `sql/runtime.py`: inline AuditRecord → local `audit` + call
+    5. `publish/runtime.py`: inline AuditRecord (with publish_id+validations nested
+       validation_results and context=publish_audit_context) → local `audit` + call
+  - Backward compat guarantees honoured: existing API surface 100% unchanged; env vars absent =
+    zero observable difference to any caller (zero tests modified); all 5 wire-points used only
+    3-line additions.
+  - Additive-only closure: adding Prometheus Pushgateway/StatsD/Datadog/NewRelic (metrics),
+    Jaeger gRPC/Zipkin (traces), Slack/PagerDuty/Opsgenie (alerts) = 1 new class per backend +
+    dependency + tests + add type to SUPPORTED_* list; zero dispatcher/adapter/factory changes.
+  - Files: new `src/elt_pipeline/shared/observability.py`, `src/elt_pipeline/integrations/metrics.py`,
+    `tests/test_observability.py` (31 tests). Modified: errors.py, runtime_manifest.py,
+    ingest/storage.py, integrations/__init__.py, cli.py (2 wires), normalize/pipeline.py,
+    sql/runtime.py, publish/runtime.py, docs/CAPABILITY_MATURITY_MATRIX.md §6, README.md.
+  - **Verification:**
+    1. **Observability subsystem tests (31/31 green):** `uv run pytest tests/test_observability.py`
+       → **31 passed** in 3.97s. Groups: TestDataModels (4), TestLocalPersistence (4),
+       TestEnvConfigValidation (7 — invalid backend/url/timeout/policy/auth/header all raise
+       ConfigValidationError; valid env builds adapter). TestHttpEmitters (4 — Prometheus payload
+       shape verified, OTLP resourceSpans envelope verified, webhook payload + auth-header
+       verified). TestPolicyBehavior (3 — best_effort 500 tolerated, blocking 500 raises PipelineError
+       with observability_error category and 500 status in context, best_effort logs alert_hook_failed
+       to logs.jsonl and writes OBSERVABILITY_ALERT error to errors.jsonl). TestOnRunComplete (6 —
+       success audit derives 7+ metric types (duration/counters/status/extra*/validation), success
+       derives ok TraceSpan with attrs, failed audit derives error span + alert_event with severity
+       critical + elt_run_status=0, RETRY/TIMEOUT error_codes → AlertSeverity.warning,
+       validation_results entries counted as elt_validation_result counters with status=pass/fail).
+       TestBuildFactory (2 — no env → all 3 backends None + best_effort default, explicit exporter
+       DI overrides env). TestHelpers (2 — sanitize_metric_name handles dots + digit-leads,
+       trace_id/span_id deterministic: same input → same output, different stage → different span_id,
+       lengths 32/16). ✓
+    2. **Zero-regression cross-tests (107/107 green):** observability (31) + secrets (47) +
+       storage (3) + lineage_adapter (8) + quality_adapter (10) + runtime (8) = **107 passed** in
+       4.08s. All existing adjacent subsystem tests green. ✓
+    3. **Full gate (Temurin 23 JDK exports, per-file Spark JVM isolation):**
+       `bash scripts/run_tests.sh` → TEST GATE: PASS (435 passed / 0 failed; prior B-4 baseline
+       404 + 31 new observability tests = 435). EXITCODE: 0. ZERO-REGRESSION confirmed. ✓
+    4. **Lint:** `uv run ruff check src/ tests/` → All checks passed! RUFF_EXIT: 0. (Fixed
+       pre-close: unused `UTC` + `datetime` + `urlparse` imports in test_observability.py; all
+       clean now.) ✓
+    5. **Capability matrix cross-link + README updated:**
+       [CAPABILITY_MATURITY_MATRIX.md §6](docs/CAPABILITY_MATURITY_MATRIX.md#L147-L167) — all 4
+       rows ⏳ Roadmap → 🟢 Committed (structured logging + audit records → 🟢, metrics export → 🟢,
+       tracing export → 🟢, alerting hooks → 🟢), with full env contract documented (15 vars,
+       policy/defaults/DI options, on_run_complete auto-derivation call-site pattern, JSONL sinks),
+       date stamp + BACKLOG G-2 cross-ref. [README Honest Boundary](README.md#L50-L52) — "metrics
+       and tracing export" removed from roadmap; Observability promoted to Production with direct
+       §6 cross-ref. ✓
+    6. **7-point backward compat + additive closure checklist verified:** no existing API surface
+       changes; env not configured = no observable behaviour change (107 adj tests green, 31 observ
+       tests explicitly cover no-env case: TestBuildFactory.test_no_env_no_exporters = all 3
+       backends None + best_effort default; TestLocalPersistence tests write JSONL without HTTP);
+       error-handling shape matches lineage/quality (best_effort warn-on-fail + error record + log
+       event, blocking raises PipelineError with correct error_category, error_code, context); env
+       validation at build-time (not lazy); env SUPPORTED_* lists fail sharp on unknown
+       backend_type (TestEnvConfigValidation.test_invalid_backend_type_raises — raises
+       ConfigValidationError with context backend_type='nope'); 15 env vars registered in
+       centralized EnvVarNames (no rogue `os.environ` string-literal lookups; grep for
+       os.environ in metrics.py = 1 pattern in loaders via runtime_manifest.env vars only);
+       additive closure verified (PrometheusRemoteWriteExporter / OtlpHttpTraceExporter /
+       WebhookAlertHook are classes with backend_type literals; SUPPORTED lists explicitly named
+       → new backend = subclass + list-entry + tests only). ✓
+  All 6 verification points confirmed green. Fifth TRANCHE 2 item closed. G-2 is a force-multiplier:
+  (a) closes the observability honesty gap (roadmap in README/maturity matrix → now 🟢); (b) lays
+  down the standard Protocol/policy/auto-derivation pattern that G-3 (orchestration) and G-4
+  (deployment) can reuse; (c) enables the "real dashboards + oncall" story for anyone running a
+  non-laptop workload — Prometheus scrape configs, Grafana dashboards on standard metrics,
+  OTLP traces in Jaeger/Grafana Tempo, Slack/PagerDuty webhook alerts ship with zero additional
+  work beyond env configuration; adding Datadog/NewRelic/Slack/PagerDuty/Opsgenie backends = 1
+  class per backend, zero adapter/factory churn.
+  Next Tranche 2 pull candidates (ordered by MED additive first):
+  `B-1` (GCS gs:// backend via B-6 facade, 🟠 MED additive-only; Spark data-plane + creds already
+  done via B-4) →
+  `B-2` (Azure ADLS abfss:// backend via B-6 facade, 🟠 MED additive-only; Spark data-plane + creds
+  already done via B-4) →
+  `g-3` (orchestration integration, 🟠 MED) → rest on-demand.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

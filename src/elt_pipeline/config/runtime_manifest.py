@@ -84,6 +84,29 @@ class EnvVarNames:
     spark_fs_adls_client_secret_ref: str = "ELT_PIPELINE_SPARK_FS_ADLS_CLIENT_SECRET_REF"
     spark_fs_adls_use_msi: str = "ELT_PIPELINE_SPARK_FS_ADLS_USE_MSI"
 
+    # Observability — metrics + tracing + alerting (BACKLOG item G-2)
+    #   Each subsystem follows the same 5-env-var pattern:
+    #     BACKEND  → "prometheus_remote_write" / "otlp_http" / "webhook" / … (empty = disabled)
+    #     URL      → emitter endpoint URL
+    #     POLICY   → "best_effort" (default, warn on failure) or "blocking" (fail run)
+    #     TIMEOUT  → HTTP timeout seconds, default 10
+    #     AUTH_HEADER → optional "Bearer <token>" / "Basic …" etc.
+    metrics_backend: str = "ELT_PIPELINE_METRICS_BACKEND"
+    metrics_url: str = "ELT_PIPELINE_METRICS_URL"
+    metrics_policy: str = "ELT_PIPELINE_METRICS_POLICY"
+    metrics_timeout_seconds: str = "ELT_PIPELINE_METRICS_TIMEOUT_SECONDS"
+    metrics_auth_header: str = "ELT_PIPELINE_METRICS_AUTH_HEADER"
+    tracing_backend: str = "ELT_PIPELINE_TRACING_BACKEND"
+    tracing_url: str = "ELT_PIPELINE_TRACING_URL"
+    tracing_policy: str = "ELT_PIPELINE_TRACING_POLICY"
+    tracing_timeout_seconds: str = "ELT_PIPELINE_TRACING_TIMEOUT_SECONDS"
+    tracing_auth_header: str = "ELT_PIPELINE_TRACING_AUTH_HEADER"
+    alerts_backend: str = "ELT_PIPELINE_ALERTS_BACKEND"
+    alerts_url: str = "ELT_PIPELINE_ALERTS_URL"
+    alerts_policy: str = "ELT_PIPELINE_ALERTS_POLICY"
+    alerts_timeout_seconds: str = "ELT_PIPELINE_ALERTS_TIMEOUT_SECONDS"
+    alerts_auth_header: str = "ELT_PIPELINE_ALERTS_AUTH_HEADER"
+
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
 

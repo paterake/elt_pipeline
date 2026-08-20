@@ -15,7 +15,11 @@ from pyspark.sql import Row, SparkSession
 
 from elt_pipeline.config import runtime_context
 from elt_pipeline.ingest.storage import LocalArtifactStore
-from elt_pipeline.integrations import LineageAdapter, build_lineage_adapter
+from elt_pipeline.integrations import (
+    LineageAdapter,
+    build_lineage_adapter,
+    build_observability_adapter,
+)
 from elt_pipeline.publish.models import (
     DiscoveredPublishDefinition,
     PublishArtifactRecord,
@@ -170,6 +174,7 @@ def run_publish_definitions_locally(
 
     artifact_store = LocalArtifactStore(root_path)
     lineage_adapter = build_lineage_adapter(root_path)
+    observability_adapter = build_observability_adapter(root_path)
     artifacts = PublishRunArtifacts(
         artifact_root=root_path,
         run_dir=artifact_store.layout.run_dir(run_context=run_context, environment=environment),
@@ -315,31 +320,37 @@ def run_publish_definitions_locally(
             publish_audit_context["serving_endpoint"] = json.dumps(
                 serving_endpoint, sort_keys=True
             )
+        audit = AuditRecord(
+            run_id=run_context.run_id,
+            stage=run_context.stage.value,
+            job_name=run_context.job_name,
+            trigger_type=run_context.trigger_type,
+            started_at=run_context.started_at,
+            completed_at=completed_at,
+            status=status,
+            config_version=None,
+            metrics_summary=metrics,
+            error_summary=error_summary,
+            validation_results=[
+                {
+                    "publish_id": result.publish_id,
+                    "validations": [
+                        validation.model_dump(mode="json") for validation in result.validations
+                    ],
+                }
+                for result in results
+            ],
+            context=publish_audit_context,
+        )
         artifacts.audit_path = artifact_store.write_audit_record(
             run_context=run_context,
             environment=environment,
-            audit_record=AuditRecord(
-                run_id=run_context.run_id,
-                stage=run_context.stage.value,
-                job_name=run_context.job_name,
-                trigger_type=run_context.trigger_type,
-                started_at=run_context.started_at,
-                completed_at=completed_at,
-                status=status,
-                config_version=None,
-                metrics_summary=metrics,
-                error_summary=error_summary,
-                validation_results=[
-                    {
-                        "publish_id": result.publish_id,
-                        "validations": [
-                            validation.model_dump(mode="json") for validation in result.validations
-                        ],
-                    }
-                    for result in results
-                ],
-                context=publish_audit_context,
-            ),
+            audit_record=audit,
+        )
+        observability_adapter.on_run_complete(
+            run_context=run_context,
+            environment=environment,
+            audit_record=audit,
         )
         artifacts.lineage_path = lineage_adapter.emit(
             run_context=run_context,
