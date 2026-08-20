@@ -32,8 +32,8 @@ __all__ = [
 ]
 
 _NO_STAGING_MOVE_HINT = (
-    "Staging-swap write protocol is only implemented for POSIX (file:// or bare local) "
-    "and AWS S3 (s3://) storage. See PRD 08 for supported storage schemes. "
+    "Staging-swap write protocol is implemented for POSIX (file:// or bare local), "
+    "AWS S3 (s3://), and Google Cloud Storage (gs://). See PRD 08 for supported storage schemes. "
     "Use a supported scheme or declare the table load_mode='append' which does not "
     "require staging."
 )
@@ -45,6 +45,7 @@ def validate_swap_scheme(target_path: str, model_id: str) -> _StorageScheme:
         _StorageScheme.file,
         _StorageScheme.local_unschemed,
         _StorageScheme.s3,
+        _StorageScheme.gs,
     ):
         raise PipelineError(
             message=(

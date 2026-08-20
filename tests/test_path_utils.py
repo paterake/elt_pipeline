@@ -18,6 +18,10 @@ class TestDetectScheme:
         assert pu.detect_scheme("s3://bucket/prefix") == pu._StorageScheme.s3
         assert pu.detect_scheme("s3://b") == pu._StorageScheme.s3
 
+    def test_detect_gs(self) -> None:
+        assert pu.detect_scheme("gs://bucket/prefix") == pu._StorageScheme.gs
+        assert pu.detect_scheme("gs://b") == pu._StorageScheme.gs
+
     def test_detect_file(self) -> None:
         assert pu.detect_scheme("file:///abs/path") == pu._StorageScheme.file
         assert pu.detect_scheme("file://rel/path") == pu._StorageScheme.file
@@ -31,8 +35,10 @@ class TestDetectScheme:
         for bad in (
             "s3a://bucket/prefix",
             "s3n://bucket/prefix",
-            "gs://bucket/prefix",
             "abfs://container/path",
+            "wasbs://container/path",
+            "dbfs://path",
+            "hdfs://namenode/path",
             "https://example.com/foo",
         ):
             with pytest.raises(ConfigValidationError) as exc_info:
@@ -41,6 +47,7 @@ class TestDetectScheme:
             assert "Unsupported storage scheme" in msg
             assert bad.split("://", 1)[0] + "://" in msg
             assert "s3:// (AWS S3)" in msg
+            assert "gs:// (Google Cloud Storage)" in msg
             assert "Never silently coerce schemes." in exc_info.value.context["note"]
 
     def test_validate_root_rejects_pathlib(self) -> None:
@@ -101,6 +108,31 @@ class TestJoinPaths:
     def test_s3_root_only_bucket(self) -> None:
         assert pu.join_paths("s3://bucket", "key") == "s3://bucket/key"
 
+    # --- gs:// ---
+    def test_gs_basic(self) -> None:
+        assert (
+            pu.join_paths("gs://bucket/prefix", "level2", "entity=x")
+            == "gs://bucket/prefix/level2/entity=x"
+        )
+
+    def test_gs_trailing_slash_on_root(self) -> None:
+        assert pu.join_paths("gs://b/p/", "seg") == "gs://b/p/seg"
+
+    def test_gs_leading_slash_on_segment(self) -> None:
+        assert pu.join_paths("gs://b/p", "/seg/") == "gs://b/p/seg"
+
+    def test_gs_double_slashes_collapse(self) -> None:
+        assert pu.join_paths("gs://b//p1//p2", "s1//s2") == "gs://b/p1/p2/s1/s2"
+
+    def test_gs_no_segments_returns_root_collapsed(self) -> None:
+        assert pu.join_paths("gs://b//p//") == "gs://b/p/"
+
+    def test_gs_empty_strings_skipped(self) -> None:
+        assert pu.join_paths("gs://b/p", "", "  ", "s1", "", "s2") == "gs://b/p/s1/s2"
+
+    def test_gs_root_only_bucket(self) -> None:
+        assert pu.join_paths("gs://bucket", "key") == "gs://bucket/key"
+
     # --- file:// ---
     def test_file_basic(self) -> None:
         assert (
@@ -142,18 +174,24 @@ class TestPathStringHelpers:
     def test_parent_s3(self) -> None:
         assert pu.path_parent("s3://b/p1/p2/k") == "s3://b/p1/p2"
 
+    def test_parent_gs(self) -> None:
+        assert pu.path_parent("gs://b/p1/p2/k") == "gs://b/p1/p2"
+
     def test_basename_all_schemes(self) -> None:
         assert pu.path_basename("/a/b/file.parquet") == "file.parquet"
         assert pu.path_basename("file:///a/b/f.csv") == "f.csv"
         assert pu.path_basename("s3://b/p/k.json") == "k.json"
+        assert pu.path_basename("gs://b/p/k.json") == "k.json"
 
     def test_with_suffix(self) -> None:
         assert pu.path_with_suffix("s3://b/k", ".tmp") == "s3://b/k.tmp"
+        assert pu.path_with_suffix("gs://b/k", ".tmp") == "gs://b/k.tmp"
         assert pu.path_with_suffix("/a/b/foo.csv", "parquet") == "/a/b/foo.parquet"
 
     def test_relative_to_same_scheme(self) -> None:
         assert pu.path_relative_to("/a/b/c/d", "/a/b") == "c/d"
         assert pu.path_relative_to("s3://b/p1/p2", "s3://b/p1") == "p2"
+        assert pu.path_relative_to("gs://b/p1/p2", "gs://b/p1") == "p2"
 
     def test_relative_to_equal_base(self) -> None:
         assert pu.path_relative_to("/a/b", "/a/b") == "."
@@ -179,6 +217,9 @@ class TestPathStringHelpers:
 
     def test_normalize_s3_just_collapses(self) -> None:
         assert pu.path_normalize("s3://b//p1///p2/") == "s3://b/p1/p2/"
+
+    def test_normalize_gs_just_collapses(self) -> None:
+        assert pu.path_normalize("gs://b//p1///p2/") == "gs://b/p1/p2/"
 
 
 # ---------------------------------------------------------------------------

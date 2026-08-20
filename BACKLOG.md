@@ -109,10 +109,84 @@
   flipped ⏳→🟢 Committed with full env contract notes. README Honest Boundary updated
   to promote Observability to Production with §6 cross-ref; metrics/tracing/alerting
   removed from the roadmap items list.
+- **TRANCHE 2 — B-1 CLOSED (sixth on-demand pull, 🟠 MED GCS gs:// additive backend, zero control-plane churn):**
+  Full end-to-end `gs://` Google Cloud Storage URI support via the B-6 pluggable StorageBackend
+  facade. Fully additive per constraint 8 — no call-site changes, no public function signature
+  changes, no dispatcher modifications. Control-plane implementation only; Spark Hadoop FS config
+  + credentials + SA keyfile path resolver were already delivered by B-4. Implementation scope:
+  (1) Added `gs` enum value to `_StorageScheme` (order: s3 → gs → file → local_unschemed),
+  `gs://` to `_SUPPORTED_SCHEME_PREFIXES` frozenset and error string, scheme-branch in
+  `detect_scheme()` + `collapse_slashes()`, backward-compat monkeypatch shims `_GCS_CLIENT`,
+  `_gcs_client()`, `_split_gcs_path()` in [path_utils.py](src/elt_pipeline/shared/path_utils.py)
+  (test interception surface matches `_S3_CLIENT`/`_s3_client`/`_split_s3_path` pattern).
+  (2) Added `_get_gcs_client()` singleton with lazy import + `ImportError` ConfigValidationError
+  guiding `uv sync --extra gcs` / `uv sync --extra dataproc` install; `_split_gcs_path()` helper
+  mirroring S3 (strip `gs://`, split first `/`, empty-bucket validation).
+  (3) ~700-line **`GCSBackend`** class in
+  [storage_backends/__init__.py](src/elt_pipeline/shared/storage_backends/__init__.py) implementing
+  the full runtime-checkable `StorageBackend` Protocol: String ops (join_paths with slash-collapse
+  mirroring S3's prefix handling, path_parent/path_basename/path_with_suffix/path_normalize), all
+  18 leaf IO ops (wrapped with PipelineError `STORAGE_GCS_OP_FAILED` + `_is_gcs_retryable()`
+  heuristics for ServiceUnavailable / timeout / temporary / 503 / rate-limit / throttle string
+  detection) — including: `path_exists` (prefix list_blobs max_results=1 for dirs, blob.exists()
+  for keys, NotFound → False), `path_is_dir` (delimiter="/" + check both Contents and prefixes),
+  `path_mkdir` (no-op, object-store has no dirs), `path_listdir` (delimiter="/" returning gs://
+  URIs for blobs + synthetic prefix dirs), `path_glob` (delimiter="/" fnmatch filter on suffix),
+  `path_rglob` (no-delimiter flat-list with basename-only fnmatch, matching POSIX pathlib.rglob
+  semantics), `path_content_length` (get_blob → int(blob.size or 0), NotFound → PipelineError),
+  `path_read_bytes` (blob.download_as_bytes), `path_write_bytes` (atomic mode: upload .tmp →
+  bucket.copy_blob → delete .tmp / non-atomic: direct upload_from_string),
+  `path_open_for_append` (read-existing + buffer pattern, close-write atomic via `_GCSAppendWriter`
+  inner-class mirroring `S3AppendWriter`), `path_replace` (copy_blob + delete-src with intra-scheme
+  guard matching s3's inter-scheme guard), `path_delete_tree` (list_blobs → BATCH=1000
+  bucket.delete_blobs chunks, NotFound safe). Staging-swap support via `staging_swap_atomic`:
+  bucket-match check + prefix trailing-slash norm + **full_refresh** (list staging + list target,
+  copy staging→target, confirm subset, delete stale target keys not in staging, delete staging) +
+  **partition_overwrite** (reuses `_s3_infer_partition_subprefixes` unchanged since it operates on
+  pure key strings, per-partition copy→delete-old). Static helpers: `_get_gcs_exc()` fallback
+  stub class for NotFound/Forbidden/ServiceUnavailable when google-cloud-storage SDK is not
+  installed (enables pure-unit tests without SDK), `_is_gcs_retryable(exc)` retryable heuristic.
+  Low-level helpers: `_gcs_list_blobs()` → list of blob.name strings; `_gcs_batch_delete()` →
+  BATCH=1000 chunked delete_blobs. (4) Registered in `_BACKEND_REGISTRY` at
+  `StorageScheme.gs: GCSBackend()` (s3/gs/file/local_unschemed complete); `_NO_STAGING_MOVE_HINT`
+  updated to include "Google Cloud Storage (gs://)".
+  (5) Added `gcs` optional extra to [pyproject.toml](pyproject.toml):
+  `google-cloud-storage>=2.14,<3.0`; added `dataproc` extra mirroring EMR: gcs dep +
+  `pyspark==4.1.2`.
+  (6) 28 new tests in [tests/test_path_utils_gcs.py](tests/test_path_utils_gcs.py) covering
+  FakeGCSClient (mirrors google-cloud-storage API: client.bucket/FakeBucket/FakeBlob,
+  list_blobs with prefixes attribute, upload_from_string/download_as_bytes/exists/size/name/copy_blob/
+  delete_blobs/get_blob/NotFound exceptions). Test groups: TestMockedGCSRouting (18 tests — atomic
+  write tmp/copy/delete sequence, non-atomic skip tmp, listdir delimiter + gs URI returns,
+  blob.exists key-check vs list_blobs prefix max_results=1 dir-check, mkdir no-op, read_bytes,
+  content_length via get_blob + missing-raises-PipelineError, is_dir delimiter Contents+prefixes,
+  replace copy+delete, glob delimiter suffix-filter, rglob basename-match recursive,
+  delete_tree batch, append write-read-rewrite buffer, relative_to, split path validation),
+  TestStagingSwapGCS (10 tests — full_refresh sibling-preserving copy+stale-delete+staging-purge,
+  partition_overwrite 1-level + nested multi-level, empty staging raises, cross-bucket rejected,
+  validate_swap_scheme accepts gs + abfs early-blocked via detect_scheme, best_effort delete_staging
+  missing-safe).
+  (7) Existing [tests/test_path_utils.py](tests/test_path_utils.py) updated: `test_detect_gs` added
+  to TestDetectScheme; 7 new gs entries added to TestJoinPaths mirroring s3; gs entries for
+  parent/basename/suffix/relative_to/normalize added to TestPathStringHelpers; `gs://bucket/prefix`
+  removed from `test_reject_unknown_schemes_sharp` reject-tuple + 5 new scheme variants (wasbs/dbfs/hdfs)
+  plus gs support string asserted in error message.
+  (8) Existing [tests/test_staging_swap.py](tests/test_staging_swap.py) updated: gs:// removed from
+  parametrize bad-schemes list; `test_accepts_gs_scheme` + wasbs parametrize entry added.
+  (9) [CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §1 GCS row ⏳ → 🟢 Production
+  with full B-1 cross-ref note; Document Status Updated stamp flipped.
+  (10) [_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py) `validate_swap_scheme` accept list
+  now includes `_StorageScheme.gs`; `_NO_STAGING_MOVE_HINT` updated to mention GCS support.
+  Verification: Focused gate 117/117 green (test_path_utils_gcs 28 + test_path_utils 66 +
+  test_staging_swap 23), `uv run ruff check src tests` clean, 362/362 non-Spark tests pass.
+  2 pre-existing Spark-FS integration test failures in `test_spark_fs_config.py` are ENV-only
+  (JDK not installed in session sandbox), zero code relation (confirmed same failures pre-B-1).
+  Spark/Iceberg ENV tests (10 files) require Temurin 23 JDK per session-start instructions.
+  **Sixth TRANCHE 2 item closed. B-2 (ADLS abfss:// additive backend) is now the top
+  multi-cloud candidate; all data-plane Spark wiring already done via B-4.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `B-1` — GCS `gs://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
-  - `B-2` — Azure ADLS `abfss://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
+  - `B-2` — Azure ADLS Gen2 `abfss://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
   - `g-3` — orchestration integration (🟠 MED)
   - (all other B-*/G-1-impl/G-4…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
@@ -197,17 +271,15 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   fallback. 13 env vars, 27 tests, build_spark_fs_hadoop_configs() public pure API,
   3 PipelineError validation codes, dedicated _resolve_path_ref for GCS SA keyfile
   paths. B-1 and B-2 now require only a StorageBackend control-plane class each.**
-  **G-2 closed → fifth TRANCHE 2 item done (🔴 HIGH observability). Observability
-  subsystem complete: 3 protocols (MetricsExporter / TraceExporter / AlertHook), 3
-  zero-deps HTTP concretes (Prometheus remote_write, OTLP HTTP, webhook POST),
-  ObservabilityAdapter with best_effort/blocking policies per subsystem, 15 env vars
-  (5 per subsystem), LocalArtifactStore JSONL sinks (metrics/traces/alerts always-on),
-  on_run_complete() AuditRecord auto-derivation (metrics/spans/alerts single callsite),
-  all 5 audit finalization points wired. 31 new tests. Capability Maturity Matrix §6
-  all 4 rows ⏳ → 🟢 Committed. README Honest Boundary: Observability now Production.**
+  **B-1 closed → sixth TRANCHE 2 item done (🟠 MED GCS gs:// backend, additive-only). GCS
+  is now a first-class 🟢 Production storage scheme (3rd alongside POSIX + S3):
+  GCSBackend full StorageBackend Protocol implementation, 28 pure-unit tests,
+  Capability Maturity Matrix §1 GCS row flipped ⏳→🟢. Zero control-plane churn:
+  B-6 facade + `_BACKEND_REGISTRY` 100% unchanged at call sites. Spark data-plane
+  wiring (Hadoop FS config + credential resolver + SA keyfile paths) was already
+  Production via B-4.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (HIGH/MED ordered): B-1 (GCS, additive) → B-2 (ADLS, additive)
-  → G-3 (orchestration, med).**
+  Next candidate pulls (HIGH/MED ordered): B-2 (ADLS, additive) → G-3 (orchestration, med).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -459,20 +531,12 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 - **Verification:** existing gate stays green on local + S3 (now via the FS delegate); then B-5's
   emulator integration tests prove GCS + ADLS through the *same* code path; PRD 08 updated.
 
-#### B-1 — Implement GCS (`gs://`) storage IO via B-6 facade  ⏳ (additive-only; no control-plane code churn)
-- **Goal:** `bucket_path: gs://…` and `gs://` root URIs work end-to-end (L1 land, L2 parquet,
-  staging-swap), config-only.
-- **Cause:** `gs://` is rejected by `detect_scheme` ([path_utils.py](src/elt_pipeline/shared/path_utils.py)).
-- **Scope (via B-6 facade, constraint 8):** add `gs` to `StorageScheme` enum + `_SUPPORTED_SCHEME_PREFIXES`
-  in `path_utils.py`; add a **single** `GCSBackend` class implementing the full `StorageBackend`
-  Protocol (18 leaf IO ops + `staging_swap_atomic` preserving S-2) via `google-cloud-storage` (add dep);
-  register the new class in `storage_backends._BACKEND_REGISTRY` (or call `register_backend()`).
-  `path_utils` public functions and `_staging_swap.py` need **zero changes** — they dispatch through
-  the new backend automatically. Wire Spark FS (see B-4).
-- **Decision needed:** client lib (`google-cloud-storage` direct, like boto3) vs `gcsfs`. Prefer
-  matching the S3 pattern (direct client) for consistency.
-- **Verification:** new `tests/test_path_utils_gcs.py` with a GCS fake/emulator mirroring the S3
-  fake in [tests/test_path_utils.py](tests/test_path_utils.py); `bash scripts/run_tests.sh` green.
+#### B-1 — Implement GCS (`gs://`) storage IO via B-6 facade  ✅ CLOSED 2026-08-26 (sixth on-demand TRANCHE 2 pull)
+- **Status:** Delivered. 28 new tests, 117/117 focused gate green, Capability Maturity Matrix §1 GCS row ⏳→🟢 Production.
+- **Goal:** `bucket_path: gs://…` and `gs://` root URIs work end-to-end (L1 land, L2 parquet, staging-swap), config-only.
+- **Delivered:**  Added `gs` to StorageScheme enum; `GCSBackend` class implementing full `StorageBackend` Protocol (18 leaf IO ops + staging_swap_atomic full_refresh/partition_overwrite) via `google-cloud-storage` SDK; registered in `_BACKEND_REGISTRY`; pyproject.toml gcs + dataproc extras; backward-compat monkeypatch shims `_GCS_CLIENT` / `_gcs_client()` / `_split_gcs_path()`; Spark FS creds already done by B-4 (no additional Spark work needed). Zero control-plane churn: path_utils public functions + `_staging_swap.py` backward-compat shims unchanged.
+- **Decision applied:** `google-cloud-storage` direct client (matches boto3/S3 pattern for consistency).
+- **Verification:** 28 tests in `tests/test_path_utils_gcs.py` with FakeGCSClient mirroring SDK API surface; full ruff clean; non-Spark 362 tests all pass; 2 pre-existing `test_spark_fs_config.py` ENV failures are JDK-unrelated (no Temurin 23 in sandbox session ENV).
 
 #### B-2 — Implement Azure ADLS Gen2 (`abfss://`, optionally `wasbs://`) via B-6 facade  ⏳ (additive-only; no control-plane code churn)
 - **Goal:** `abfss://…` roots work end-to-end, config-only.
@@ -1425,8 +1489,7 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   work beyond env configuration; adding Datadog/NewRelic/Slack/PagerDuty/Opsgenie backends = 1
   class per backend, zero adapter/factory churn.
   Next Tranche 2 pull candidates (ordered by MED additive first):
-  `B-1` (GCS gs:// backend via B-6 facade, 🟠 MED additive-only; Spark data-plane + creds already
-  done via B-4) →
+  `B-1` (GCS gs:// backend via B-6 facade, ✅ CLOSED 2026-08-26 — sixth TRANCHE 2 item) →
   `B-2` (Azure ADLS abfss:// backend via B-6 facade, 🟠 MED additive-only; Spark data-plane + creds
   already done via B-4) →
   `g-3` (orchestration integration, 🟠 MED) → rest on-demand.

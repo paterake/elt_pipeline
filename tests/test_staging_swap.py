@@ -155,13 +155,17 @@ class TestValidateSwapScheme:
         s = validate_swap_scheme("s3://my-bucket/wh/sql/orders", "orders")
         assert s is _StorageScheme.s3
 
+    def test_accepts_gs_scheme(self) -> None:
+        s = validate_swap_scheme("gs://my-bucket/wh/sql/orders", "orders")
+        assert s is _StorageScheme.gs
+
     @pytest.mark.parametrize(
         "bad",
         [
             "s3a://bucket/p",
             "s3n://bucket/p",
-            "gs://bucket/p",
             "abfs://container/p",
+            "wasbs://container/p",
             "https://example.com/p",
         ],
     )
