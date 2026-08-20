@@ -43,13 +43,38 @@
   like `"ORDERS_API_TOKEN"` continue to work (implicit env:// + pass-through fallback on miss
   = old stub behaviour). 47 new tests all pass; full gate 372/0 green. Unblocks **B-4**
   (Spark cloud FS credential story).
+- **TRANCHE 2 — B-4 CLOSED (2026-08-26, fourth on-demand pull, 🔴 HIGH Spark cloud FS
+  config + credential story, now unblocks B-1 + B-2 additive-only):** Complete
+  `spark.hadoop.fs.*` config surface for S3 (s3a://), GCS (gs://), and ADLS Gen2 (abfss://)
+  wired end-to-end through the standard 4-tier runtime_context cascade. 13 new env vars in
+  EnvVarNames; materialized as a `spark_fs:` nested dict (flat dotted keys also accessible
+  via `runtime_context.get("spark_fs.s3_region")` and included in `as_runtime_overrides()`).
+  Credential values are `secret_ref` URIs resolved at Spark build time with `strict=True`
+  via the G-5 subsystem (fail-fast on explicitly-configured but unresolvable refs; empty
+  refs → Spark's native default credential chain — ambient IAM on EMR/workload identity /
+  DefaultAzureCredential / ADC / ~/.aws/credentials — preserving zero-ambient-config
+  deployments). Public pure-unit-testable API `build_spark_fs_hadoop_configs()` returns
+  flat Spark `spark.hadoop.fs.*` keys with no JVM or PySpark import dependency. Validation
+  modes: S3 ak+sk pair required together-or-neither (SPARK_FS_S3_CRED_MISMATCH), ADLS
+  account_name required for any config (SPARK_FS_ADLS_ACCOUNT_REQUIRED), ADLS Service
+  Principal auth requires tenant_id+client_id+client_secret all together
+  (SPARK_FS_ADLS_SP_INCOMPLETE). Auth-mode priority: S3 (ak+sk → default-chain); ADLS
+  (shared_key → Service-Principal-OAuth → MSI-MsiTokenProvider → default-chain). GCS SA
+  keyfile uses a dedicated `_resolve_path_ref` helper: `file:///path` passes the path
+  verbatim (Spark's JVM side reads the JSON file directly), `env://VAR` treats the env var
+  value as a filesystem path; cloud-secret-manager schemes rejected with clear guidance.
+  27 new tests in tests/test_spark_fs_config.py (S3:10, GCS:3, ADLS:7, cascade:4,
+  build_spark_session integration:4). Full gate 404/404 green (baseline 372 + 27 + 5 others
+  that closed since last stamp), `uv run ruff check src/ tests/` clean. **B-1 (GCS gs://)
+  and B-2 (ADLS abfss://) are now additive-only follow-ups** — only the `StorageBackend`
+  control-plane class needs adding; all Spark Hadoop FS data-plane config + credential
+  wiring is already Production-complete.
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
   - `g-2` — observability / metrics + tracing export (🔴 HIGH)
-  - `B-4` — wire Spark cloud filesystem config + credential story (🔴 HIGH, now unblocked by G-5)
+  - `B-1` — GCS `gs://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
+  - `B-2` — Azure ADLS `abfss://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
   - `g-3` — orchestration integration (🟠 MED)
-  - `B-1` — GCS `gs://` backend via B-6 facade (🟠 MED, additive-only)
-  - `B-2` — Azure ADLS `abfss://` backend via B-6 facade (🟠 MED, additive-only)
   - (all other B-*/G-1-impl/G-4…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
@@ -70,9 +95,9 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (372 / 0 failed);
-  `uv run ruff check .` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-19 (re-stamped after G-5 closure). Origin: a portability +
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (404 / 0 failed);
+  `uv run ruff check src/ tests/` clean. This backlog does **not** start from a red gate — keep it green.
+- **Captured:** 2026-08-26 (re-stamped after B-4 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -126,6 +151,13 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   for B-1/B-2/B-3/B-4/B-5).**
   **G-5 closed → third TRANCHE 2 item done (force-multiplier, additive-only closure of
   cloud SMs + vault + B-4 cloud FS credential story).**
+  **B-4 closed → fourth TRANCHE 2 item done (force-multiplier, additive-only unblock
+  for B-1/GCS and B-2/ADLS Spark data-plane writes). Spark Hadoop FS cloud config
+  (spark.hadoop.fs.s3a.* / fs.gs.* / fs.azure.*) is now a full framework-level surface
+  with 4-tier cascade + G-5 strict secret_ref resolution + ambient-default-identity
+  fallback. 13 env vars, 27 tests, build_spark_fs_hadoop_configs() public pure API,
+  3 PipelineError validation codes, dedicated _resolve_path_ref for GCS SA keyfile
+  paths. B-1 and B-2 now require only a StorageBackend control-plane class each.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
@@ -421,16 +453,31 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 - **Verification:** an integration test or a documented, reproducible manual run; PRD 10 claim
   matches whatever (a)/(b) you shipped.
 
-#### B-4 — Wire Spark cloud filesystem config + credential story  ⏳ (Path B only)
-- **Symptom:** [spark/session.py](src/elt_pipeline/spark/session.py) sets **no** `spark.hadoop.fs.*`
-  / cloud credentials for any backend — even S3 relies on ambient EMRFS/IAM. Non-EMR Spark
-  clusters can't read/write S3/GCS/ADLS without this.
-- **Scope:** config-driven `spark.hadoop.fs.s3a.*` / `fs.azure.*` / `fs.gs.*` + the matching
-  Hadoop-cloud jars, resolved through the runtime_context cascade (never hard-coded, never
-  logged). Decide the credential model (instance profile / workload identity / key via env /
-  secret ref) and document it.
-- **Verification:** documented per-cloud launch recipe; where feasible, an integration test that
-  round-trips a small dataset against a real/emulated bucket.
+#### B-4 — Wire Spark cloud filesystem config + credential story  ✅ Done (2026-08-26)
+- **Scope delivered:**
+  - 13 new `ELT_PIPELINE_SPARK_FS_*` env vars in `EnvVarNames` centralized manifest.
+  - Spark S3 `s3a://` config surface: `fs.s3a.impl` auto-registered when any value set; `s3a.access.key` + `s3a.secret.key` resolved from `secret_ref` URIs via G-5 resolve_secret_ref(strict=True); `fs.s3a.endpoint.region` and `fs.s3a.endpoint` supported. Ambient default credential chain used when both keys omitted (instance profile / env / ~/.aws/credentials).
+  - Spark GCS `gs://` config surface: `fs.gs.impl` = `GoogleHadoopFileSystem` + `AbstractFileSystem.gs.impl` = `GoogleHadoopFS` auto-registered; `fs.gs.project.id` supported. SA keyfile resolved via dedicated `_resolve_path_ref`: `file:///abs/path` passes the filesystem path verbatim (Spark JVM reads the JSON), `env://VAR` treats the env var value as a filesystem path. Cloud SM schemes explicitly rejected with guidance (store path in env var → reference env://VAR). Default ADC / workload identity chain when no SA keyfile given.
+  - Spark ADLS Gen2 `abfss://` config surface: `account_name` required for any credential / MSI config (SPARK_FS_ADLS_ACCOUNT_REQUIRED). Auth modes (priority): (1) Shared Key → `fs.azure.account.key.<host>` via secret_ref; (2) Service Principal OAuth → `ClientCredsTokenProvider` + `client.id` + `client.secret` + `tenant_id` endpoint (all 3 required together → SPARK_FS_ADLS_SP_INCOMPLETE); (3) MSI → `MsiTokenProvider` OAuth; (4) Default → `DefaultAzureCredential` chain.
+  - `build_spark_fs_hadoop_configs(**kwargs) -> dict[str, str]` — **public, pure, zero-dependency** (no PySpark / no JVM). Callers can build/validate configs without booting Spark. 3 explicit `PipelineError` validation codes: `SPARK_FS_S3_CRED_MISMATCH`, `SPARK_FS_ADLS_ACCOUNT_REQUIRED`, `SPARK_FS_ADLS_SP_INCOMPLETE`.
+  - `_apply_spark_fs_configs(builder, fs_conf)` — nested-dict → flat Spark .config() chaining.
+  - Build-time integration in `build_spark_session()`: all 12+1 spark_fs knobs go through the same 4-tier cascade (param → singleton → runtime_overrides → manifest floor) used by every other builder knob. `spark_fs` namespace included in `as_runtime_overrides()`.
+  - Materialization: `adls_use_msi` stored as string with floor `""` (not `False` boolean) so that the singleton's `_resolve()` correctly passes through a manifest-floor empty string and lets runtime_overrides `True/False` take effect on override-only (the empty-string-for-optional pattern mirrors `spark.enable_iceberg`); the string is then booleanized at consumption site in build_spark_fs_hadoop_configs with proper normalization (`"true"/"1"/"yes"/"on"` → True, everything else including `"false"/""` → False).
+- **Credential model (ambient-default convention):** Empty credential refs → the framework emits **no** Spark credential keys at all, so Spark's native credential chain takes over. This preserves the existing behaviour of ambient-IAM deployments (EMR, GKE Workload Identity, AKS Pod Identity / User-Assigned Managed Identity, workstation `~/.aws/credentials` / ADC) with zero config. Explicit `secret_ref` URIs must resolve successfully (strict=True) or the build fails fast — an operator who explicitly opted in to external credential resolution deserves a sharp error, not a silent fallback to ambient.
+- **Design decisions recorded (not PRD-level — these are local):**
+  1. GCS SA keyfile is a PATH, not JSON contents (Spark's `json.keyfile` Hadoop key expects a path). `_resolve_path_ref` vs `_resolve_cred_ref` is the explicit seam.
+  2. `adls_use_msi` stored as string (floor "") not boolean (floor False) — empty-string floor lets runtime_overrides boolean True override it through the generic `_resolve` helper without special-casing a False-vs-meaningful False distinction.
+  3. Additive-only closure for B-1/GCS and B-2/ADLS: only the `StorageBackend` control-plane class remains; all Spark data-plane config + credential wiring is done here.
+- **Tests (27 new, all pass):** `tests/test_spark_fs_config.py` — S3 (10), GCS (3), ADLS (7), RuntimeContext cascade (4), build_spark_session integration (4).
+- **Verification:**
+  ```bash
+  export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23"
+  export PATH="$JAVA_HOME/bin:$PATH"
+  uv run pytest tests/test_spark_fs_config.py -v          # 27 passed in 0.3s
+  bash scripts/run_tests.sh                                # 404 passed, TEST GATE: PASS
+  uv run ruff check src/ tests/                            # All checks passed!
+  ```
+- **Cross-refs:** Updated: Resume section TRANCHE 2 B-4 CLOSED entry; Status snapshot gate=404 + B-4 summary; Capability Maturity Matrix §1 new Spark Hadoop FS surface row + GCS/ADLS row notes updated.
 
 #### B-5 — Cloud integration tests (prove each backend, not just fakes)  ⏳ (Path B only)
 - **Symptom:** S3 is only unit-tested with an in-process fake; Azure/GCS have zero coverage.

@@ -7,6 +7,7 @@ from pyspark.sql import SparkSession
 
 from elt_pipeline.config import runtime_context
 from elt_pipeline.config.runtime_manifest import runtime_manifest
+from elt_pipeline.shared.secrets import resolve_secret_ref
 
 _DEFAULT_MASTER = runtime_manifest.spark.default_master
 
@@ -14,6 +15,277 @@ _DEFAULT_ICEBERG_CATALOG_NAME = runtime_manifest.catalogs.default_catalog_name
 _DEFAULT_ICEBERG_WRITER_CATALOG_TYPE = (
     runtime_manifest.catalogs.workstation_default_writer_catalog
 )
+
+
+# ---------------------------------------------------------------------------
+# Spark Hadoop FS cloud config builder (BACKLOG item B-4)
+#
+# Strategy: resolve the standard Spark Hadoop FS keys for S3 (s3a://), GCS (gs://),
+# and ADLS Gen2 (abfss://).  Credential values are secret_ref URIs
+# resolved through resolve_secret_ref() with strict=True — if the operator
+# explicitly gave a ref but it's missing, we fail fast and sharp.  When no
+# explicit credentials are provided (empty strings), we emit NO credential keys at
+# all — Spark's default credential chain takes over:
+#   - S3: DefaultAWSCredentialsProviderChain (env → instance profile
+#   - GCS: ADC / workload identity / metadata service
+#   - ADLS: DefaultAzureCredential / MSI / metadata service
+# This matches platform convention and avoids breaking ambient-IAM deployments.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_cred_ref(ref: str | None, *, label: str) -> str | None:
+    """Resolve a single credential secret_ref URI.
+
+    * ``ref`` is non-empty string → treat as secret_ref, resolve strict=True.
+      Raises ``Secret*Error`` on failure (fail-fast: operator explicitly
+      opted in, we must honour it).
+    * ``ref`` is None/empty → return None → caller skips the Spark config key
+      (default credential chain).
+    """
+    if ref is None:
+        return None
+    stripped = str(ref).strip()
+    if not stripped:
+        return None
+    val = resolve_secret_ref(stripped, strict=True)
+    return str(val)
+
+
+def _resolve_path_ref(ref: str | None, *, label: str) -> str | None:
+    """Resolve a secret_ref to a filesystem PATH string (NOT the file's contents).
+
+    Used for GCS SA keyfile, where Spark's Hadoop FS connector expects a
+    *filesystem path* to a JSON SA keyfile (``json.keyfile`` config key),
+    not the in-memory JSON contents.
+
+    * ``file:///abs/path`` → return ``/abs/path`` verbatim (Spark's JVM side reads it).
+    * ``env://VAR`` → resolve env var value, treat the value string as a filesystem path.
+    * bare ref (no scheme) → default to env:// (same secret_ref convention as everywhere else).
+    * None/empty → None (default ADC / workload identity chain).
+    * Unknown explicit schemes → raise SecretRefSyntaxError (fail-fast, same as secrets subsystem).
+    """
+    from elt_pipeline.shared.secrets import SecretScheme, parse_secret_ref
+
+    if ref is None:
+        return None
+    stripped = str(ref).strip()
+    if not stripped:
+        return None
+    parsed = parse_secret_ref(stripped)
+    if parsed.scheme == SecretScheme.file:
+        return parsed.path
+    if parsed.scheme == SecretScheme.env:
+        val = resolve_secret_ref(stripped, strict=True)
+        return str(val).strip()
+    from elt_pipeline.shared.secrets import SecretRefSyntaxError
+
+    raise SecretRefSyntaxError(
+        message=(
+            f"{label}: only file:// and env:// schemes are supported for path-type "
+            f"refs (got scheme {parsed.scheme.value!r}). For cloud-secret schemes, "
+            f"store the keyfile path in an env var and reference env://VAR."
+        ),
+        context={"ref_repr": stripped},
+    )
+
+
+def build_spark_fs_hadoop_configs(
+    *,
+    s3_access_key_ref: str | None = None,
+    s3_secret_key_ref: str | None = None,
+    s3_region: str | None = None,
+    s3_endpoint: str | None = None,
+    gcs_sa_keyfile_ref: str | None = None,
+    gcs_project_id: str | None = None,
+    adls_account_name: str | None = None,
+    adls_account_key_ref: str | None = None,
+    adls_tenant_id: str | None = None,
+    adls_client_id_ref: str | None = None,
+    adls_client_secret_ref: str | None = None,
+    adls_use_msi: str | bool | None = None,
+) -> dict[str, str]:
+    """Build a dict of ``spark.hadoop.fs.*`` configs for the configured backends.
+
+    The returned dict uses Spark Hadoop FS config keys ready to be passed to
+    ``SparkSession.Builder.config(key, value)`` one by one.  Only backends
+    with at least one explicitly configured value are emitted; keys are emitted;
+    backends with nothing configured are omitted so Spark's defaults apply unchanged.
+
+    Returned keys are always ``str → str`` (Spark always stringifies everything anyway.
+
+    Raises any ``Secret*Error`` from :func:`resolve_secret_ref` (strict mode)
+    when an explicit credential ref fails to resolve — fail-fast with a clear
+    message that names the parameter (backed by secrets subsystem error codes).
+    """
+    out: dict[str, str] = {}
+
+    if isinstance(adls_use_msi, str):
+        _adls_msi_norm = adls_use_msi.strip().lower()
+        _adls_use_msi: bool = _adls_msi_norm in ("true", "1", "yes", "on")
+    elif isinstance(adls_use_msi, bool):
+        _adls_use_msi = adls_use_msi
+    else:
+        _adls_use_msi = False
+
+    # ----- S3 (s3a://) ----------------------------------------------------------
+    s3_active = any(
+        v is not None and str(v).strip() != ""
+        for v in (s3_access_key_ref, s3_secret_key_ref, s3_region, s3_endpoint)
+    )
+    if s3_active:
+        out["spark.hadoop.fs.s3a.impl"] = "org.apache.hadoop.fs.s3a.S3AFileSystem"
+        s3_ak = _resolve_cred_ref(s3_access_key_ref, label="s3_access_key_ref")
+        s3_sk = _resolve_cred_ref(s3_secret_key_ref, label="s3_secret_key_ref")
+        if s3_ak is not None and s3_sk is not None:
+            out["spark.hadoop.fs.s3a.access.key"] = s3_ak
+            out["spark.hadoop.fs.s3a.secret.key"] = s3_sk
+        elif s3_ak is not None or s3_sk is not None:
+            from elt_pipeline.shared.errors import ErrorCategory, PipelineError
+
+            raise PipelineError(
+                message=(
+                    "spark_fs S3 configuration incomplete: both s3_access_key_ref and "
+                    "s3_secret_key_ref must be set together (got only one "
+                    "was provided. Omit both to use the default AWS credential "
+                    "chain (instance profile / env vars)."
+                ),
+                error_code="SPARK_FS_S3_CRED_MISMATCH",
+                error_category=ErrorCategory.config_error,
+                retryable=False,
+                context={
+                    "s3_access_key_ref_set": s3_ak is not None,
+                    "s3_secret_key_ref_set": s3_sk is not None,
+                },
+            )
+        s3_reg = (s3_region or "").strip()
+        if s3_reg:
+            out["spark.hadoop.fs.s3a.endpoint.region"] = s3_reg
+        s3_ep = (s3_endpoint or "").strip()
+        if s3_ep:
+            out["spark.hadoop.fs.s3a.endpoint"] = s3_ep
+
+    # ----- GCS (gs://) ----------------------------------------------------------
+    gcs_active = any(
+        v is not None and str(v).strip() != ""
+        for v in (gcs_sa_keyfile_ref, gcs_project_id)
+    )
+    if gcs_active:
+        out["spark.hadoop.fs.gs.impl"] = (
+            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFileSystem"
+        )
+        out["spark.hadoop.fs.AbstractFileSystem.gs.impl"] = (
+            "com.google.cloud.hadoop.fs.gcs.GoogleHadoopFS"
+        )
+        gcs_proj = (gcs_project_id or "").strip()
+        if gcs_proj:
+            out["spark.hadoop.fs.gs.project.id"] = gcs_proj
+        gcs_keyfile = _resolve_path_ref(gcs_sa_keyfile_ref, label="gcs_sa_keyfile_ref")
+        if gcs_keyfile is not None:
+            out["spark.hadoop.google.cloud.auth.service.account.enable"] = "true"
+            out[
+                "spark.hadoop.google.cloud.auth.service.account.json.keyfile"
+            ] = gcs_keyfile
+
+    # ----- ADLS Gen2 (abfss://) ---------------------------------------------------
+    adls_any_creds_configured = any(
+        v is not None and str(v).strip() != ""
+        for v in (adls_account_key_ref, adls_client_id_ref, adls_client_secret_ref)
+    )
+    adls_active = adls_any_creds_configured or _adls_use_msi or (
+        adls_account_name is not None and str(adls_account_name).strip() != ""
+    )
+    if adls_active:
+        acct = (adls_account_name or "").strip()
+        if not acct:
+            from elt_pipeline.shared.errors import ErrorCategory, PipelineError
+
+            raise PipelineError(
+                message=(
+                    "spark_fs ADLS configuration requires "
+                    "spark_fs.adls_account_name when any other ADLS config "
+                    "(account_key / client creds / MSI) is configured."
+                ),
+                error_code="SPARK_FS_ADLS_ACCOUNT_REQUIRED",
+                error_category=ErrorCategory.config_error,
+                retryable=False,
+            )
+        acct_host = f"{acct}.dfs.core.windows.net"
+
+        # Determine auth mode: shared_key → Service Principal → MSI → (default)
+        acct_key = _resolve_cred_ref(adls_account_key_ref, label="adls_account_key_ref")
+        client_id = _resolve_cred_ref(adls_client_id_ref, label="adls_client_id_ref")
+        client_secret = _resolve_cred_ref(
+            adls_client_secret_ref, label="adls_client_secret_ref"
+        )
+
+        if acct_key is not None:
+            out[f"spark.hadoop.fs.azure.account.key.{acct_host}"] = acct_key
+        elif client_id is not None and client_secret is not None and adls_tenant_id:
+            out[f"spark.hadoop.fs.azure.account.auth.type.{acct_host}"] = "OAuth"
+            out[
+                f"spark.hadoop.fs.azure.account.oauth.provider.type.{acct_host}"
+            ] = "org.apache.hadoop.fs.azurebfs.oauth2.ClientCredsTokenProvider"
+            out[f"spark.hadoop.fs.azure.account.oauth2.client.id.{acct_host}"] = client_id
+            out[
+                f"spark.hadoop.fs.azure.account.oauth2.client.secret.{acct_host}"
+            ] = client_secret
+            out[
+                f"spark.hadoop.fs.azure.account.oauth2.client.endpoint.{acct_host}"
+            ] = f"https://login.microsoftonline.com/{adls_tenant_id}/oauth2/token"
+        elif client_id is not None or client_secret is not None or adls_tenant_id:
+            from elt_pipeline.shared.errors import ErrorCategory, PipelineError
+
+            raise PipelineError(
+                message=(
+                    "spark_fs ADLS Service Principal auth: adls_tenant_id, "
+                    "adls_client_id_ref, and adls_client_secret_ref must all be "
+                    "set together."
+                ),
+                error_code="SPARK_FS_ADLS_SP_INCOMPLETE",
+                error_category=ErrorCategory.config_error,
+                retryable=False,
+            )
+        elif _adls_use_msi:
+            out[f"spark.hadoop.fs.azure.account.auth.type.{acct_host}"] = "OAuth"
+            out[
+                f"spark.hadoop.fs.azure.account.oauth.provider.type.{acct_host}"
+            ] = "org.apache.hadoop.fs.azurebfs.oauth2.MsiTokenProvider"
+        # else: no cred keys → Spark default chain
+
+    return out
+
+
+def _apply_spark_fs_configs(
+    builder: Any,
+    fs_conf: dict[str, Any],
+) -> Any:
+    """Apply fs_conf values into a ``SparkSession.Builder``.
+
+    ``fs_conf`` is shaped like the materialized ``spark_fs`` nested dict from
+    runtime_context. Converts to the flat spark.hadoop.fs.* keys via
+    :func:`build_spark_fs_hadoop_configs` and calls ``.config(k, v)`` for each.
+
+    Returns the builder (for chaining: ``builder = _apply_spark_fs_configs(builder, fs_conf)``).
+    """
+    if not isinstance(fs_conf, dict):
+        return builder
+    configs = build_spark_fs_hadoop_configs(
+        s3_access_key_ref=fs_conf.get("s3_access_key_ref"),
+        s3_secret_key_ref=fs_conf.get("s3_secret_key_ref"),
+        s3_region=fs_conf.get("s3_region"),
+        s3_endpoint=fs_conf.get("s3_endpoint"),
+        gcs_sa_keyfile_ref=fs_conf.get("gcs_sa_keyfile_ref"),
+        gcs_project_id=fs_conf.get("gcs_project_id"),
+        adls_account_name=fs_conf.get("adls_account_name"),
+        adls_account_key_ref=fs_conf.get("adls_account_key_ref"),
+        adls_tenant_id=fs_conf.get("adls_tenant_id"),
+        adls_client_id_ref=fs_conf.get("adls_client_id_ref"),
+        adls_client_secret_ref=fs_conf.get("adls_client_secret_ref"),
+        adls_use_msi=fs_conf.get("adls_use_msi"),
+    )
+    for k, v in configs.items():
+        builder = builder.config(k, v)
+    return builder
 
 
 def _iceberg_enabled() -> bool:
@@ -553,5 +825,75 @@ def build_spark_session(
                     f"spark.sql.catalog.{catalog_name}.warehouse",
                     resolved_warehouse,
                 )
+
+    # ----- Spark Hadoop FS cloud configs (B-4) -----------------------------------
+    # Resolve spark_fs values through the same 4-tier cascade used by all other
+    # builder knobs: explicit-param → singleton → ro → None (empty default).
+    # Credential values remain as secret_ref URIs; _apply_spark_fs_configs calls
+    # resolve_secret_ref(strict=True) to fail fast on any explicitly-configured
+    # but unresolvable ref.  Empty/missing refs → default credential chain.
+    fs_conf: dict[str, Any] = {
+        "s3_access_key_ref": _resolve(
+            None,
+            singleton_key="spark_fs.s3_access_key_ref",
+            override_path=("spark_fs", "s3_access_key_ref"),
+        ),
+        "s3_secret_key_ref": _resolve(
+            None,
+            singleton_key="spark_fs.s3_secret_key_ref",
+            override_path=("spark_fs", "s3_secret_key_ref"),
+        ),
+        "s3_region": _resolve(
+            None,
+            singleton_key="spark_fs.s3_region",
+            override_path=("spark_fs", "s3_region"),
+        ),
+        "s3_endpoint": _resolve(
+            None,
+            singleton_key="spark_fs.s3_endpoint",
+            override_path=("spark_fs", "s3_endpoint"),
+        ),
+        "gcs_sa_keyfile_ref": _resolve(
+            None,
+            singleton_key="spark_fs.gcs_sa_keyfile_ref",
+            override_path=("spark_fs", "gcs_sa_keyfile_ref"),
+        ),
+        "gcs_project_id": _resolve(
+            None,
+            singleton_key="spark_fs.gcs_project_id",
+            override_path=("spark_fs", "gcs_project_id"),
+        ),
+        "adls_account_name": _resolve(
+            None,
+            singleton_key="spark_fs.adls_account_name",
+            override_path=("spark_fs", "adls_account_name"),
+        ),
+        "adls_account_key_ref": _resolve(
+            None,
+            singleton_key="spark_fs.adls_account_key_ref",
+            override_path=("spark_fs", "adls_account_key_ref"),
+        ),
+        "adls_tenant_id": _resolve(
+            None,
+            singleton_key="spark_fs.adls_tenant_id",
+            override_path=("spark_fs", "adls_tenant_id"),
+        ),
+        "adls_client_id_ref": _resolve(
+            None,
+            singleton_key="spark_fs.adls_client_id_ref",
+            override_path=("spark_fs", "adls_client_id_ref"),
+        ),
+        "adls_client_secret_ref": _resolve(
+            None,
+            singleton_key="spark_fs.adls_client_secret_ref",
+            override_path=("spark_fs", "adls_client_secret_ref"),
+        ),
+        "adls_use_msi": _resolve(
+            None,
+            singleton_key="spark_fs.adls_use_msi",
+            override_path=("spark_fs", "adls_use_msi"),
+        ),
+    }
+    builder = _apply_spark_fs_configs(builder, fs_conf)
 
     return builder.getOrCreate()

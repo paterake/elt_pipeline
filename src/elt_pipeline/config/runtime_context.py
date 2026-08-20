@@ -535,6 +535,54 @@ def _materialize(
             publish_max_rows = 1_000_000
     nested["publish"] = {"max_rows": publish_max_rows}
 
+    # --- spark_fs (cloud Hadoop FS config + credential refs, B-4)
+    # Credential refs are stored as secret_ref URI strings; resolution
+    # happens at SparkSession build time via resolve_secret_ref() so
+    # ambient workload identity + CI env-injection patterns work.
+    # All manifest defaults = "" / False → operator opts-in explicitly;
+    # empty creds mean Spark's default credential chain is used
+    # (instance profile / workload identity / DefaultAzureCredential /
+    # ADC / ~/.aws/credentials / etc. — whatever Spark's Hadoop FS
+    # connectors resolve natively).
+    fs_conf: dict[str, Any] = {}
+    fs_conf["s3_access_key_ref"] = _final(
+        env.spark_fs_s3_access_key_ref, ("spark_fs", "s3_access_key_ref"), ""
+    )
+    fs_conf["s3_secret_key_ref"] = _final(
+        env.spark_fs_s3_secret_key_ref, ("spark_fs", "s3_secret_key_ref"), ""
+    )
+    fs_conf["s3_region"] = _final(
+        env.spark_fs_s3_region, ("spark_fs", "s3_region"), ""
+    )
+    fs_conf["s3_endpoint"] = _final(
+        env.spark_fs_s3_endpoint, ("spark_fs", "s3_endpoint"), ""
+    )
+    fs_conf["gcs_sa_keyfile_ref"] = _final(
+        env.spark_fs_gcs_sa_keyfile_ref, ("spark_fs", "gcs_sa_keyfile_ref"), ""
+    )
+    fs_conf["gcs_project_id"] = _final(
+        env.spark_fs_gcs_project_id, ("spark_fs", "gcs_project_id"), ""
+    )
+    fs_conf["adls_account_name"] = _final(
+        env.spark_fs_adls_account_name, ("spark_fs", "adls_account_name"), ""
+    )
+    fs_conf["adls_account_key_ref"] = _final(
+        env.spark_fs_adls_account_key_ref, ("spark_fs", "adls_account_key_ref"), ""
+    )
+    fs_conf["adls_tenant_id"] = _final(
+        env.spark_fs_adls_tenant_id, ("spark_fs", "adls_tenant_id"), ""
+    )
+    fs_conf["adls_client_id_ref"] = _final(
+        env.spark_fs_adls_client_id_ref, ("spark_fs", "adls_client_id_ref"), ""
+    )
+    fs_conf["adls_client_secret_ref"] = _final(
+        env.spark_fs_adls_client_secret_ref, ("spark_fs", "adls_client_secret_ref"), ""
+    )
+    fs_conf["adls_use_msi"] = _final(
+        env.spark_fs_adls_use_msi, ("spark_fs", "adls_use_msi"), "", _lower=True
+    )
+    nested["spark_fs"] = fs_conf
+
     # --- env overlay metadata
     nested["environment"] = environment_arg
     nested["config_path_source"] = cp_source
@@ -678,6 +726,7 @@ def as_runtime_overrides() -> dict[str, Any]:
         "trino_serving",
         "cli_default_root_path",
         "cli_default_warehouse_root",
+        "spark_fs",
     ):
         if k in n:
             ro_shape[k] = n[k]

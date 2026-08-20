@@ -67,6 +67,23 @@ class EnvVarNames:
     # Publish runtime
     publish_max_rows: str = "ELT_PIPELINE_PUBLISH_MAX_ROWS"
 
+    # Spark Hadoop FS — cloud storage config + credential refs (BACKLOG item B-4)
+    #   Credential values are stored as secret_ref URIs (env://VAR, file:///path, …)
+    #   and resolved through resolve_secret_ref() at SparkSession build time so
+    #   CI env-injection + workload-identity patterns work correctly.
+    spark_fs_s3_access_key_ref: str = "ELT_PIPELINE_SPARK_FS_S3_ACCESS_KEY_REF"
+    spark_fs_s3_secret_key_ref: str = "ELT_PIPELINE_SPARK_FS_S3_SECRET_KEY_REF"
+    spark_fs_s3_region: str = "ELT_PIPELINE_SPARK_FS_S3_REGION"
+    spark_fs_s3_endpoint: str = "ELT_PIPELINE_SPARK_FS_S3_ENDPOINT"
+    spark_fs_gcs_sa_keyfile_ref: str = "ELT_PIPELINE_SPARK_FS_GCS_SA_KEYFILE_REF"
+    spark_fs_gcs_project_id: str = "ELT_PIPELINE_SPARK_FS_GCS_PROJECT_ID"
+    spark_fs_adls_account_name: str = "ELT_PIPELINE_SPARK_FS_ADLS_ACCOUNT_NAME"
+    spark_fs_adls_account_key_ref: str = "ELT_PIPELINE_SPARK_FS_ADLS_ACCOUNT_KEY_REF"
+    spark_fs_adls_tenant_id: str = "ELT_PIPELINE_SPARK_FS_ADLS_TENANT_ID"
+    spark_fs_adls_client_id_ref: str = "ELT_PIPELINE_SPARK_FS_ADLS_CLIENT_ID_REF"
+    spark_fs_adls_client_secret_ref: str = "ELT_PIPELINE_SPARK_FS_ADLS_CLIENT_SECRET_REF"
+    spark_fs_adls_use_msi: str = "ELT_PIPELINE_SPARK_FS_ADLS_USE_MSI"
+
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
 
