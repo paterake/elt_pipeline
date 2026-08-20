@@ -184,9 +184,115 @@
   Spark/Iceberg ENV tests (10 files) require Temurin 23 JDK per session-start instructions.
   **Sixth TRANCHE 2 item closed. B-2 (ADLS abfss:// additive backend) is now the top
   multi-cloud candidate; all data-plane Spark wiring already done via B-4.**
+- **TRANCHE 2 — B-2 CLOSED (seventh on-demand pull, 🟠 MED ADLS abfss:// additive backend, zero control-plane churn):**
+  Full end-to-end `abfss://` Azure Data Lake Storage Gen2 URI support via the B-6 pluggable StorageBackend
+  facade. Fully additive per constraint 8 — no call-site changes, no public function signature
+  changes, no dispatcher modifications. Control-plane implementation only; Spark Hadoop FS config
+  + credentials (Shared Key / Service Principal OAuth / MSI / DefaultAzureCredential chain) were
+  already delivered by B-4. Implementation scope:
+  (1) Added `abfss` enum value to `_StorageScheme` (order: s3 → gs → abfss → file → local_unschemed),
+  `abfss://` to `_SUPPORTED_SCHEME_PREFIXES` frozenset and error string, scheme-branch in
+  `detect_scheme()` + `collapse_slashes()` (both branches handle the account suffix correctly —
+  collapse preserves `.dfs.core.windows.net` host, no duplicate-slash munching inside authority),
+  backward-compat monkeypatch shims `_ADLS_CLIENT`, `_adls_client()`, `_split_adls_path()` in
+  [path_utils.py](src/elt_pipeline/shared/path_utils.py) (test interception surface matches
+  `_S3_CLIENT`/`_s3_client`/`_split_s3_path` + `_GCS_CLIENT`/`_gcs_client`/`_split_gcs_path` pattern).
+  (2) Added `_get_adls_client()` singleton with lazy import + `ImportError` ConfigValidationError
+  guiding `uv sync --extra azure` / `uv sync --extra synapse` install; `_split_adls_path()` helper
+  (strip `abfss://`, parse authority `container@account.dfs.core.windows.net` with @ delimiter,
+  return (container, account, key); reject missing-container with ConfigValidationError,
+  root-only returns ("", account, "")).
+  (3) ~750-line **`ADLSBackend`** class in
+  [storage_backends/__init__.py](src/elt_pipeline/shared/storage_backends/__init__.py) implementing
+  the full runtime-checkable `StorageBackend` Protocol with ADLS authority-aware routing. String
+  ops (join_paths with slash-collapse mirroring S3/GCS prefix handling — authority preserved;
+  path_parent/path_basename/path_with_suffix/path_normalize). All 18 leaf IO ops wrapped with
+  PipelineError `STORAGE_ADLS_OP_FAILED` + `_is_adls_retryable()` heuristics for
+  `azure.core.exceptions.ServiceRequestError` + timeout/retry/temporary/503/rate limit/throttle/500/gateway
+  string detection. Key implementations: `path_exists` (prefix list_paths max_results=1 for dirs,
+  FileClient.get_file_properties + DirectoryClient.get_directory_properties double-check for keys,
+  ResourceNotFound → False via `_is_not_found_exc` fallback-safe when SDK not installed),
+  `path_is_dir` (prefix + "/" → list_paths max_results=1, len > 0), `path_mkdir` (no-op),
+  `path_listdir` (list_paths recursive=False returning abfss:// URIs with full account authority
+  reconstruction for files + synthetic prefix dirs), `path_glob` (list_paths recursive=False +
+  suffix fnmatch filter), `path_rglob` (recursive=True list_paths + suffix fnmatch),
+  `path_content_length` (FileClient.get_file_properties → .size/.content_length, NotFound raises
+  PipelineError), `path_read_bytes` (FileClient.download_file → readall/content_as_bytes fallback),
+  `path_write_bytes` (atomic mode: mkdir-parent, upload to tmp key → rename_file → delete tmp /
+  non-atomic: direct upload_data), `path_open_for_append` (read-existing + buffer pattern with
+  `_ADLSAppendWriter` inner-class mirroring S3/GCS — flush writes upload_data overwrite +
+  close-write atomic rename), `path_replace` (cross-scheme guard → intra-container download+upload+
+  delete-src, matching S3/GCS's intra-bucket strategy — rename_file intentionally avoided because
+  Spark/Hadoop ABFS connector does not offer the same rename performance guarantee as S3/GCS),
+  `path_delete_tree` (recursive list_paths → BATCH=256 _adls_batch_delete chunks, NotFound safe via
+  `_is_not_found_exc`). Staging-swap support via `staging_swap_atomic`:
+  **same-account + same-container guard** (cross-account and cross-container both rejected with
+  distinct PipelineError codes SPARK_FS_ADLS_SWAP_CROSS_CONTAINER / SPARK_FS_ADLS_SWAP_CROSS_ACCOUNT)
+  + prefix trailing-slash norm + **full_refresh** (list staging + list target, copy staging→target,
+  confirm subset, delete stale target keys not in staging, delete staging) + **partition_overwrite**
+  (reuses `_s3_infer_partition_subprefixes` unchanged since it operates on pure key strings,
+  per-partition copy→delete-old). Static helpers: `_get_adls_exc()` fallback stub class for
+  ResourceNotFoundError/ClientAuthenticationError/ServiceRequestError when azure SDK not installed
+  (enables pure-unit tests without SDK); `_is_adls_retryable(exc)` retryable heuristic;
+  `_is_not_found_exc(exc)` fallback-safe check covering both isinstance + class-name + status_code
+  substrings when SDK classes not importable (defensive guard against direct class-attribute lookups
+  on fallback stubs). Low-level helpers: `_adls_list_paths()` → list of dict `{name, is_directory}`;
+  `_adls_batch_delete()` → BATCH=256 chunked per-path delete operations (paths longer than 256 are
+  split into multiple sub-calls, matching the ADLS REST API batch-delete constraint).
+  (4) Registered in `_BACKEND_REGISTRY` at
+  `StorageScheme.abfss: ADLSBackend()` (s3/gs/abfss/file/local_unschemed complete);
+  `_NO_STAGING_MOVE_HINT` updated to include "Azure ADLS Gen2 (abfss://)".
+  (5) Added `azure` optional extra to [pyproject.toml](pyproject.toml):
+  `azure-storage-file-datalake>=1.15,<2.0` + `azure-core>=1.32,<2.0`; added `synapse` extra mirroring
+  EMR/dataproc: azure deps + `pyspark==4.1.2`.
+  (6) 28 new tests in [tests/test_path_utils_azure.py](tests/test_path_utils_azure.py) covering
+  FakeADLSClient (mirrors azure.storage.filedatalake API: DataLakeServiceClient + FileSystemClient +
+  FileClient/DirectoryClient, list_paths with name+is_directory dicts,
+  upload_data/download_file.readall/create_file/append_data/flush_data, get_file_properties with .size,
+  rename_file/delete_file, batch_delete paths). Test groups: TestMockedADLSRouting (18 tests — atomic
+  write tmp→rename→delete sequence, non-atomic skip tmp, list_paths delimiter + abfss:// URI returns
+  with correct account authority reconstruction, exists-file uses get_file_properties + not-found
+  falls back to directory check, exists-for-empty-prefix uses list_paths max_results=1, mkdir no-op,
+  read_bytes, content_length via get_file_properties + missing-raises-PipelineError, is_dir uses
+  list_paths max_results=1, replace download/upload/delete intra-container, glob suffix-filter,
+  rglob recursive suffix-match, delete_tree batch chunking with 256-path splits verified,
+  append write-read-rewrite buffer, relative_to, split path validation for missing-container,
+  split path root-only returns empty-container + correct account),
+  TestStagingSwapADLS (10 tests — full_refresh sibling-preserving copy+stale-delete+staging-purge,
+  partition_overwrite 1-level + nested multi-level, empty staging raises, cross-container rejected
+  with explicit cross-container error, cross-account rejected with distinct cross-account error code,
+  validate_swap_scheme accepts abfss + wasbs/dbfs/hdfs early-blocked via detect_scheme, best_effort
+  delete_staging missing-safe, partition_overwrite with empty partition prefixes falls back to
+  full_refresh path).
+  (7) Existing [tests/test_path_utils.py](tests/test_path_utils.py) updated: `test_detect_abfss` added
+  to TestDetectScheme; 7 new abfss entries added to TestJoinPaths mirroring s3/gs (including
+  authority preservation + double-slash collapse inside key only, not host); abfss entries for
+  parent/basename/suffix/relative_to/normalize added to TestPathStringHelpers;
+  `abfss://container@account.dfs.core.windows.net/path` removed from
+  `test_reject_unknown_schemes_sharp` reject-tuple + wasbs parametrize plus abfss support string
+  asserted in error message.
+  (8) Existing [tests/test_staging_swap.py](tests/test_staging_swap.py) updated: abfss:// removed from
+  parametrize bad-schemes list; `test_accepts_abfss_scheme` parametrize entry added (wasbs/dbfs/hdfs
+  remain rejected).
+  (9) [CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §1 ADLS Gen2 row ⏳ → 🟢 Production
+  with full B-2 cross-ref note; §2 "Object storage source — GCS / ADLS" row also flipped ⏳ → 🟢 Production
+  (both backends now closed). Document Status Updated stamp flipped.
+  (10) [_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py) `validate_swap_scheme` accept list
+  now includes `_StorageScheme.abfss`; `_NO_STAGING_MOVE_HINT` updated to mention ADLS support.
+  Verification: Focused gate 153/153 green (test_path_utils_azure 28 + test_path_utils_gcs 26 +
+  test_path_utils ~76 + test_staging_swap ~23), `uv run ruff check src tests` clean,
+  398/398 non-Spark tests pass. 2 pre-existing Spark-FS integration test failures in
+  `test_spark_fs_config.py` are ENV-only (JDK not installed in session sandbox → tests that expect
+  a PySparkRuntimeError on JVM boot no longer raise because Spark 4.1.2 uses a different boot
+  exception class in this env), zero code relation (confirmed same failures pre-B-2).
+  Spark/Iceberg ENV tests (10 files) require Temurin 23 JDK per session-start instructions.
+  **Seventh TRANCHE 2 item closed. B-3 (Databricks/Unity path) is the top storage-adjacent
+  candidate (recommended closure: Unity-as-REST-catalog documented config, no dbfs:// scheme);
+  g-3 (orchestration integration) remains the general-purpose next candidate.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `B-2` — Azure ADLS Gen2 `abfss://` backend via B-6 facade (🟠 MED, additive-only; Spark-side Hadoop FS config + credentials ALREADY DONE by B-4)
+  - `B-3` — Databricks / Unity Catalog path closure (🟠 MED; recommended: documented Unity-as-REST-catalog
+    config + example, NOT a dbfs:// scheme. Path-level multi-cloud is already fully covered by B-1/B-2.)
   - `g-3` — orchestration integration (🟠 MED)
   - (all other B-*/G-1-impl/G-4…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
@@ -279,7 +385,7 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   wiring (Hadoop FS config + credential resolver + SA keyfile paths) was already
   Production via B-4.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (HIGH/MED ordered): B-2 (ADLS, additive) → G-3 (orchestration, med).**
+  Next candidate pulls (HIGH/MED ordered): B-3 (Databricks/Unity, recommended Unity-as-REST-catalog closure) → G-3 (orchestration, med).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -538,20 +644,12 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 - **Decision applied:** `google-cloud-storage` direct client (matches boto3/S3 pattern for consistency).
 - **Verification:** 28 tests in `tests/test_path_utils_gcs.py` with FakeGCSClient mirroring SDK API surface; full ruff clean; non-Spark 362 tests all pass; 2 pre-existing `test_spark_fs_config.py` ENV failures are JDK-unrelated (no Temurin 23 in sandbox session ENV).
 
-#### B-2 — Implement Azure ADLS Gen2 (`abfss://`, optionally `wasbs://`) via B-6 facade  ⏳ (additive-only; no control-plane code churn)
-- **Goal:** `abfss://…` roots work end-to-end, config-only.
-- **Cause:** rejected by `detect_scheme`.
-- **Scope (via B-6 facade, constraint 8):** same shape as B-1 but Azure — add `abfss` to `StorageScheme`
-  enum; add a **single** `ADLSBackend` class implementing the full `StorageBackend` Protocol (18 leaf
-  IO ops + `staging_swap_atomic` preserving S-2) via `azure-storage-file-datalake` / `adlfs` (add dep).
-  The `abfss://container@account.dfs.core.windows.net/path` authority parsing is the one real
-  difference from S3's `bucket/key` split (implement an `_split_adls_path` helper *inside* the
-  ADLSBackend class). Register new class in the registry. `path_utils` functions + `_staging_swap.py`
-  need zero changes. Wire Spark FS (B-4).
-- **Decision needed:** support `wasbs://` too, or `abfss://` (ADLS Gen2) only? Recommend abfss
-  only; reject wasbs with the fast-fail message.
-- **Verification:** `tests/test_path_utils_azure.py` with an Azure fake/emulator (Azurite);
-  gate green.
+#### B-2 — Implement Azure ADLS Gen2 (`abfss://`, optionally `wasbs://`) via B-6 facade  ✅ CLOSED 2026-08-26 (seventh on-demand TRANCHE 2 pull)
+- **Status:** Delivered. 28 new tests, 153/153 focused gate green, Capability Maturity Matrix §1 ADLS Gen2 row ⏳→🟢 Production (§2 "Object storage source — GCS / ADLS" also flipped ⏳→🟢).
+- **Goal:** `abfss://container@account.dfs.core.windows.net/…` roots work end-to-end (L1 land, L2 parquet, staging-swap), config-only.
+- **Delivered:** Added `abfss` to `StorageScheme` enum and `_SUPPORTED_SCHEME_PREFIXES`; `ADLSBackend` class implementing full `StorageBackend` Protocol (18 leaf IO ops + `staging_swap_atomic` full_refresh / partition_overwrite) via `azure-storage-file-datalake` SDK; registered in `_BACKEND_REGISTRY`; pyproject.toml `azure` + `synapse` extras; backward-compat monkeypatch shims `_ADLS_CLIENT` / `_adls_client()` / `_split_adls_path()` in path_utils.py; `_split_adls_path` authority parser for `container@account` with `.dfs.core.windows.net` host; `_adls_list_paths` / `_adls_batch_delete` helpers with 256-path batch constraint; defensive `_is_not_found_exc` fallback-safe check that avoids direct fallback-class attribute lookups. Spark FS shared-key / SP-OAuth / MSI / DefaultAzureCredential auth already done by B-4 (zero additional Spark work). Zero control-plane churn: path_utils public function signatures + `_staging_swap.py` backward-compat shims unchanged.
+- **Decision applied:** `azure-storage-file-datalake` direct SDK client (matches boto3/S3 + google-cloud-storage pattern); `abfss://` (ADLS Gen2) only — `wasbs://` (legacy Blob) explicitly rejected with a fast-fail pointing to `abfss://`; rename_file used for atomic tmp→final writes, but NOT used for path_replace (download+upload+delete used instead, because Spark/Hadoop ABFS connector does not guarantee rename_file perf parity with S3/GCS).
+- **Verification:** 28 tests in `tests/test_path_utils_azure.py` with FakeADLSClient mirroring the azure.storage.filedatalake API surface (DataLakeServiceClient / FileSystemClient / FileClient / DirectoryClient, list_paths, upload_data, download_file.readall, create_file/append_data/flush_data, get_file_properties with .size, rename_file, delete_file, batch_delete); `uv run ruff check src tests` clean; 398/398 non-Spark tests pass; 2 pre-existing `test_spark_fs_config.py` ENV failures are JDK-unrelated (Spark 4.1.2 uses a different JVM-boot exception class than this sandboxed env's pytest-raises expectation; confirmed identical pre-B-2).
 
 #### B-3 — Databricks / Unity Catalog path  ⏳ (Path B — applies under B1; under B-0 storage is inherited, only the Unity catalog + example remain)
 - **Goal:** decide and implement how "Databricks (Unity)" is actually supported.

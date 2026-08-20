@@ -12,6 +12,7 @@ _SAFE_PATH_FRAGMENT = re.compile(r"[^A-Za-z0-9._/-]+")
 class _StorageScheme(str, Enum):
     s3 = "s3"
     gs = "gs"
+    abfss = "abfss"
     file = "file"
     local_unschemed = "local_unschemed"
 
@@ -23,12 +24,14 @@ _SUPPORTED_SCHEME_PREFIXES: frozenset[str] = frozenset(
     {
         _StorageScheme.s3.value + "://",
         _StorageScheme.gs.value + "://",
+        _StorageScheme.abfss.value + "://",
         _StorageScheme.file.value + "://",
     }
 )
 _SUPPORTED_SCHEMES_FOR_ERROR: tuple[str, ...] = (
     "s3:// (AWS S3)",
     "gs:// (Google Cloud Storage)",
+    "abfss:// (Azure ADLS Gen2)",
     "file:// (explicit local POSIX)",
     "bare local POSIX path (no scheme)",
 )
@@ -58,6 +61,8 @@ def detect_scheme(path: str) -> _StorageScheme:
         return _StorageScheme.s3
     if path.startswith("gs://"):
         return _StorageScheme.gs
+    if path.startswith("abfss://"):
+        return _StorageScheme.abfss
     if path.startswith("file://"):
         return _StorageScheme.file
     if "://" in path:
@@ -103,6 +108,8 @@ def collapse_slashes(path: str) -> str:
         return "s3://" + collapse_slashes_without_scheme(path[len("s3://"):])
     if scheme is _StorageScheme.gs:
         return "gs://" + collapse_slashes_without_scheme(path[len("gs://"):])
+    if scheme is _StorageScheme.abfss:
+        return "abfss://" + collapse_slashes_without_scheme(path[len("abfss://"):])
     if scheme is _StorageScheme.file:
         stripped = strip_file_scheme(path)
         return "file://" + collapse_slashes_without_scheme(stripped)
@@ -288,5 +295,20 @@ def _gcs_client():
 
 def _split_gcs_path(path: str) -> tuple[str, str]:
     from elt_pipeline.shared.storage_backends import _split_gcs_path as _route_split
+
+    return _route_split(path)
+
+
+_ADLS_CLIENT = None
+
+
+def _adls_client():
+    from elt_pipeline.shared.storage_backends import _get_adls_client
+
+    return _get_adls_client()
+
+
+def _split_adls_path(path: str) -> tuple[str, str, str]:
+    from elt_pipeline.shared.storage_backends import _split_adls_path as _route_split
 
     return _route_split(path)

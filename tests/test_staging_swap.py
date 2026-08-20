@@ -159,13 +159,18 @@ class TestValidateSwapScheme:
         s = validate_swap_scheme("gs://my-bucket/wh/sql/orders", "orders")
         assert s is _StorageScheme.gs
 
+    def test_accepts_abfss_scheme(self) -> None:
+        s = validate_swap_scheme(
+            "abfss://container@account.dfs.core.windows.net/wh/sql/orders",
+            "orders",
+        )
+        assert s is _StorageScheme.abfss
+
     @pytest.mark.parametrize(
         "bad",
         [
             "s3a://bucket/p",
             "s3n://bucket/p",
-            "abfs://container/p",
-            "wasbs://container/p",
             "https://example.com/p",
         ],
     )

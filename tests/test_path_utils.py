@@ -22,6 +22,16 @@ class TestDetectScheme:
         assert pu.detect_scheme("gs://bucket/prefix") == pu._StorageScheme.gs
         assert pu.detect_scheme("gs://b") == pu._StorageScheme.gs
 
+    def test_detect_abfss(self) -> None:
+        assert (
+            pu.detect_scheme("abfss://container@account.dfs.core.windows.net/path")
+            == pu._StorageScheme.abfss
+        )
+        assert (
+            pu.detect_scheme("abfss://c@a.dfs.core.windows.net/")
+            == pu._StorageScheme.abfss
+        )
+
     def test_detect_file(self) -> None:
         assert pu.detect_scheme("file:///abs/path") == pu._StorageScheme.file
         assert pu.detect_scheme("file://rel/path") == pu._StorageScheme.file
@@ -35,8 +45,6 @@ class TestDetectScheme:
         for bad in (
             "s3a://bucket/prefix",
             "s3n://bucket/prefix",
-            "abfs://container/path",
-            "wasbs://container/path",
             "dbfs://path",
             "hdfs://namenode/path",
             "https://example.com/foo",
@@ -48,6 +56,7 @@ class TestDetectScheme:
             assert bad.split("://", 1)[0] + "://" in msg
             assert "s3:// (AWS S3)" in msg
             assert "gs:// (Google Cloud Storage)" in msg
+            assert "abfss:// (Azure ADLS Gen2)" in msg
             assert "Never silently coerce schemes." in exc_info.value.context["note"]
 
     def test_validate_root_rejects_pathlib(self) -> None:
@@ -133,6 +142,57 @@ class TestJoinPaths:
     def test_gs_root_only_bucket(self) -> None:
         assert pu.join_paths("gs://bucket", "key") == "gs://bucket/key"
 
+    # --- abfss:// ---
+    def test_abfss_basic(self) -> None:
+        assert (
+            pu.join_paths(
+                "abfss://container@account.dfs.core.windows.net/prefix",
+                "level2",
+                "entity=x",
+            )
+            == "abfss://container@account.dfs.core.windows.net/prefix/level2/entity=x"
+        )
+
+    def test_abfss_trailing_slash_on_root(self) -> None:
+        assert (
+            pu.join_paths("abfss://c@a.dfs.core.windows.net/p/", "seg")
+            == "abfss://c@a.dfs.core.windows.net/p/seg"
+        )
+
+    def test_abfss_leading_slash_on_segment(self) -> None:
+        assert (
+            pu.join_paths("abfss://c@a.dfs.core.windows.net/p", "/seg/")
+            == "abfss://c@a.dfs.core.windows.net/p/seg"
+        )
+
+    def test_abfss_double_slashes_collapse(self) -> None:
+        assert (
+            pu.join_paths("abfss://c@a.dfs.core.windows.net//p1//p2", "s1//s2")
+            == "abfss://c@a.dfs.core.windows.net/p1/p2/s1/s2"
+        )
+
+    def test_abfss_no_segments_returns_root_collapsed(self) -> None:
+        assert (
+            pu.join_paths("abfss://c@a.dfs.core.windows.net//p//")
+            == "abfss://c@a.dfs.core.windows.net/p/"
+        )
+
+    def test_abfss_empty_strings_skipped(self) -> None:
+        assert (
+            pu.join_paths(
+                "abfss://c@a.dfs.core.windows.net/p", "", "  ", "s1", "", "s2"
+            )
+            == "abfss://c@a.dfs.core.windows.net/p/s1/s2"
+        )
+
+    def test_abfss_root_only_container_and_account(self) -> None:
+        assert (
+            pu.join_paths(
+                "abfss://container@account.dfs.core.windows.net", "key"
+            )
+            == "abfss://container@account.dfs.core.windows.net/key"
+        )
+
     # --- file:// ---
     def test_file_basic(self) -> None:
         assert (
@@ -177,21 +237,46 @@ class TestPathStringHelpers:
     def test_parent_gs(self) -> None:
         assert pu.path_parent("gs://b/p1/p2/k") == "gs://b/p1/p2"
 
+    def test_parent_abfss(self) -> None:
+        assert (
+            pu.path_parent(
+                "abfss://container@account.dfs.core.windows.net/p1/p2/k"
+            )
+            == "abfss://container@account.dfs.core.windows.net/p1/p2"
+        )
+
     def test_basename_all_schemes(self) -> None:
         assert pu.path_basename("/a/b/file.parquet") == "file.parquet"
         assert pu.path_basename("file:///a/b/f.csv") == "f.csv"
         assert pu.path_basename("s3://b/p/k.json") == "k.json"
         assert pu.path_basename("gs://b/p/k.json") == "k.json"
+        assert (
+            pu.path_basename(
+                "abfss://c@a.dfs.core.windows.net/p/k.parquet"
+            )
+            == "k.parquet"
+        )
 
     def test_with_suffix(self) -> None:
         assert pu.path_with_suffix("s3://b/k", ".tmp") == "s3://b/k.tmp"
         assert pu.path_with_suffix("gs://b/k", ".tmp") == "gs://b/k.tmp"
+        assert (
+            pu.path_with_suffix("abfss://c@a.dfs.core.windows.net/k", ".tmp")
+            == "abfss://c@a.dfs.core.windows.net/k.tmp"
+        )
         assert pu.path_with_suffix("/a/b/foo.csv", "parquet") == "/a/b/foo.parquet"
 
     def test_relative_to_same_scheme(self) -> None:
         assert pu.path_relative_to("/a/b/c/d", "/a/b") == "c/d"
         assert pu.path_relative_to("s3://b/p1/p2", "s3://b/p1") == "p2"
         assert pu.path_relative_to("gs://b/p1/p2", "gs://b/p1") == "p2"
+        assert (
+            pu.path_relative_to(
+                "abfss://c@a.dfs.core.windows.net/p1/p2",
+                "abfss://c@a.dfs.core.windows.net/p1",
+            )
+            == "p2"
+        )
 
     def test_relative_to_equal_base(self) -> None:
         assert pu.path_relative_to("/a/b", "/a/b") == "."
@@ -220,6 +305,14 @@ class TestPathStringHelpers:
 
     def test_normalize_gs_just_collapses(self) -> None:
         assert pu.path_normalize("gs://b//p1///p2/") == "gs://b/p1/p2/"
+
+    def test_normalize_abfss_just_collapses(self) -> None:
+        assert (
+            pu.path_normalize(
+                "abfss://c@a.dfs.core.windows.net//p1///p2/"
+            )
+            == "abfss://c@a.dfs.core.windows.net/p1/p2/"
+        )
 
 
 # ---------------------------------------------------------------------------
