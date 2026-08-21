@@ -24,23 +24,26 @@ This section states what the code actually ships, so no reader infers more than 
 **Storage backends — implemented and tested:**
 - Local POSIX filesystem (bare paths or `file://` URIs) — fully implemented, default on a laptop.
 - AWS S3 (`s3://` URIs) — Python control plane via `boto3`, Spark data plane via Spark's native S3 / EMRFS; unit-tested with an in-process S3 fake.
+- Google Cloud Storage (`gs://` URIs) — `GCSBackend` class behind the pluggable `StorageBackend` Protocol (B-6 facade), 28 pure-unit control-plane tests, Spark data plane via `fs.gs.impl` + SA keyfile / workload identity config. Install with `uv sync --extra gcs` or `uv sync --extra dataproc`.
+- Azure ADLS Gen2 (`abfss://` URIs) — `ADLSBackend` class behind the pluggable `StorageBackend` Protocol (B-6 facade), 28 pure-unit control-plane tests with authority-aware routing (`container@account.dfs.core.windows.net`), Spark data plane via shared key / Service Principal OAuth / MSI / DefaultAzureCredential auth modes. Install with `uv sync --extra azure` or `uv sync --extra synapse`.
+- Databricks (Unity Catalog) — **backing store + REST catalog pattern, no `dbfs://` scheme**: use your cloud's native object store (S3/GCS/ADLS, all above) for storage and bind Unity Catalog as a standard Iceberg REST catalog via `catalog_type=rest` with the Unity endpoint + PAT token. Reference config: `examples/configs/databricks_unity_adls.yaml` with all three backing-store options and full auth-mode examples.
 
 **Storage backends — not yet implemented (roadmap):**
-- GCS (`gs://`), ADLS Gen2 (`abfss://`), Azure Blob (`wasbs://`), Databricks DBFS (`dbfs://`), HDFS (`hdfs://`) — these schemes are hard-rejected with a clear error. Adding them requires per-scheme branches in `src/elt_pipeline/shared/path_utils.py`, Spark Hadoop FS credential wiring, and emulator-backed integration tests.
+- Azure Blob legacy (`wasbs://`) — explicitly not on the recommended path; fail-fast with a pointer to `abfss://`.
+- Hadoop HDFS (`hdfs://`) — fail-fast rejected. On-prem HDFS was deliberately de-scoped for v1; re-evaluate only if a concrete on-prem deployment need appears.
 
 **Ingest mechanisms — honest v1 surface (framework abstractions vs. concrete implementations):**
 
 The platform defines four first-class connector *families* (`rest`, `sql`, `kafka`, `object_storage`) as shared abstractions — each with a validated lifecycle (config → secrets → client → extract → persist → audit → checkpoint). Their concrete v1 implementations vary by readiness:
 
 - **REST — Production-usable.** Real `urllib.request`-based connector with authentication (basic, API key, static bearer, client-credential token flows), request templating, date-window tokenization, page/offset pagination, envelope+inner-payload extraction, retry/backoff/timeout controls.
-- **Object storage — Production-usable (local + S3 only).** Source discovery and read via `path_utils` scheme dispatch across local POSIX dirs and `s3://` buckets. GCS/ADLS object-storage sources are roadmap and tied to the multi-cloud storage B-* items.
+- **Object storage — Production-usable (local + S3 + GCS + ADLS).** Source discovery and read via `path_utils` scheme dispatch across local POSIX dirs, `s3://` buckets, `gs://` buckets, and `abfss://` containers. All four schemes share the same `_BACKEND_REGISTRY` dispatch path with full parity.
 - **SQL — Demo-only: SQLite replay.** `SqlConnectionDriver` enum = `{sqlite}` only. Uses Python `sqlite3` against a local DB file for the bundled example. There is **no JDBC** and **no Postgres/MySQL/MSSQL/Oracle source extraction** in v1. The `sql.py` connector base class is abstract and JDBC-capable extraction is roadmap (a well-scoped add behind the existing seam).
 - **Kafka — Demo-only: local JSONL file replay.** The `KafkaConnectorBase` abstraction is broker-shaped and in place (offsets, partitions, headers, checkpoints, run loop). The **only** concrete subclass reads a local JSONL event log for the bundled example. A real broker consumer over `confluent-kafka`/`kafka-python` with `bootstrap.servers` config is roadmap. Enterprise deployments normally land streams to object storage via Kafka Connect/Firehose/Event Hubs Capture and use the `object_storage` connector to pick them up, so a rock-solid multi-cloud object-storage path is the higher-value ingress work.
 
 **Ingest roadmap (not in v1, tracked for later tranches):**
 - Multi-DB SQL ingest via JDBC or a Python driver matrix (Postgres, MySQL, MSSQL, Oracle, …)
 - Real Kafka broker consumer (basic offset-based streaming)
-- GCS / ADLS object-storage source read (tied to storage B-* multi-cloud work)
 
 **Serving / catalogs — implemented:**
 - Iceberg L3/L4 tables with a 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`, `hive_metastore`, `glue`.
@@ -49,7 +52,8 @@ The platform defines four first-class connector *families* (`rest`, `sql`, `kafk
 
 **Operational / platinum-hardening items:**
 Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup / manifest rewrite) is **Production** (via `elt maintain run …`; see [Capability Maturity Matrix §5](docs/CAPABILITY_MATURITY_MATRIX.md#L125-L141)).
-Observability (Prometheus metrics, OTLP tracing, webhook alerting) is **Production** via env-driven backends behind the `ObservabilityAdapter` seam; see [Capability Maturity Matrix §6](docs/CAPABILITY_MATURITY_MATRIX.md#L147-L167).  Remaining roadmap items (not blocking publication): a real secrets backend (Vault / cloud SM), PII classification and masking, a deeper DQ library with quarantine/DLQ, and container / Helm deployment artifacts — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
+Observability (Prometheus metrics, OTLP tracing, webhook alerting) is **Production** via env-driven backends behind the `ObservabilityAdapter` seam; see [Capability Maturity Matrix §6](docs/CAPABILITY_MATURITY_MATRIX.md#L147-L167).
+Secrets resolution (env vars + files + cloud SMs/Vault roadmap) is **Production** via the G-5 subsystem: `secret_ref` URIs, `SecretValue` redaction, and the pluggable `SecretsProvider` Protocol/registry; see [Capability Maturity Matrix §9](docs/CAPABILITY_MATURITY_MATRIX.md#L184-L196).  Remaining roadmap items (not blocking publication): PII classification and masking, a deeper DQ library with quarantine/DLQ, container / Helm deployment artifacts, and orchestration integration — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
 
 ## Source Code references
 

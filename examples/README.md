@@ -9,6 +9,7 @@ Run all example commands from the repository root so relative paths resolve corr
 - `examples/configs/local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `.ignore/example-source.db`
 - `examples/configs/local_kafka_orders_replay.yaml`: Kafka replay ingest from a bundled JSONL log
 - `examples/configs/local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint
+- `examples/configs/databricks_unity_adls.yaml`: **Databricks + Unity Catalog (B-3)** — reference deployment using Unity as an Iceberg REST catalog (catalog_type=rest) with your cloud's native object store (Azure ADLS Gen2 / AWS S3 / GCP GCS). All three backing stores are commented selectable. No `dbfs://` scheme required (and intentionally not supported): Databricks storage is S3/GCS/ADLS underneath.
 - `examples/publish/local_demo/`: runnable `level5` publish definitions for CSV, `jsonl`, `tsv`, and zip-bundled local exports
 - `examples/sql/local_demo/`: local SQL model package that prepares example `level4` tables for publish runs
 

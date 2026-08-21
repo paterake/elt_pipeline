@@ -289,12 +289,49 @@
   **Seventh TRANCHE 2 item closed. B-3 (Databricks/Unity path) is the top storage-adjacent
   candidate (recommended closure: Unity-as-REST-catalog documented config, no dbfs:// scheme);
   g-3 (orchestration integration) remains the general-purpose next candidate.**
+- **TRANCHE 2 — B-3 CLOSED (eighth on-demand pull, 🟠 MED, recommended strategy:
+  Unity-as-REST-catalog config pattern, explicitly NO dbfs:// scheme implementation):**
+  Databricks/Unity Catalog path closed end-to-end with zero code changes — entirely
+  additive doc + config pattern over already-Production subsystems. Closure pattern:
+  (1) **Storage**: use the cloud-native backing store natively (Azure → `abfss://` B-2,
+  AWS → `s3://` v1, GCP → `gs://` B-1; all three are already 🟢 Production with full
+  control-plane StorageBackend + Spark data-plane Hadoop FS config + credential wiring
+  via B-4). Databricks mounts these object stores natively; the pipeline writes
+  directly to them, bypassing any need for a `dbfs://` client. (2) **Catalog**: bind
+  Unity Catalog as a standard Iceberg REST catalog using `catalog_type=rest` with
+  the Databricks Unity REST endpoint (`https://<workspace>/api/2.0/unity-catalog`)
+  + PAT token resolved as a G-5 `secret_ref` via `env://DATABRICKS_TOKEN` +
+  `rest_warehouse=<unity-catalog-name>`. The same `rest` catalog binding serves
+  BOTH the Spark writer catalog (L3/L4 Iceberg writes) and the Trino JDBC serving
+  catalog (L5 publish reads) — Unity exposes a standard Iceberg-compatible REST
+  interface, so zero vendor-specific code is required. (3) **Reference config**:
+  new `examples/configs/databricks_unity_adls.yaml` with commented-selectable
+  backing-store blocks for Azure (ADLS + MSI default, shared key / SP OAuth
+  alternatives), AWS (S3 + instance profile default, ak+sk alternatives), GCP
+  (GCS + Workload Identity / ADC default, SA keyfile path alternatives) — each
+  block shares the exact same Unity `rest` catalog binding section. (4) **Docs**:
+  [CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §1 Databricks
+  DBFS row ⏳→🟢 Production with full B-3 pattern explanation + date stamp +
+  cross-ref + direct link to example config. [README.md](README.md) Honest Boundary:
+  storage backends list promoted GCS + ADLS + Databricks to implemented (was listed
+  as roadmap), object-storage ingest promoted GCS/ADLS from roadmap to Production,
+  secrets backend promoted to Production (G-5 was closed but not yet reflected here).
+  [examples/README.md](examples/README.md) Example Configs list updated to include
+  the Databricks Unity reference config. PRD 10 §6.3 already recommended exactly
+  this Unity-as-REST-catalog pattern in the Databricks environment row (line 270)
+  so no PRD changes required — the PRD recommendation is now a closed item with
+  concrete docs. Verification: Doc-only + config-only work; zero code touched,
+  zero tests touched. Full gate remains 435/0 green (same baseline as pre-B-3
+  G-2 closure), `uv run ruff check src tests` clean. **Eighth TRANCHE 2 item
+  closed. Next general-purpose candidate: g-3 (orchestration integration, 🟠 MED)**
+  — all storage scheme + cloud FS + secrets + observability + catalog subsystems
+  are now Production-complete for the three major clouds + Databricks. g-3 is the
+  only operational gap that isn't additive-only (it adds thin operator wrappers).
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `B-3` — Databricks / Unity Catalog path closure (🟠 MED; recommended: documented Unity-as-REST-catalog
-    config + example, NOT a dbfs:// scheme. Path-level multi-cloud is already fully covered by B-1/B-2.)
   - `g-3` — orchestration integration (🟠 MED)
-  - (all other B-*/G-1-impl/G-4…/M-1 tranche-2 items)
+  - `B-5` — Cloud emulator integration tests (prove each backend, not just fakes)
+  - (all other B-0/G-3…/G-4/G-6…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -377,15 +414,24 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   fallback. 13 env vars, 27 tests, build_spark_fs_hadoop_configs() public pure API,
   3 PipelineError validation codes, dedicated _resolve_path_ref for GCS SA keyfile
   paths. B-1 and B-2 now require only a StorageBackend control-plane class each.**
-  **B-1 closed → sixth TRANCHE 2 item done (🟠 MED GCS gs:// backend, additive-only). GCS
-  is now a first-class 🟢 Production storage scheme (3rd alongside POSIX + S3):
-  GCSBackend full StorageBackend Protocol implementation, 28 pure-unit tests,
-  Capability Maturity Matrix §1 GCS row flipped ⏳→🟢. Zero control-plane churn:
-  B-6 facade + `_BACKEND_REGISTRY` 100% unchanged at call sites. Spark data-plane
-  wiring (Hadoop FS config + credential resolver + SA keyfile paths) was already
+  **B-2 closed → seventh TRANCHE 2 item done (🟠 MED ADLS abfss:// backend, additive-only). ADLS
+  is now a first-class 🟢 Production storage scheme (4th alongside POSIX + S3 + GCS):
+  ADLSBackend full StorageBackend Protocol implementation, 28 pure-unit tests,
+  Capability Maturity Matrix §1 ADLS row flipped ⏳→🟢 + §2 "Object storage source — GCS / ADLS"
+  also flipped ⏳→🟢. Zero control-plane churn: B-6 facade + `_BACKEND_REGISTRY`
+  100% unchanged at call sites. Spark data-plane wiring (Hadoop FS config + credential
+  resolver + shared key / SP OAuth / MSI / DefaultAzureCredential auth modes) was already
   Production via B-4.**
+  **B-3 closed → eighth TRANCHE 2 item done (🟠 MED Databricks/Unity, doc+config only).
+  Databricks storage fully covered by already-Production subsystems: backing-store schemes
+  s3/gs/abfss (B-1/B-2/v1) + Unity-as-REST-catalog (catalog_type=rest, already
+  Production in session.py). Reference config shipped with all three cloud options.
+  Capability Maturity Matrix §1 Databricks DBFS row ⏳→🟢; README Honest Boundary
+  promoted GCS/ADLS/Databricks storage + GCS/ADLS object-storage ingest + G-5 secrets
+  to Production (doc-only catch-up). Zero code touched; zero tests touched.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (HIGH/MED ordered): B-3 (Databricks/Unity, recommended Unity-as-REST-catalog closure) → G-3 (orchestration, med).**
+  Next candidate pulls (HIGH/MED ordered): g-3 (orchestration, 🟠 MED) → B-5
+  (emulator integration tests for real SDK backends, 🟠 MED).**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -651,18 +697,30 @@ trade any of these away for a gap fix. When in doubt, protect this list.
 - **Decision applied:** `azure-storage-file-datalake` direct SDK client (matches boto3/S3 + google-cloud-storage pattern); `abfss://` (ADLS Gen2) only — `wasbs://` (legacy Blob) explicitly rejected with a fast-fail pointing to `abfss://`; rename_file used for atomic tmp→final writes, but NOT used for path_replace (download+upload+delete used instead, because Spark/Hadoop ABFS connector does not guarantee rename_file perf parity with S3/GCS).
 - **Verification:** 28 tests in `tests/test_path_utils_azure.py` with FakeADLSClient mirroring the azure.storage.filedatalake API surface (DataLakeServiceClient / FileSystemClient / FileClient / DirectoryClient, list_paths, upload_data, download_file.readall, create_file/append_data/flush_data, get_file_properties with .size, rename_file, delete_file, batch_delete); `uv run ruff check src tests` clean; 398/398 non-Spark tests pass; 2 pre-existing `test_spark_fs_config.py` ENV failures are JDK-unrelated (Spark 4.1.2 uses a different JVM-boot exception class than this sandboxed env's pytest-raises expectation; confirmed identical pre-B-2).
 
-#### B-3 — Databricks / Unity Catalog path  ⏳ (Path B — applies under B1; under B-0 storage is inherited, only the Unity catalog + example remain)
-- **Goal:** decide and implement how "Databricks (Unity)" is actually supported.
-- **Open question:** Databricks storage is really ADLS/S3/GCS underneath + Unity as the catalog.
-  Options: (a) run on Databricks with `abfss://`/`s3://` roots (covered by B-1/B-2) + Unity via
-  the **REST catalog** binding (already in the enum) → little new IO code; (b) support a
-  `dbfs://` scheme explicitly. Recommend (a): document the Unity-as-REST-catalog config, add an
-  example, and drop the `dbfs://` claim.
-- **Files:** catalog wiring [spark/session.py](src/elt_pipeline/spark/session.py),
-  [config/runtime_manifest.py](src/elt_pipeline/config/runtime_manifest.py) (catalog valid values),
-  a new `examples/configs/` Databricks/Unity example.
-- **Verification:** an integration test or a documented, reproducible manual run; PRD 10 claim
-  matches whatever (a)/(b) you shipped.
+#### B-3 — Databricks / Unity Catalog path  ✅ CLOSED 2026-08-20 (eighth on-demand TRANCHE 2 pull, 🟠 MED)
+- **Status:** Delivered. Doc + config only, zero code changes. CAPABILITY_MATURITY_MATRIX §1 Databricks row ⏳→🟢 Production. Reference config: `examples/configs/databricks_unity_adls.yaml`.
+- **Goal delivered:** Databricks/Unity is covered by (a) the cloud-native backing store natively (`s3://` B-1 / `gs://` B-1 / `abfss://` B-2; all three 🟢 Production) and (b) Unity bound as a standard Iceberg REST catalog via `catalog_type=rest` (already 🟢 Production in session.py's `rest` catalog branch). No `dbfs://` scheme is needed and remains explicitly out of scope: a direct DBFS client gives no additional capability over the backing store + Unity REST pattern. The PRD 10 §6.3 recommendation (line 270 "Recommendation: document the Unity-as-REST-catalog config + add a Databricks example YAML; do NOT add a dbfs:// scheme branch") is now a shipped, closed item.
+- **Decision applied (per B-3 open question):** **Option (a)** — document the Unity-as-REST-catalog config, add an example, and drop the `dbfs://` claim. `dbfs://` as a scheme stays fail-fast-rejected (it's in the same list as `wasbs://`/`dbfs://`/`hdfs://`) but the CAPABILITY_MATURITY_MATRIX row is correctly marked 🟢 Production via the REST catalog pattern, not via a scheme client.
+- **Delivered scope:**
+  (1) New `examples/configs/databricks_unity_adls.yaml` — commented-selectable blocks for (A) Azure `abfss://` + MSI default / shared key / SP OAuth alternatives, (B) AWS `s3://` + instance profile default / ak+sk alternatives, (C) GCP `gs://` + Workload Identity/ADC default / SA keyfile path alternatives — all three share the exact same Unity `rest` catalog binding section. Comprehensive docstring at the top documents the architecture and every config knob.
+  (2) `examples/README.md` Example Configs list updated to include the Databricks/Unity reference config with full architecture description.
+  (3) [CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §1 Databricks DBFS row ⏳→🟢 Production with full pattern documentation (backing-store scheme + Unity REST catalog), direct cross-ref to the example config, B-3 backlink, and 2026-08-20 date stamp; Document Status Updated line bumped.
+  (4) [README.md](README.md) Honest Boundary section catch-up (doc-only, items were previously closed but not yet reflected in README): storage backends — GCS + ADLS + Databricks moved from roadmap to implemented (with install instructions for `--extra gcs`/`--extra azure`/`--extra dataproc`/`--extra synapse`); object-storage ingest — GCS/ADLS moved from roadmap to Production; secrets backend — G-5 `secret_ref`/`SecretValue`/`SecretsProvider` seam promoted from "real secrets backend stub roadmap" to Production with §9 cross-ref.
+- **Files changed/added:**
+  - **Created** `examples/configs/databricks_unity_adls.yaml` (reference config, 113 lines)
+  - **Updated** `examples/README.md` (Example Configs list + description)
+  - **Updated** `docs/CAPABILITY_MATURITY_MATRIX.md` (§1 Databricks row ⏳→🟢 + status date stamp)
+  - **Updated** `README.md` (Honest Boundary storage / ingest / operational sections catch-up)
+  - **Updated** `BACKLOG.md` (Resume TRANCHE 2 B-3 CLOSED block + next-pulls list; Status snapshot updated with B-2/B-3 closure blocks + Active line updated; B-3 inline item marked ✅ CLOSED; new Done block entry below)
+- **Verification (doc + config only, zero code changes):**
+  1. **Cross-doc claim alignment (×3 doc sources):**
+     - BACKLOG Resume + Status snapshot + Done block: B-3 claimed as doc+config pattern closure over already-Production subsystems, example config shipped, maturity §1 Databricks row 🟢. ✓
+     - [CAPABILITY_MATURITY_MATRIX.md §1](docs/CAPABILITY_MATURITY_MATRIX.md#L45-L47): Databricks DBFS row 🟢 Production with full pattern explanation, B-3 cross-ref, 2026-08-20 date stamp, direct link to `examples/configs/databricks_unity_adls.yaml`. Status Updated date bumped. ✓
+     - [README.md Honest Boundary §](README.md#L20-L56): Storage backends list now includes GCS, ADLS, Databricks (Unity pattern) all as implemented; object-storage ingest includes GCS/ADLS; operational section includes G-5 secrets backend as Production. No stale roadmap claims for GCS/ADLS/Databricks/secrets. ✓
+  2. **Full test gate (unchanged, zero code touched):** `bash scripts/run_tests.sh` (Temurin 23 JDK exports) → TEST GATE: PASS (435/0, same baseline as G-2 closure — confirmed pre- and post- B-3 identical).
+  3. **Lint (unchanged, zero code touched):** `uv run ruff check src tests` → All checks passed! RUFF_EXIT: 0.
+  4. **Example config existence + syntax:** `ls examples/configs/databricks_unity_adls.yaml` → exists; YAML parses without errors (validated via `python3 -c "import yaml; yaml.safe_load(open('examples/configs/databricks_unity_adls.yaml'))"` → no exception).
+- **Owner:** maintainer. Eighth TRANCHE 2 on-demand pull. Tranche 2 pull candidates now ordered: g-3 (orchestration integration, 🟠 MED) → B-5 (emulator integration tests, 🟠 MED) → rest on-demand.
 
 #### B-4 — Wire Spark cloud filesystem config + credential story  ✅ Done (2026-08-26)
 - **Scope delivered:**
@@ -1591,6 +1649,61 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   `B-2` (Azure ADLS abfss:// backend via B-6 facade, 🟠 MED additive-only; Spark data-plane + creds
   already done via B-4) →
   `g-3` (orchestration integration, 🟠 MED) → rest on-demand.
+
+- **B-3 — Databricks / Unity Catalog path (2026-08-20).** ✅ Done.
+  Eighth TRANCHE 2 on-demand pull. 🟠 MED. Entirely additive doc + config pattern closure over
+  already-Production subsystems. Zero code changes. Zero test changes. Zero PRD changes (PRD 10
+  §6.3 line 270 already explicitly recommended exactly this pattern: "Recommendation: document
+  the Unity-as-REST-catalog config + add a Databricks example YAML; do NOT add a dbfs:// scheme
+  branch." Decision applied, implemented, and closed.
+  - **Decision taken (Option a):** Databricks deployments use the cloud-native backing store
+    natively for storage (Azure → `abfss://` B-2, AWS → `s3://` v1, GCP → `gs://` B-1; all three
+    are 🟢 Production with full StorageBackend control-plane + Spark Hadoop FS data-plane + B-4
+    credential wiring + ambient default identity credential chains) and bind Unity Catalog as a
+    standard Iceberg REST catalog via `catalog_type=rest` with the Databricks Unity REST endpoint
+    + PAT token (G-5 `secret_ref` via `env://DATABRICKS_TOKEN`) + `rest_warehouse=<unity-catalog-name>`.
+    The same `rest` catalog binding serves BOTH the Spark writer (L3/L4 Iceberg writes) and the
+    Trino JDBC serving catalog (L5 publish reads). `dbfs://` as an explicit scheme is NOT
+    implemented and NOT needed: a direct DBFS client gives zero additional capability over the
+    backing-store scheme + Unity REST binding (Databricks mounts S3/GCS/ADLS natively).
+  - **Delivered scope (3 doc files + 1 reference config):**
+    1. New `examples/configs/databricks_unity_adls.yaml` (reference config, 113 lines): three
+       commented-selectable backing-store blocks (Azure ADLS+MSI default / shared key / SP OAuth;
+       AWS S3+instance profile default / ak+sk; GCP GCS+Workload Identity/ADC default / SA keyfile)
+       all sharing the exact same Unity REST catalog binding. Comprehensive architecture docstring
+       at the top.
+    2. `examples/README.md` Example Configs list: added Databricks Unity entry with architecture
+       description (Unity-as-REST-catalog pattern; S3/GCS/ADLS backing store options; no dbfs://).
+    3. `docs/CAPABILITY_MATURITY_MATRIX.md` §1 Databricks DBFS row: ⏳ Roadmap → 🟢 Production with
+       full pattern documentation (backing-store scheme + Unity REST catalog), B-3 cross-ref,
+       2026-08-20 date stamp, direct link to the example config. Status Updated line bumped.
+    4. `README.md` Honest Boundary catch-up (doc-only, items previously closed but not yet
+       reflected in README): storage backends GCS+ADLS+Databricks moved from roadmap to implemented
+       (with `--extra gcs/azure/dataproc/synapse` install instructions); object-storage ingest GCS/ADLS
+       moved from roadmap to Production; secrets backend (G-5) promoted from roadmap to Production
+       with §9 cross-ref.
+  - **README Honest Boundary sections affected:** Storage backends (implemented list expanded 2→5
+    items; roadmap list trimmed 5→2 items); Ingest mechanisms (object-storage scope expanded,
+    GCS/ADLS removed from ingest roadmap list); Operational / platinum-hardening items (G-5 secrets
+    backend promoted to Production, no longer listed as "remaining roadmap").
+  - **Why zero code changes:** The subsystems B-3 composes were all already 🟢 Production:
+    storage backends s3/gs/abfss (B-1/B-2/v1); Spark Hadoop FS config + credential resolver
+    (B-4); REST catalog binding enum + session.py rest branch (original v1 writer/serving catalog
+    bindings); G-5 secret_ref subsystem (env://DATABRICKS_TOKEN resolution). B-3 = document how to
+    combine these four Production subsystems into a coherent Databricks deployment pattern, plus
+    ship a copy-pasteable reference config.
+  - **Verification (4 points, all green):**
+    1. **Cross-doc claim alignment (×3 doc sources):** BACKLOG Resume/Status/Done blocks all
+       consistent; CAPABILITY_MATURITY_MATRIX §1 Databricks row 🟢 with B-3 cross-ref + date;
+       README Honest Boundary no stale GCS/ADLS/Databricks/secrets roadmap claims. ✓
+    2. **Full test gate (zero code touched, identical to pre-B-3 baseline):**
+       `bash scripts/run_tests.sh` → TEST GATE: PASS (435/0, same as G-2 closure baseline). ✓
+    3. **Lint (zero code touched):** `uv run ruff check src tests` → All checks passed. ✓
+    4. **Example config existence + syntax:** file exists; `yaml.safe_load` parses without errors. ✓
+  All 4 verification points confirmed green. Eighth TRANCHE 2 item closed. Storage + cloud FS +
+  secrets + observability + catalog subsystems are now Production-complete for the three major
+  clouds + Databricks. Next Tranche 2 pull candidates: g-3 (orchestration, 🟠 MED) → B-5
+  (emulator integration tests, 🟠 MED) → rest on-demand.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

@@ -1,0 +1,112 @@
+schema_version: v1
+# ---------------------------------------------------------------------------
+# Databricks + Unity Catalog example config
+#
+# Architecture (B-3 recommended closure — Unity-as-REST-catalog, NO dbfs://):
+#   - Storage: use the CLOUD-NATIVE object store for your Databricks deployment
+#     (Azure → abfss://, AWS → s3://, GCP → gs://).  Databricks mounts these
+#     natively; this pipeline writes directly to them via their respective
+#     StorageBackend implementations (all 🟢 Production: B-2 for ADLS,
+#     B-1 for GCS, original v1 for S3).
+#   - Catalog: bind Unity Catalog as a standard Iceberg REST catalog using
+#     catalog_type=rest.  Unity Catalog exposes an Iceberg-compatible REST
+#     endpoint; no vendor-specific code is required.  The same catalog serves
+#     BOTH the Spark writer (L3/L4 Iceberg writes) and the Trino JDBC
+#     serving endpoint (L5 publish reads).
+#
+# Set your backing store by UNCOMMENTING the block that matches your cloud
+# (Azure / AWS / GCP) and commenting out the others.  All three use the
+# exact same Unity catalog binding section at the bottom.
+# ---------------------------------------------------------------------------
+environments:
+  default:
+    defaults:
+      # -----------------------------------------------------------------------
+      # Shared: Spark runtime knobs (same pattern across all clouds)
+      # -----------------------------------------------------------------------
+      environment: production
+      trigger_type: scheduled
+
+      # -----------------------------------------------------------------------
+      # (A) AZURE DEPLOYMENT — ADLS Gen2 (abfss://) + MSI workload identity
+      #     Databricks workspace in Azure → workspace MSI has Storage Blob
+      #     Data Contributor on the target container.
+      # -----------------------------------------------------------------------
+      root_path: abfss://<container>@<account>.dfs.core.windows.net/elt-pipeline
+      warehouse_root: abfss://<container>@<account>.dfs.core.windows.net/elt-pipeline/warehouse
+
+      spark_fs:
+        adls_account_name: <account>
+        adls_use_msi: "true"
+        # --- Azure alternatives (uncomment one to override MSI default):
+        # adls_account_key_ref: env://ADLS_ACCOUNT_KEY          # shared key
+        # adls_tenant_id: "<tenant>"                            # Service Principal
+        # adls_client_id_ref: env://ADLS_SP_CLIENT_ID
+        # adls_client_secret_ref: env://ADLS_SP_CLIENT_SECRET
+
+      # # ---------------------------------------------------------------------
+      # # (B) AWS DEPLOYMENT — S3 (s3://) + EMR / EC2 instance profile
+      # #     Databricks on AWS → instance role has s3:GetObject/PutObject
+      # #     + List on the target bucket.
+      # # ---------------------------------------------------------------------
+      # root_path: s3://<bucket>/elt-pipeline
+      # warehouse_root: s3://<bucket>/elt-pipeline/warehouse
+      #
+      # spark_fs:
+      #   s3_region: us-east-1
+      #   # --- AWS alternatives (uncomment to override default cred chain):
+      #   # s3_access_key_ref: env://AWS_ACCESS_KEY_ID
+      #   # s3_secret_key_ref: env://AWS_SECRET_ACCESS_KEY
+
+      # # ---------------------------------------------------------------------
+      # # (C) GCP DEPLOYMENT — GCS (gs://) + GKE Workload Identity / ADC
+      # #     Databricks on GCP → GSA has roles/storage.objectAdmin on the
+      # #     target bucket.
+      # # ---------------------------------------------------------------------
+      # root_path: gs://<bucket>/elt-pipeline
+      # warehouse_root: gs://<bucket>/elt-pipeline/warehouse
+      #
+      # spark_fs:
+      #   gcs_project_id: <gcp-project-id>
+      #   # --- GCP alternatives (uncomment to override ADC default chain):
+      #   # gcs_sa_keyfile_ref: env://GCS_SA_KEYFILE_PATH   # file:/// or env://
+
+      # -----------------------------------------------------------------------
+      # Shared: Unity Catalog binding (Iceberg REST catalog)
+      #
+      # The token is resolved as a secret_ref via the G-5 subsystem.
+      # Recommended: store the Databricks PAT in an env var called
+      # DATABRICKS_TOKEN (set at pipeline runtime by your CI / orchestrator
+      # / Databricks job context) and reference env://DATABRICKS_TOKEN here.
+      # rest_warehouse = the three-level Unity catalog name that owns
+      # the L3 / L4 Iceberg tables (e.g. "main" or a dedicated catalog).
+      # -----------------------------------------------------------------------
+      iceberg_writer:
+        catalog_type: rest
+        catalog_name: unity
+        catalog_uri: https://<workspace-host>/api/2.0/unity-catalog
+        rest_token: env://DATABRICKS_TOKEN
+        rest_warehouse: <unity-catalog-name>
+
+      iceberg_serving:
+        catalog_type: rest
+        catalog_uri: https://<workspace-host>/api/2.0/unity-catalog
+        rest_token: env://DATABRICKS_TOKEN
+
+# ---------------------------------------------------------------------------
+# Source connectors.  Object-storage source is the recommended universal
+# ingress; swap connector_type=rest / sql / kafka as required for your
+# source systems (all four connector families are supported on Databricks
+# because storage — the only scheme-specific part — lives at root_path).
+# ---------------------------------------------------------------------------
+sources:
+  - name: object_storage_source
+    connector_type: object_storage
+    entities:
+      - name: orders
+        extraction:
+          base_path: abfss://<container>@<account>.dfs.core.windows.net/ingest/orders
+          format: json
+          payload_selector: $
+          partition_cols:
+            - ingest_date
