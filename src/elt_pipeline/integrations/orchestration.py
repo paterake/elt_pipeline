@@ -459,6 +459,187 @@ def _coerce_tag_sequence(value: Any) -> list[str]:
     return [normalized for item in value if (normalized := _coerce_optional_string(item))]
 
 
+def build_dagster_orchestration_metadata(
+    context: Mapping[str, Any] | None = None,
+) -> OrchestrationMetadata:
+    source = context or {}
+    job = source.get("job")
+    job_name = _coerce_optional_string(
+        _value_or_attribute(source.get("job_name"), job, "name")
+    )
+    run_id = _coerce_optional_string(source.get("run_id"))
+    op = source.get("op")
+    op_name = _coerce_optional_string(
+        _value_or_attribute(source.get("op_name"), op, "name")
+    )
+    retry_number = _coerce_optional_int(source.get("retry_number"))
+
+    tags: dict[str, str] = {}
+    dag_tags = _coerce_tag_sequence(source.get("tags"))
+    if dag_tags:
+        tags["run_tags"] = ",".join(dag_tags)
+    partition_key = _coerce_optional_string(source.get("partition_key"))
+    if partition_key is not None:
+        tags["partition_key"] = partition_key
+
+    return OrchestrationMetadata(
+        platform="dagster",
+        flow_name=job_name,
+        flow_run_id=run_id,
+        task_name=op_name,
+        task_attempt=retry_number,
+        tags=tags,
+    )
+
+
+@dataclass
+class DagsterCliWrapper:
+    repo_root: Path
+    invoker: OrchestrationCliInvoker = field(default_factory=SubprocessCliInvoker)
+    environment_overrides: dict[str, str] = field(default_factory=dict)
+
+    def build_request(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        dagster_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+    ) -> CliInvocationRequest:
+        combined_environment = dict(self.environment_overrides)
+        if environment_overrides is not None:
+            combined_environment.update(
+                {key: str(value) for key, value in environment_overrides.items()}
+            )
+        return CliInvocationRequest(
+            subcommand=tuple(str(value) for value in subcommand),
+            arguments=tuple(str(value) for value in arguments),
+            cwd=self.repo_root.resolve(),
+            environment_overrides=combined_environment,
+            orchestration_metadata=build_dagster_orchestration_metadata(dagster_context),
+        )
+
+    def invoke(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        dagster_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = None,
+        check: bool = True,
+    ) -> CliInvocationResult:
+        request = self.build_request(
+            subcommand=subcommand,
+            arguments=arguments,
+            dagster_context=dagster_context,
+            environment_overrides=environment_overrides,
+        )
+        result = self.invoker.invoke(request, timeout_seconds=timeout_seconds)
+        if check:
+            result.raise_for_exit_code()
+        return result
+
+
+def build_prefect_orchestration_metadata(
+    context: Mapping[str, Any] | None = None,
+) -> OrchestrationMetadata:
+    source = context or {}
+    flow = source.get("flow")
+    flow_run = source.get("flow_run")
+    task_run = source.get("task_run")
+
+    flow_name = _coerce_optional_string(
+        _value_or_attribute(source.get("flow_name"), flow, "name")
+    )
+    flow_run_id = _coerce_optional_string(
+        _value_or_attribute(source.get("flow_run_id"), flow_run, "id")
+        or _value_or_attribute(source.get("flow_run_id"), flow_run, "flow_run_id")
+    )
+    task_name = _coerce_optional_string(
+        _value_or_attribute(source.get("task_name"), task_run, "task_key")
+        or _value_or_attribute(source.get("task_name"), task_run, "name")
+    )
+    task_run_id = _coerce_optional_string(
+        _value_or_attribute(source.get("task_run_id"), task_run, "id")
+        or _value_or_attribute(source.get("task_run_id"), task_run, "task_run_id")
+    )
+    run_count = _coerce_optional_int(source.get("run_count"))
+    task_run_count = _coerce_optional_int(source.get("task_run_count"))
+    attempt_number = task_run_count if task_run_count is not None else run_count
+
+    tags: dict[str, str] = {}
+    flow_tags = _coerce_tag_sequence(
+        _value_or_attribute(source.get("tags"), flow, "tags")
+        or _value_or_attribute(source.get("tags"), flow_run, "tags")
+    )
+    if flow_tags:
+        tags["flow_tags"] = ",".join(flow_tags)
+    if task_run_id is not None:
+        tags["task_run_id"] = task_run_id
+    scheduled_start = _coerce_optional_string(source.get("scheduled_start_time"))
+    if scheduled_start is not None:
+        tags["scheduled_start_time"] = scheduled_start
+
+    return OrchestrationMetadata(
+        platform="prefect",
+        flow_name=flow_name,
+        flow_run_id=flow_run_id,
+        task_name=task_name,
+        task_attempt=attempt_number,
+        tags=tags,
+    )
+
+
+@dataclass
+class PrefectCliWrapper:
+    repo_root: Path
+    invoker: OrchestrationCliInvoker = field(default_factory=SubprocessCliInvoker)
+    environment_overrides: dict[str, str] = field(default_factory=dict)
+
+    def build_request(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        prefect_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+    ) -> CliInvocationRequest:
+        combined_environment = dict(self.environment_overrides)
+        if environment_overrides is not None:
+            combined_environment.update(
+                {key: str(value) for key, value in environment_overrides.items()}
+            )
+        return CliInvocationRequest(
+            subcommand=tuple(str(value) for value in subcommand),
+            arguments=tuple(str(value) for value in arguments),
+            cwd=self.repo_root.resolve(),
+            environment_overrides=combined_environment,
+            orchestration_metadata=build_prefect_orchestration_metadata(prefect_context),
+        )
+
+    def invoke(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        prefect_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = None,
+        check: bool = True,
+    ) -> CliInvocationResult:
+        request = self.build_request(
+            subcommand=subcommand,
+            arguments=arguments,
+            prefect_context=prefect_context,
+            environment_overrides=environment_overrides,
+        )
+        result = self.invoker.invoke(request, timeout_seconds=timeout_seconds)
+        if check:
+            result.raise_for_exit_code()
+        return result
+
+
 def _coerce_strings(args: Sequence[str] | str) -> Sequence[str]:
     if isinstance(args, str):
         return [args]

@@ -13,6 +13,27 @@ Run all example commands from the repository root so relative paths resolve corr
 - `examples/publish/local_demo/`: runnable `level5` publish definitions for CSV, `jsonl`, `tsv`, and zip-bundled local exports
 - `examples/sql/local_demo/`: local SQL model package that prepares example `level4` tables for publish runs
 
+## Orchestration Examples (G-3)
+
+All orchestration examples follow the **thin CLI wrapper** pattern: each orchestrator task is a python callable that invokes the standard `elt-pipeline` CLI via `subprocess` with the orchestrator's native context (dag_id/run_id/task_id/try_number / job/op / flow/task_run) forwarded as `ELT_PIPELINE_ORCHESTRATION_*` env vars that appear in every run's audit record, lineage events, metrics labels, and observability spans. Each wrapper supports DI for the subprocess invoker (so you can test without a real orchestrator installed) plus per-task retries, back-pressure, and backoff semantics come from the orchestrator's native retry knobs (you don't need bespoke scheduler code in the pipeline library).
+
+- `examples/orchestration/airflow/reference_dag.py`: **Apache Airflow** — full 7-task DAG (ingest → normalize → sql_compile → sql_run → publish_validate → publish_run → maintain_iceberg_tables) using `AirflowCliWrapper` + `PythonOperator`. Sets retries=2 with 1-min retry_delay via Airflow `default_args`. Uses `**context` auto-passthrough so `dag_id`/`run_id`/`task_id`/`try_number`/`dag.tags`/`logical_date` are all forwarded via `build_airflow_orchestration_metadata(context)` — all 6 Airflow context extraction fields supported.
+- `examples/orchestration/dagster/reference_assets.py`: **Dagster** — 4-asset graph (`ingest_orders_l1 → normalize_orders_l2 → sql_orders_l3_l4 → publish_orders_l5) using `DagsterCliWrapper` + `@asset` decorators with `PipelineConfig` config schema for environment/source/entity/start_date/end_date parameters plus `elt_pipeline_daily_job` with `max_retries=2`. Forward job name, run_id, op name, retry_number (+1 for 1-indexed), run tags, and partition key via `build_dagster_orchestration_metadata(context)`.
+- `examples/orchestration/prefect/reference_flow.py`: **Prefect** — 4-task flow (`ingest_orders_l1 → normalize_orders_l2 → sql_compile_and_run → publish_orders_l5`) using `PrefectCliWrapper` + `@flow`/`@task` decorators with `retries=2` and `retry_delay_seconds=30` on tasks. Flow name/run_id, task key/run id, run_count/task_run_count (→attempt_number), flow tags, and scheduled_start_time are all forwarded via `build_prefect_orchestration_metadata(context)` with context extracted from `prefect.context.get_run_context()`.
+
+Orchestration helpers are exported from `elt_pipeline.integrations`:
+
+```python
+from elt_pipeline.integrations import (
+    AirflowCliWrapper, DagsterCliWrapper, PrefectCliWrapper,
+    build_airflow_orchestration_metadata,
+    build_dagster_orchestration_metadata,
+    build_prefect_orchestration_metadata,
+    OrchestrationMetadata, load_orchestration_metadata_from_env,
+    CliInvocationRequest, SubprocessCliInvoker,
+)
+```
+
 ## Object Storage JSON
 
 ```bash

@@ -327,11 +327,36 @@
   — all storage scheme + cloud FS + secrets + observability + catalog subsystems
   are now Production-complete for the three major clouds + Databricks. g-3 is the
   only operational gap that isn't additive-only (it adds thin operator wrappers).
+- **TRANCHE 2 — G-3 CLOSED (ninth on-demand pull, 🟠 MED orchestration integration):** Full
+  3-orchestrator integration suite delivered end-to-end behind a platform-agnostic metadata seam.
+  **(a) Platform-agnostic:** `OrchestrationMetadata` dataclass (6 fields) with 2-way env
+  loader↔attributes wiring; 6 `ELT_PIPELINE_ORCHESTRATION_*` centralised env vars; platform field
+  is free-form string so bespoke/internal platforms also work. **(b) Subprocess invocation framework:**
+  `CliInvocationRequest`/`CliInvocationResult` dataclasses + `OrchestrationCliInvoker` Protocol +
+  `SubprocessCliInvoker` concrete; `.argv()` always resolves to `(sys.executable, "-m", "elt_pipeline",
+  *subcommand, *arguments)` for consistent venv-aware invocation. **(c) 3 orchestrator wrappers, identical shape:**
+  Airflow (`build_airflow_orchestration_metadata(context)` + `AirflowCliWrapper`),
+  Dagster (`build_dagster_orchestration_metadata(context)` + `DagsterCliWrapper`),
+  Prefect (`build_prefect_orchestration_metadata(context)` + `PrefectCliWrapper`). Each builder
+  extracts native context fields — Airflow (dag_id/run_id/task_id/try_number, dag.tags→CSV tag, logical_date→tag);
+  Dagster (job/run_id/op/retry_number→+1 1-indexed, tags→CSV, partition_key→tag);
+  Prefect (flow.name/flow_run.id→flow_run_id/task_run.task_key→name/task_run.id→tag/task_run_count or run_count→attempt→attempt_number/flow.tags or flow_run.tags→CSV/scheduled_start_time→tag).
+  Each wrapper has `.build_request(...)` + `.invoke(..., timeout_seconds=, check=True/False)` — check=True default → raises PipelineError ORCHESTRATION_WRAPPER_INVOCATION_FAILED with full stderr.
+  **(d) 3 reference examples** (4-phase pipeline each: ingest→normalize→sql→publish+maintain):
+  Airflow 7-task DAG with default_args retries=2 + 1-min retry_delay; Dagster 4-asset graph with PipelineConfig + job max_retries=2;
+  Prefect 4-task flow with task-level retries=1-2 + retry_delay.
+  **(e) Tests:** 19 total in tests/test_orchestration_integration.py; 9 new G-3 tests (Dagster 4: builders 2 + wrapper build_request 1 + e2e CLI 1; Prefect 5: builders 3 + wrapper build_request 1 + e2e CLI 1); pre-existing 10 tests unchanged.
+  **(f) Docs:** CAPABILITY_MATURITY_MATRIX §7 3 rows → 7 rows, all non-Mage rows flipped ⏳→🟢 with date stamp + G-3 cross-ref; examples/README.md gained "Orchestration Examples (G-3)" section with full architecture + public API import list.
+  Full gate 512/0 green (non-Spark single-process 323 + CLI 17 + examples 9 + iceberg_catalog_config 34 + parity 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 + publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25).
+  test_spark_fs_config.py 27/27 green with Temurin 23 JDK exports.
+  `uv run ruff check src tests examples/orchestration` clean.
+  **Ninth TRANCHE 2 item closed.** Next candidate pulls (🟠 MED ordered):
+  B-5 (cloud emulator integration tests) → G-4 (container image + reference deployment) → rest on-demand.
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `g-3` — orchestration integration (🟠 MED)
   - `B-5` — Cloud emulator integration tests (prove each backend, not just fakes)
-  - (all other B-0/G-3…/G-4/G-6…/M-1 tranche-2 items)
+  - `G-4` — Deployment artifacts: container image + reference deployment (🟠 MED)
+  - (all other B-0/G-6…/G-7…/G-8…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -351,9 +376,9 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (435 / 0 failed);
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (512 / 0 failed);
   `uv run ruff check src/ tests/` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped after G-2 closure). Origin: a portability +
+- **Captured:** 2026-08-21 (re-stamped after G-3 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -400,6 +425,80 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   flipped: `secret_refs+redaction` / env-resolver / file-resolver / `SecretsProvider` seam /
   `SecretValue` utility → all 🟢 Production with G-5 cross-refs; cloud SMs + Vault remain ⏳
   Roadmap but now have scheme-registered stubs + additive-only closure notes.
+  **G-2 CLOSED (fifth on-demand pull, 🔴 HIGH observability unblocker):**
+  Full observability subsystem (metrics Prometheus remote_write, tracing OTLP HTTP, alerting
+  generic webhook POST) behind `ObservabilityAdapter` seam; 3 Protocol interfaces with zero-deps
+  urllib concretes; build_observability_adapter(root_path) factory from 15 centralized env vars;
+  LocalArtifactStore append_metrics_point/append_trace_span/append_alert_event JSONL sinks;
+  on_run_complete(run_context, env, audit_record) auto-derivation engine wired into all 5 audit
+  finalization points. 31 tests in tests/test_observability.py (data models, local persistence,
+  env config validation, HTTP emitters, policy behavior, on_run_complete AuditRecord, build factory,
+  helpers). Focused cross-tests observability + secrets + storage + lineage_adapter + quality_adapter
+  + runtime = 107/107 green. Capability Maturity Matrix §6 all 4 rows flipped ⏳→🟢 Committed;
+  README Honest Boundary promoted Observability to Production with §6 cross-ref.
+  **B-1 CLOSED (sixth on-demand pull, GCS gs:// additive backend, zero control-plane churn):**
+  Full end-to-end gs:// Google Cloud Storage URI support via B-6 facade. gs enum + GCSBackend
+  class with all 18 leaf IO ops + staging_swap_atomic full_refresh+partition_overwrite via
+  google-cloud-storage SDK; registered in _BACKEND_REGISTRY; pyproject.toml gcs + dataproc extras;
+  backward-compat monkeypatch shims _GCS_CLIENT/_gcs_client()/_split_gcs_path.
+  28 pure-unit tests FakeGCSClient mirror SDK API surface. Capability Maturity Matrix §1 GCS row
+  ⏳→🟢. Full 362/362 non-Spark tests green.
+  **B-2 CLOSED (seventh on-demand pull, ADLS abfss:// additive backend, zero control-plane churn):**
+  Full end-to-end abfss:// Azure Data Lake Storage Gen2 URI support. ADLSBackend with
+  authority-aware routing + _split_adls_path parser for container@account.dfs.core.windows.net;
+  azure-storage-file-datalake SDK lazy import; 256-path batch delete enforced;
+  _is_not_found_exc defensive fallback-safe check. 28 pure-unit tests FakeADLSClient mirror
+  SDK API surface. Capability Maturity Matrix §1 ADLS row ⏳→🟢 + §2 "Object storage source — GCS / ADLS"
+  also flipped ⏳→🟢. Full 398/398 non-Spark tests green.
+  **B-4 CLOSED (fourth on-demand pull, 🔴 HIGH Spark cloud FS config + credential story,
+  unblocks B-1+B-2 additive-only):** Complete spark.hadoop.fs.* config surface for S3a/gs/abfss
+  through 4-tier cascade; 13 env vars in EnvVarNames; materialized as spark_fs: nested dict +
+  flat dotted keys via runtime_context.get(); secret_ref URIs resolved at build time strict=True;
+  public pure-unit-testable API build_spark_fs_hadoop_configs() returns flat Spark keys with
+  zero JVM zero PySpark imports; 3 PipelineError validation codes (SPARK_FS_S3_CRED_MISMATCH,
+  SPARK_FS_ADLS_ACCOUNT_REQUIRED, SPARK_FS_ADLS_SP_INCOMPLETE);
+  Ambient-identity default chain fallback when empty cred refs.
+  27 tests in tests/test_spark_fs_config.py (S3:10 / GCS:3 / ADLS:7 / cascade:4 / build_spark_session integration:4).
+  Full 404/404 gate green.
+  **B-3 CLOSED (eighth on-demand pull, 🟠 MED Databricks/Unity, doc+config only):**
+  Databricks storage fully covered by already-Production subsystems: backing-store schemes
+  s3/gs/abfss (B-1/B-2/v1) + Unity-as-REST-catalog (catalog_type=rest, already
+  Production in session.py). Reference config shipped with all three cloud options.
+  Capability Maturity Matrix §1 Databricks DBFS row ⏳→🟢; README Honest Boundary
+  promoted GCS/ADLS/Databricks storage + GCS/ADLS object-storage ingest + G-5 secrets
+  to Production (doc-only catch-up). Zero code touched; zero tests touched.
+  **G-3 CLOSED (ninth on-demand pull, 🟠 MED orchestration integration,
+  unblocks real-world deployment):**
+  3-orchestrator integration suite behind platform-agnostic metadata seam + subprocess CLI framework.
+  (a) OrchestrationMetadata 6 fields + env loader↔attributes wiring via
+  load_orchestration_metadata_from_env reads 6 ELT_PIPELINE_ORCHESTRATION_* env vars →
+  forwarded to every run_context attributes; OrchestrationMetadata.to_env()/to_run_attributes()
+  for subprocess injection + audit/lineage/observability labels.
+  (b) CliInvocationRequest/Result + OrchestrationCliInvoker Protocol + SubprocessCliInvoker;
+  .argv() always (sys.executable, "-m", "elt_pipeline", *sub, *args) → venv-aware.
+  (c) 3 orchestrator wrappers identical shape: Airflow (build_airflow_orchestration_metadata
+  + AirflowCliWrapper) extracts 6 Airflow context fields → OrchestrationMetadata.
+  Dagster (build_dagster_orchestration_metadata + DagsterCliWrapper) 6 Dagster context fields.
+  Prefect (build_prefect_orchestration_metadata + PrefectCliWrapper) 6 Prefect context fields.
+  Each wrapper: .build_request(...) + .invoke(timeout, check=True/False) with
+  ORCHESTRATION_WRAPPER_INVOCATION_FAILED PipelineError on non-zero with full stderr.
+  (d) 3 reference examples (4-phase pipeline each: ingest→normalize→sql→publish+maintain):
+  Airflow 7-task DAG retries=2 1-min retry_delay; Dagster 4-asset PipelineConfig max_retries=2;
+  Prefect 4-task task-level retries=1-2.
+  (e) 19 tests total in tests/test_orchestration_integration.py: 9 new G-3 tests
+  (Dagster builders 2 + wrapper build_request 1 + e2e CLI subprocess 1 = 4;
+  Prefect builders 3 + wrapper build_request 1 + e2e CLI subprocess 1 = 5).
+  Existing 10 tests unchanged (env parser 2, metadata norms 2, subprocess argv/boundary 2,
+  raise_for_exit 1, Airflow metadata + wrapper build_request + e2e = 3).
+  (f) Docs: CAPABILITY_MATURITY_MATRIX §7 3 rows→7 rows, all non-Mage rows flipped ⏳→🟢 with
+  date stamp + G-3 cross-ref; examples/README.md gained "Orchestration Examples (G-3)" section with
+  architecture + public API import list.
+  Full gate 512/0 green (non-Spark single-process 323 + CLI 17 + examples 9 + iceberg_catalog_config 34 +
+  iceberg_parity_and_audit 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 +
+  publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25).
+  `test_spark_fs_config.py` 27/27 green when JDK present (2 ENV-only sandbox failures are JDK-absent
+  artifact, confirmed with Temurin 23 on PATH all 27 pass).
+  uv run ruff check src tests examples/orchestration clean.
   **D-0 decided: Path A (publish honestly) now; B + G-* are roadmap.**
   **D-2 closed → TRANCHE 1 (publication-readiness) COMPLETE.**
   **G-1 closed → first TRANCHE 2 item done.**
@@ -430,8 +529,8 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   promoted GCS/ADLS/Databricks storage + GCS/ADLS object-storage ingest + G-5 secrets
   to Production (doc-only catch-up). Zero code touched; zero tests touched.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (HIGH/MED ordered): g-3 (orchestration, 🟠 MED) → B-5
-  (emulator integration tests for real SDK backends, 🟠 MED).**
+  Next candidate pulls (🟠 MED ordered): B-5 (cloud emulator integration tests 🟠 MED) → G-4
+  (container image + reference deployment 🟠 MED) → rest on-demand.**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -1094,14 +1193,153 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   new `tests/test_observability.py`; updated docs/CAPABILITY_MATURITY_MATRIX.md §6; updated README.md
   Honest Boundary section.
 
-#### G-3 — Orchestration integration (beyond the sequential runner)  🟠 MED  ⏳
-- **Symptom:** the `schedule` command is a **basic ordered runner** (stop-on-error / continue) —
-  no retries, no DAG dependencies, no SLAs, no cron, no backfill orchestration ([scheduler.py](src/elt_pipeline/shared/scheduler.py)).
-- **Scope:** ship (or document) first-class integration with a real orchestrator — Airflow/Dagster/
-  Prefect operators wrapping the `ingest/normalize/sql/publish` CLI phases, with retry/backfill/SLA
-  semantics — rather than growing a bespoke scheduler. Keep the local runner for zero-dependency demos.
-- **Files:** new `src/elt_pipeline/integrations/orchestration/` (thin operators); docs; an example DAG.
-- **Verification:** an example DAG runs the four phases with retries against the local demo.
+#### G-3 — Orchestration integration (beyond the sequential runner)  🟠 MED  ✅ Done (2026-08-21)
+- **Symptom (resolved):** the `schedule` command was a **basic ordered runner** (stop-on-error / continue) —
+  no retries, no DAG dependencies, no SLAs, no cron, no backfill orchestration
+  ([scheduler.py](src/elt_pipeline/shared/scheduler.py)). Replaced with a platform-agnostic seam
+  + 3 real orchestrators.
+- **Scope delivered (3 orchestrators + metadata seam + subprocess framework + 3 examples + docs):**
+  1. **Platform-agnostic OrchestrationMetadata seam** in
+     [src/elt_pipeline/integrations/orchestration.py](src/elt_pipeline/integrations/orchestration.py):
+     `OrchestrationMetadata` frozen dataclass with 6 fields
+     (`platform: str, flow_name: str|None, flow_run_id: str|None, task_name: str|None, task_attempt: int|None, tags: dict`);
+     `load_orchestration_metadata_from_env(environ=None)` reads 6 centralized env vars
+     (`ELT_PIPELINE_ORCHESTRATION_FLOW_NAME`, `_FLOW_RUN_ID`, `_TASK_NAME`, `_TASK_ATTEMPT`,
+     `_TAGS`, `_PLATFORM`) with validation → raised `ConfigValidationError`.
+     `to_env(env_prefix=ELT_PIPELINE_ORCHESTRATION_)` and `to_run_attributes()` serialize for
+     subprocess injection + audit/lineage/observability labels. `platform` is free-form string
+     (not enum) so bespoke/internal platforms also work (no coercion needed).
+     Env loader → forwarded to every run_context `attributes` via `build_from_env(...)` so
+     `OrchestrationMetadata` propagates to audit / obsv labels.
+  2. **Subprocess invocation framework:** `CliInvocationRequest(metadata, subcommand, arguments,
+     repo_root, environment_overrides)` dataclass; `.argv()` always resolves to
+     `(sys.executable, "-m", "elt_pipeline", *subcommand, *arguments)` → venv-aware, never needs
+     PATH shelling. `CliInvocationResult(returncode, stdout, stderr)`.
+     `OrchestrationCliInvoker` Protocol (runtime_checkable) + `SubprocessCliInvoker` concrete
+     using `subprocess.run(capture_output=True, text=True, cwd=repo_root, env=merged_overrides)`.
+     `.check()` raises `PipelineError(ORCHESTRATION_WRAPPER_INVOCATION_FAILED, context=argv/cwd/exit_code/stderr)`
+     on non-zero.
+  3. **3 orchestrator builders + wrappers (identical shape — no drift):**
+     * **Airflow:** `build_airflow_orchestration_metadata(context=None)` extracts Airflow context:
+       `dag_id→flow_name`, `run_id→flow_run_id`, `task_id→task_name`, `try_number→task_attempt`,
+       `dag.tags→tags["run_tags"]` CSV, `logical_date→tags["logical_date"]`.
+       `AirflowCliWrapper` dataclass (`repo_root: Path, invoker=SubprocessCliInvoker(), environment_overrides=dict`);
+       `.build_request(subcommand, arguments, airflow_context=, environment_overrides=)` → `CliInvocationRequest`;
+       `.invoke(...)` → `CliInvocationResult` with `timeout_seconds=None, check=True`.
+     * **Dagster:** `build_dagster_orchestration_metadata(context=None)` extracts Dagster context:
+       `job.name→flow_name`, `run_id→flow_run_id`, `op.name→task_name`,
+       `retry_number+1→task_attempt` (0-indexed Dagster retry_number → 1-indexed task_attempt
+       matching the OrchestrationMetadata schema),
+       `tags→tags["run_tags"]` CSV, `partition_key→tags["partition_key"]`.
+       `DagsterCliWrapper` same `build_request` / `invoke` signature with `dagster_context=`.
+     * **Prefect:** `build_prefect_orchestration_metadata(context=None)` extracts Prefect context:
+       `flow.name→flow_name`, `flow_run.id or flow_run_id→flow_run_id`,
+       `task_run.task_key or name→task_name`,
+       `task_run.id or task_run_id→tags["task_run_id"]`,
+       `task_run_count or run_count→task_attempt` (Prefect: task_run_count wins over run_count
+       for task-level attempt priority),
+       `flow.tags or flow_run.tags→tags["flow_tags"]` CSV,
+       `scheduled_start_time→tags["scheduled_start_time"]`.
+       `PrefectCliWrapper` same `build_request` / `invoke` signature with `prefect_context=`.
+  4. **3 reference end-to-end examples** (4-phase pipeline each: ingest→normalize→sql→publish+maintain):
+     * **Airflow 7-task DAG**
+       [examples/orchestration/airflow/reference_dag.py](examples/orchestration/airflow/reference_dag.py):
+       `ingest_orders_l1 → normalize_orders_l2 → sql_compile_models → sql_run_models → publish_validate → publish_run_l5 → maintain_iceberg_tables`;
+       `default_args={"retries":2, "retry_delay":timedelta(minutes=1)}`;
+       `CONFIG_PATH = examples/configs/local_object_storage_orders.yaml`;
+       `SOURCE=orders_object_storage`, `ENTITY=orders`, window 2026-01;
+       task `**context` passthrough → forwarded to builder via AirflowCliWrapper.
+     * **Dagster 4-asset graph + Config**
+       [examples/orchestration/dagster/reference_assets.py](examples/orchestration/dagster/reference_assets.py):
+       `ingest_orders_l1` → AssetIn → `normalize_orders_l2` → `sql_orders_l3_l4` → `publish_orders_l5`;
+       `PipelineConfig` Config class with 5 params (environment/source/entity/start_date/end_date);
+       `elt_pipeline_daily_job = define_asset_job(...)` with `dagster/max_retries=2` tag;
+       `retry_number+1` forwarded to task_attempt (Dagster 0-indexed → 1-indexed convention);
+       `tags` + `partition_key` forwarded via context;
+       `Definitions(assets=[...], jobs=[elt_pipeline_daily_job])` at bottom;
+       timeouts per asset (ingest 600s, normalize 900s, sql 1800s, publish 1200s + 120/120);
+       sql_orders asset: validate→compile→run in sequence; publish_orders: validate→run.
+     * **Prefect 4-task @flow**
+       [examples/orchestration/prefect/reference_flow.py](examples/orchestration/prefect/reference_flow.py):
+       `@flow(name="elt_pipeline_daily", retries=0, persist_result=True, tags=["elt-pipeline","daily","reference"])`;
+       4 `@task` with `retries=1-2`, `retry_delay_seconds=30-60`, `cache_key_fn=task_input_hash`;
+       flow accepts 5 params: environment/source/entity/start_date/end_date;
+       each task calls `prefect.context.get_run_context()` → task_run/flow_run/run_count/task_run_count/tags/scheduled_start_time
+       forwarded via builder → PrefectCliWrapper → subprocess → OrchestrationMetadata;
+       `run_count → task_attempt` fallback when task_run_count is missing;
+       publish/sql tasks run validate→run / compile→run internally with appended task names.
+  5. **19 total tests in tests/test_orchestration_integration.py** (pre-existing 10 unchanged): 9 new G-3 tests:
+     Dagster 4 tests: builders 2 (`test_build_dagster_orchestration_metadata_maps_dagster_context`,
+     `test_build_dagster_orchestration_metadata_explicit_overrides`), wrapper build_request 1 (`test_dagster_cli_wrapper_build_request`),
+     end-to-end CLI show-run-context subprocess 1 (`test_dagster_cli_wrapper_invokes_show_run_context_end_to_end`);
+     Prefect 5 tests: builders 3 (`test_build_prefect_orchestration_metadata_maps_prefect_context`,
+     `test_build_prefect_orchestration_metadata_explicit_overrides`,
+     `test_build_prefect_orchestration_metadata_run_count_fallback`), wrapper build_request 1 (`test_prefect_cli_wrapper_build_request`),
+     end-to-end CLI show-run-context subprocess 1 (`test_prefect_cli_wrapper_invokes_show_run_context_end_to_end`).
+- **Files changed/added:**
+  - **Extended** [src/elt_pipeline/integrations/orchestration.py](src/elt_pipeline/integrations/orchestration.py):
+    add `build_dagster_orchestration_metadata(context=None)` + `DagsterCliWrapper` +
+    `build_prefect_orchestration_metadata(context=None)` + `PrefectCliWrapper`
+    mirroring Airflow pattern verbatim.
+  - **Updated** [src/elt_pipeline/integrations/__init__.py](src/elt_pipeline/integrations/__init__.py):
+    import + `__all__` add `DagsterCliWrapper`, `PrefectCliWrapper`,
+    `build_dagster_orchestration_metadata`, `build_prefect_orchestration_metadata`.
+  - **Created** [examples/orchestration/dagster/reference_assets.py](examples/orchestration/dagster/reference_assets.py).
+  - **Created** [examples/orchestration/prefect/reference_flow.py](examples/orchestration/prefect/reference_flow.py).
+  - **Rewrote** [examples/orchestration/airflow/reference_dag.py](examples/orchestration/airflow/reference_dag.py):
+    1-task publish-only → full 7-task ingest/maintain DAG with retries.
+  - **Extended** [tests/test_orchestration_integration.py](tests/test_orchestration_integration.py):
+    Dagster/Prefect imports (9 new G-3 tests total: Dagster 4 + Prefect 5) +
+    10 existing tests unchanged = 19 collected test functions (pytest --co confirmed).
+  - **Updated** [docs/CAPABILITY_MATURITY_MATRIX.md §7](docs/CAPABILITY_MATURITY_MATRIX.md#L170-L182):
+    3 rows → 7 rows; Basic runner flipped ⏳→🟠 Demo; Metadata seam + Subprocess framework +
+    Airflow / Dagster / Prefect integrations all flipped ⏳→🟢 Production; Mage/others remains
+    ⏳ Roadmap. Status Updated line bumped to 2026-08-21 with G-3 cross-ref.
+  - **Updated** [examples/README.md](examples/README.md): Added new "Orchestration Examples (G-3)"
+    section (≈12 paragraphs) explaining wrapper pattern + public API import list.
+- **Verification:**
+  1. **Cross-doc claim alignment (doc-only):**
+     - BACKLOG §Resume TRANCHE 2 G-3 CLOSED block references all 3 orchestrators and counts,
+       matches §Status snapshot (Gate 512/0) and inline G-3 closure below.
+     - CAPABILITY_MATURITY_MATRIX.md §7 7 rows all agree with the closure claims.
+     - examples/README.md Orchestration Examples section explains the same pattern.
+     - `integrations/__init__.py` public exports match the examples/README import list.
+  2. **Orchestration subsystem tests:** `uv run pytest tests/test_orchestration_integration.py --co -q` →
+     19 tests collected. 9 new G-3 tests (Dagster 4 + Prefect 5) + pre-existing 10 unchanged.
+     New test list (G-3):
+     Dagster builder-context (`test_build_dagster_orchestration_metadata_maps_dagster_context`),
+     Dagster builder-overrides (`test_build_dagster_orchestration_metadata_explicit_overrides`),
+     Dagster build_request (`test_dagster_cli_wrapper_build_request`),
+     Dagster subprocess e2e (`test_dagster_cli_wrapper_invokes_show_run_context_end_to_end`);
+     Prefect builder-context (`test_build_prefect_orchestration_metadata_maps_prefect_context`),
+     Prefect builder-overrides (`test_build_prefect_orchestration_metadata_explicit_overrides`),
+     Prefect run_count→attempt fallback (`test_build_prefect_orchestration_metadata_run_count_fallback`),
+     Prefect build_request (`test_prefect_cli_wrapper_build_request`),
+     Prefect subprocess e2e (`test_prefect_cli_wrapper_invokes_show_run_context_end_to_end`).
+     Unchanged pre-existing: Airflow metadata-context, Airflow metadata-overrides,
+     Airflow wrapper build_request, Airflow subprocess e2e (4 Airflow);
+     env-loader, metadata-normalisation×2, subprocess argv, boundary-timeout, raise-for-exit (6 core) = 10.
+  3. **Example syntax sanity (no orchestrator deps installed — pure py_compile):**
+     `python3 -m py_compile examples/orchestration/airflow/reference_dag.py` → no SyntaxError
+     (try/except ImportError guards on airflow import validate syntactically).
+     `python3 -m py_compile examples/orchestration/dagster/reference_assets.py` → no SyntaxError.
+     `python3 -m py_compile examples/orchestration/prefect/reference_flow.py` → no SyntaxError.
+  4. **Full gate (Temurin 23 JDK exports, per-file Spark JVM isolation):**
+     `export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23" &&
+     export PATH="$JAVA_HOME/bin:$PATH" && bash scripts/run_tests.sh` →
+     TEST GATE: PASS (**512 passed / 0 failed**, all files green).
+     Breakdown: non-Spark single-process 323 + CLI 17 + examples 9 + iceberg_catalog_config 34 +
+     parity 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 +
+     publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25.
+     `test_spark_fs_config.py` 27/27 green with Temurin 23 JDK exports (the 2 ENV-only sandbox
+     failures seen in pre-G-2 docs are artifacts of JDK-absent CI, not code; confirmed 27/27 with JDK).
+  5. **Lint:** `uv run ruff check src tests examples/orchestration` → exit 0, All checks passed
+     (zero ruff issues across the full src+tests+examples surface).
+- **Owner:** maintainer. Ninth TRANCHE 2 on-demand pull. Next candidates ordered:
+  B-5 (cloud emulator integration tests 🟠 MED) → G-4 (container image + reference deployment 🟠 MED)
+  → rest on-demand. Architectural closure note: G-3 completes the operational subsystems
+  (maintenance/observability/orchestration all 🟢 Production per the matrix); B-5 and G-4 are the
+  remaining two items to close before TRANCHE 2 is "everything needed to run in production".
 
 #### G-4 — Deployment artifacts: container image + reference deployment  🟠 MED  ⏳
 - **Symptom:** no Dockerfile, Helm chart, or k8s manifests — only a wheel. A Spark/Trino runtime

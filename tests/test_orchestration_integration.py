@@ -12,9 +12,13 @@ import pytest
 from elt_pipeline.integrations import (
     AirflowCliWrapper,
     CliInvocationRequest,
+    DagsterCliWrapper,
     OrchestrationMetadata,
+    PrefectCliWrapper,
     SubprocessCliInvoker,
     build_airflow_orchestration_metadata,
+    build_dagster_orchestration_metadata,
+    build_prefect_orchestration_metadata,
     load_orchestration_metadata_from_env,
 )
 from elt_pipeline.shared.errors import ConfigValidationError, PipelineError
@@ -294,3 +298,238 @@ def test_airflow_cli_wrapper_invokes_show_run_context_end_to_end() -> None:
     assert payload["attributes"]["orchestration_flow_run_id"] == "scheduled__2026-06-14"
     assert payload["attributes"]["orchestration_task_name"] == "publish_orders"
     assert payload["attributes"]["orchestration_task_attempt"] == 3
+
+
+def test_build_dagster_orchestration_metadata_maps_dagster_context() -> None:
+    metadata = build_dagster_orchestration_metadata(
+        {
+            "job": SimpleNamespace(name="elt_pipeline_assets"),
+            "run_id": "4f7c4a9e-1b2d-4c8a-9e6f-3a7b2c1d0e5f",
+            "op": SimpleNamespace(name="normalize_orders"),
+            "retry_number": 2,
+            "tags": ["finance", "backfill"],
+            "partition_key": "2026-06-14",
+        }
+    )
+
+    assert metadata == OrchestrationMetadata(
+        platform="dagster",
+        flow_name="elt_pipeline_assets",
+        flow_run_id="4f7c4a9e-1b2d-4c8a-9e6f-3a7b2c1d0e5f",
+        task_name="normalize_orders",
+        task_attempt=2,
+        tags={
+            "run_tags": "finance,backfill",
+            "partition_key": "2026-06-14",
+        },
+    )
+
+
+def test_build_dagster_orchestration_metadata_explicit_overrides() -> None:
+    metadata = build_dagster_orchestration_metadata(
+        {
+            "job_name": "explicit_job",
+            "run_id": "run-001",
+            "op_name": "explicit_op",
+            "retry_number": 1,
+        }
+    )
+
+    assert metadata == OrchestrationMetadata(
+        platform="dagster",
+        flow_name="explicit_job",
+        flow_run_id="run-001",
+        task_name="explicit_op",
+        task_attempt=1,
+        tags={},
+    )
+
+
+def test_dagster_cli_wrapper_build_request() -> None:
+    wrapper = DagsterCliWrapper(repo_root=REPO_ROOT)
+
+    request = wrapper.build_request(
+        subcommand=("normalize", "run"),
+        arguments=(
+            "--environment",
+            "staging",
+            "--source",
+            "orders",
+        ),
+        dagster_context={
+            "job_name": "dagster_elt",
+            "run_id": "dagster-run-42",
+            "op": SimpleNamespace(name="normalize_step"),
+            "retry_number": 3,
+            "tags": ["data-team"],
+            "partition_key": "2026-06-15",
+        },
+        environment_overrides={"EXTRA_FLAG": "1"},
+    )
+
+    assert request.cwd == REPO_ROOT
+    assert request.orchestration_metadata == OrchestrationMetadata(
+        platform="dagster",
+        flow_name="dagster_elt",
+        flow_run_id="dagster-run-42",
+        task_name="normalize_step",
+        task_attempt=3,
+        tags={
+            "run_tags": "data-team",
+            "partition_key": "2026-06-15",
+        },
+    )
+    assert request.environment_overrides["EXTRA_FLAG"] == "1"
+    assert request.argv()[3:] == (
+        "normalize",
+        "run",
+        "--environment",
+        "staging",
+        "--source",
+        "orders",
+    )
+
+
+def test_dagster_cli_wrapper_invokes_show_run_context_end_to_end() -> None:
+    result = DagsterCliWrapper(repo_root=REPO_ROOT).invoke(
+        subcommand=("show-run-context",),
+        arguments=(
+            "--stage",
+            "ingest",
+            "--job-name",
+            "ingest-customers",
+        ),
+        dagster_context={
+            "job_name": "dagster_daily",
+            "run_id": "scheduled__2026-06-15",
+            "op_name": "ingest_op",
+            "retry_number": 2,
+        },
+        timeout_seconds=10.0,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["attributes"]["orchestration_platform"] == "dagster"
+    assert payload["attributes"]["orchestration_flow_name"] == "dagster_daily"
+    assert payload["attributes"]["orchestration_flow_run_id"] == "scheduled__2026-06-15"
+    assert payload["attributes"]["orchestration_task_name"] == "ingest_op"
+    assert payload["attributes"]["orchestration_task_attempt"] == 2
+
+
+def test_build_prefect_orchestration_metadata_maps_prefect_context() -> None:
+    metadata = build_prefect_orchestration_metadata(
+        {
+            "flow": SimpleNamespace(name="elt_pipeline_flow", tags=["marketing", "hourly"]),
+            "flow_run": SimpleNamespace(id="prefect-flow-run-a1b2c3"),
+            "task_run": SimpleNamespace(task_key="run_sql_step", id="prefect-task-xyz789"),
+            "task_run_count": 2,
+            "scheduled_start_time": "2026-06-15T03:00:00+00:00",
+        }
+    )
+
+    assert metadata == OrchestrationMetadata(
+        platform="prefect",
+        flow_name="elt_pipeline_flow",
+        flow_run_id="prefect-flow-run-a1b2c3",
+        task_name="run_sql_step",
+        task_attempt=2,
+        tags={
+            "flow_tags": "marketing,hourly",
+            "task_run_id": "prefect-task-xyz789",
+            "scheduled_start_time": "2026-06-15T03:00:00+00:00",
+        },
+    )
+
+
+def test_build_prefect_orchestration_metadata_explicit_overrides() -> None:
+    metadata = build_prefect_orchestration_metadata(
+        {
+            "flow_name": "explicit_flow",
+            "flow_run_id": "frun-001",
+            "task_name": "explicit_task",
+            "run_count": 1,
+        }
+    )
+
+    assert metadata == OrchestrationMetadata(
+        platform="prefect",
+        flow_name="explicit_flow",
+        flow_run_id="frun-001",
+        task_name="explicit_task",
+        task_attempt=1,
+        tags={},
+    )
+
+
+def test_build_prefect_orchestration_metadata_run_count_fallback() -> None:
+    metadata = build_prefect_orchestration_metadata(
+        {
+            "flow_name": "fallback_flow",
+            "run_count": 5,
+        }
+    )
+
+    assert metadata.task_attempt == 5
+
+
+def test_prefect_cli_wrapper_build_request() -> None:
+    wrapper = PrefectCliWrapper(repo_root=REPO_ROOT)
+
+    request = wrapper.build_request(
+        subcommand=("sql", "run"),
+        arguments=("--models", "orders_daily,customers_daily"),
+        prefect_context={
+            "flow_name": "prefect_elt",
+            "flow_run_id": "prefect-fr-100",
+            "task_run": SimpleNamespace(task_key="sql_exec_step", id="prefect-tr-500"),
+            "task_run_count": 4,
+            "tags": ["core"],
+        },
+        environment_overrides={"EXTRA_FLAG": "1"},
+    )
+
+    assert request.cwd == REPO_ROOT
+    assert request.orchestration_metadata == OrchestrationMetadata(
+        platform="prefect",
+        flow_name="prefect_elt",
+        flow_run_id="prefect-fr-100",
+        task_name="sql_exec_step",
+        task_attempt=4,
+        tags={
+            "flow_tags": "core",
+            "task_run_id": "prefect-tr-500",
+        },
+    )
+    assert request.environment_overrides["EXTRA_FLAG"] == "1"
+    assert request.argv()[3:] == (
+        "sql",
+        "run",
+        "--models",
+        "orders_daily,customers_daily",
+    )
+
+
+def test_prefect_cli_wrapper_invokes_show_run_context_end_to_end() -> None:
+    result = PrefectCliWrapper(repo_root=REPO_ROOT).invoke(
+        subcommand=("show-run-context",),
+        arguments=(
+            "--stage",
+            "sql",
+            "--job-name",
+            "sql-models",
+        ),
+        prefect_context={
+            "flow_name": "prefect_daily",
+            "flow_run_id": "prefect-scheduled-2026-06-15",
+            "task_run": SimpleNamespace(task_key="models_step"),
+            "task_run_count": 1,
+        },
+        timeout_seconds=10.0,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["attributes"]["orchestration_platform"] == "prefect"
+    assert payload["attributes"]["orchestration_flow_name"] == "prefect_daily"
+    assert payload["attributes"]["orchestration_flow_run_id"] == "prefect-scheduled-2026-06-15"
+    assert payload["attributes"]["orchestration_task_name"] == "models_step"
+    assert payload["attributes"]["orchestration_task_attempt"] == 1
