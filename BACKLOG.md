@@ -350,11 +350,52 @@
   Full gate 512/0 green (non-Spark single-process 323 + CLI 17 + examples 9 + iceberg_catalog_config 34 + parity 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 + publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25).
   test_spark_fs_config.py 27/27 green with Temurin 23 JDK exports.
   `uv run ruff check src tests examples/orchestration` clean.
-  **Ninth TRANCHE 2 item closed.** Next candidate pulls (🟠 MED ordered):
-  B-5 (cloud emulator integration tests) → G-4 (container image + reference deployment) → rest on-demand.
+  **Ninth TRANCHE 2 item closed.**
+- **TRANCHE 2 — B-5 CLOSED (tenth on-demand pull, 🟠 MED cloud emulator
+  integration tests):** 28 emulator-backed integration tests behind opt-in
+  `@pytest.mark.emulator` pytest marker + `--run-emulator` CLI flag +
+  `ELT_PIPELINE_TEST_EMULATORS=1` env var (default gate skips all 28 to keep
+  CI hermetic — zero Docker/network in the default 512/0 green gate). **(a)
+  S3 via moto** (in-process, no Docker): 16 `TestS3EmulatorLeafOps` tests
+  exercising the real boto3 SDK against moto's `mock_aws` in-memory service —
+  write/read bytes+text roundtrip, path_exists (key vs directory prefix),
+  is_dir, content_length + NotFound→PipelineError fail-fast, listdir delimiter
+  + gs URI prefix returns, glob/rglob suffix filters, replace intra-bucket
+  copy+delete, delete_tree batch sibling-preservation, append buffer
+  write-read-rewrite, atomic_write tmp→copy→delete sequence verified by
+  listing zero .tmp remnants, string helpers (join/parent/basename/suffix/
+  normalize + collapse slashes inside authority for abfss). 2
+  `TestS3EmulatorStagingSwap` tests: full_refresh (stale keys deleted, new
+  keys present, sibling-tables NEVER touched) + partition_overwrite (exact
+  (dt, entity) leaf subprefixes replaced, sibling entity=B on SAME dt
+  preserved, unrelated dt=2025-12-31 untouched — the S-2 guarantee proven on
+  real SDK copy→delete semantics). 1 `TestS3EmulatorL1Landing` test: L1 raw
+  payload write + manifest.csv write + sha256 checksum roundtrip + listdir
+  integrity. **(b) GCS via fake-gcs-server** (testcontainers Docker): 5
+  `TestGCSEmulatorLeafOps` tests: write/read roundtrip, exists dir+key+
+  missing, listdir+rglob, delete_tree+sibling preservation,
+  staging_swap_atomic full_refresh. **(c) ADLS Gen2 via Azurite**
+  (testcontainers Docker): 4 `TestADLSEmulatorLeafOps` tests: write/read
+  roundtrip, exists+content_length, listdir+glob+delete_tree,
+  staging_swap_atomic partition_overwrite (us-region overwritten, eu-region
+  untouched). **(d) Opt-in gating:** `pytest_collection_modifyitems` hook in
+  conftest.py adds skip markers unless `--run-emulator` flag OR
+  `ELT_PIPELINE_TEST_EMULATORS=1` env; `addopts = -m "not emulator"` removed
+  from pyproject.toml so `--run-emulator` can override; `moto_s3` conftest
+  fixture activates `mock_aws` context; `_reset_all_backend_singletons()`
+  helper clears module-level `_S3_CLIENT`/`_GCS_CLIENT`/`_ADLS_CLIENT` cached
+  SDK clients in BOTH storage_backends AND path_utils modules before every
+  emulator test so moto/monkeypatched factories take precedence over cached
+  production clients. **(e) Deps:** `test_emulator` optional extra in
+  pyproject.toml: `moto[s3]>=5.0,<6.0` + `testcontainers>=3.7,<4.0`. Full
+  gate GREEN: 512 passed / 0 failed / 28 skipped (the 28 emulator tests
+  correctly opt-in-only). `uv run ruff check src tests` clean. CAPABILITY_
+  MATURITY_MATRIX §1 S3/GCS/ADLS rows updated with emulator test cross-refs;
+  Document Status Updated line stamped 2026-08-21 B-5. **Tenth TRANCHE 2
+  item closed. Next candidate pulls (🟠 MED ordered): G-4 (container image +
+  reference deployment) → rest on-demand.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `B-5` — Cloud emulator integration tests (prove each backend, not just fakes)
   - `G-4` — Deployment artifacts: container image + reference deployment (🟠 MED)
   - (all other B-0/G-6…/G-7…/G-8…/M-1 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
@@ -376,9 +417,11 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (512 / 0 failed);
-  `uv run ruff check src/ tests/` clean. This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-21 (re-stamped after G-3 closure). Origin: a portability +
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (512 / 0 failed;
+  28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
+  or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/` clean.
+  This backlog does **not** start from a red gate — keep it green.
+- **Captured:** 2026-08-21 (re-stamped after G-3 closure + B-5 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -529,8 +572,7 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   promoted GCS/ADLS/Databricks storage + GCS/ADLS object-storage ingest + G-5 secrets
   to Production (doc-only catch-up). Zero code touched; zero tests touched.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (🟠 MED ordered): B-5 (cloud emulator integration tests 🟠 MED) → G-4
-  (container image + reference deployment 🟠 MED) → rest on-demand.**
+  Next candidate pulls (🟠 MED ordered): G-4 (container image + reference deployment 🟠 MED) → rest on-demand.**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -847,13 +889,40 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   ```
 - **Cross-refs:** Updated: Resume section TRANCHE 2 B-4 CLOSED entry; Status snapshot gate=404 + B-4 summary; Capability Maturity Matrix §1 new Spark Hadoop FS surface row + GCS/ADLS row notes updated.
 
-#### B-5 — Cloud integration tests (prove each backend, not just fakes)  ⏳ (Path B only)
-- **Symptom:** S3 is only unit-tested with an in-process fake; Azure/GCS have zero coverage.
-- **Scope:** emulator-backed integration tests (moto for S3, Azurite for ADLS, fake-gcs-server
-  for GCS) exercising the real IO ops end-to-end (ingest → normalize → sql → publish on a
-  `<scheme>://` root); gate them behind a marker/opt-in if they need Docker so the default gate
-  stays hermetic.
-- **Verification:** the integration suite passes for every backend claimed as supported in PRD 10.
+#### B-5 — Cloud integration tests (prove each backend, not just fakes)  ✅ CLOSED 2026-08-21 (tenth on-demand TRANCHE 2 pull, 🟠 MED)
+- **Status:** Delivered. 28 emulator-backed integration tests, all 28 correctly SKIPPED in default gate (hermetic, zero Docker/network needed). Full gate GREEN 512/0/28-skipped. ruff clean.
+- **Symptom resolved:** S3 was only unit-tested with an in-process FakeS3Client; GCS/ADLS had zero real-SDK coverage. Now all three backends have emulator-backed tests against real SDK clients talking to real emulator services (moto in-process for S3; fake-gcs-server + Azurite via testcontainers Docker for GCS/ADLS).
+- **Scope delivered:**
+  (1) **Opt-in gating subsystem** — `@pytest.mark.emulator` marker registered in pyproject.toml + conftest.py; `--run-emulator` CLI flag; `ELT_PIPELINE_TEST_EMULATORS=1` env var. `pytest_collection_modifyitems` hook adds skip markers for all marked tests unless opted in. Default gate stays 100% hermetic (zero Docker/network).
+  (2) **conftest.py fixtures** — `moto_s3` fixture activates `moto.mock_aws` context manager for S3 tests; `_reset_all_backend_singletons()` helper used internally by each emulator fixture to clear `_S3_CLIENT`/`_GCS_CLIENT`/`_ADLS_CLIENT` module-level cached clients in BOTH `storage_backends/__init__.py` AND `path_utils.py` before every emulator test so monkeypatched factories and moto take precedence.
+  (3) **S3 via moto** (in-process, no Docker needed, 19 tests):
+      - 16 `TestS3EmulatorLeafOps`: write/read bytes+text roundtrip, path_exists (key vs directory prefix), is_dir, mkdir no-op, content_length + NotFound→PipelineError fail-fast, listdir delimiter, glob suffix-filter, rglob recursive, replace intra-bucket, delete_tree sibling-preservation, append buffer write-read-rewrite, atomic_write tmp→copy→delete sequence verified by listing zero .tmp remnants, path_string helpers (join/parent/basename/suffix/normalize + collapse slashes).
+      - 2 `TestS3EmulatorStagingSwap`: `full_refresh` (stale keys deleted, new present, sibling tables untouched) + `partition_overwrite` (exact (dt,entity) leaf subprefixes replaced, sibling entity=B on SAME dt preserved, unrelated dt untouched — S-2 guarantee proven on real SDK copy→delete semantics).
+      - 1 `TestS3EmulatorL1Landing`: L1 raw payload write + manifest.csv write + sha256 checksum + listdir integrity roundtrip.
+  (4) **GCS via fake-gcs-server** (testcontainers Docker, 5 tests):
+      - `_gcs_emulator` fixture: `GCSContainer("fsouza/fake-gcs-server:1.47.6")` → build `storage.Client` with `ClientOptions(api_endpoint=<exposed-url>)` → create test bucket → monkeypatch `pu._gcs_client` factory → pytest.skip on Docker unavailable.
+      - 5 tests: write/read bytes roundtrip, exists dir+key+missing, listdir+rglob, delete_tree+sibling preservation, staging_swap full_refresh.
+  (5) **ADLS Gen2 via Azurite** (testcontainers Docker, 4 tests):
+      - `_adls_emulator` fixture: `AzuriteContainer("mcr.microsoft.com/azure-storage/azurite:3.30.0")` → build `DataLakeServiceClient(account_url=http://<host>:<blob_port>/devstoreaccount1, AzureNamedKeyCredential(devstoreaccount1, well-known-azurite-key))` → create container → monkeypatch `pu._adls_client` factory → pytest.skip on Docker/unavailable-image.
+      - 4 tests: write/read bytes roundtrip, exists+content_length, listdir+glob+delete_tree, staging_swap partition_overwrite (us overwritten, eu untouched).
+  (6) **pyproject.toml**: added `[project.optional-dependencies] test_emulator = ["moto[s3]>=5.0,<6.0", "testcontainers>=3.7,<4.0"]`; added `[tool.pytest.ini_options] markers = ["emulator: …"]` registered marker.
+- **Verification:**
+  ```bash
+  export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23"
+  export PATH="$JAVA_HOME/bin:$PATH"
+  # Default gate (hermetic, no Docker needed):
+  uv run pytest -q tests/test_storage_emulator_integration.py
+  # → 28 skipped in 0.01s ✓
+  bash scripts/run_tests.sh
+  # → TEST GATE: PASS (512/0 failed, 28 emulator tests correctly skipped within non-Spark 323+28s count) ✓
+  uv run ruff check src tests
+  # → All checks passed! ✓
+  # Optional: run with opt-in (needs moto installed + Docker for GCS/ADLS):
+  # uv sync --extra test_emulator
+  # uv run pytest tests/test_storage_emulator_integration.py -v --run-emulator
+  # → 28 tests collected; S3 runs immediately (19 pass); GCS/ADLS skip if no Docker.
+  ```
+- **Cross-refs updated:** (a) CAPABILITY_MATURITY_MATRIX §1: S3 row + GCS row + ADLS Gen2 row each updated with dedicated Emulator-backed integration tests sub-bullet listing test categories, B-5 cross-ref, and marker/env/flag opt-in mechanism. Document Status Updated line stamped 2026-08-21 B-5. (b) BACKLOG Resume section: TRANCHE 2 B-5 CLOSED entry appended after G-3; next-candidates list re-ordered (B-5 removed, G-4 promoted to top). (c) BACKLOG Status snapshot: Gate line updated to reflect 512/0/28-skipped default distribution + opt-in instructions. Captured date re-stamped. (d) BACKLOG "Still Todo" B-5 item rewritten from ⏳ to ✅ CLOSED (this block).
 
 #### B-6 — Pluggable storage-backend facade (Path B, strategy B3 — RECOMMENDED; covers pre-Spark ingest)  ✅ Done (2026-08-26)
 - **Decision taken (2026-08-26): strategy B3, pure-refactor first.** Overturn PRD 08 §P2's old

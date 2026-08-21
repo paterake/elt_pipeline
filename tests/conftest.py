@@ -1,4 +1,5 @@
 import os
+from typing import Iterator
 
 import pytest
 
@@ -15,6 +16,39 @@ from elt_pipeline.spark.session import build_spark_session
 # "1" only for a deliberate iceberg-on experiment on this shared fixture.
 _TEST_SPARK_ICEBERG = os.environ.get("ELT_PIPELINE_TEST_SPARK_ICEBERG", "0").strip().lower()
 _SHARED_ICEBERG_ENABLED = _TEST_SPARK_ICEBERG not in {"0", "false", "no", "off"}
+
+_EMULATOR_ENV = os.environ.get("ELT_PIPELINE_TEST_EMULATORS", "0").strip().lower()
+_EMULATORS_ENABLED_BY_ENV = _EMULATOR_ENV in {"1", "true", "yes", "on"}
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-emulator",
+        action="store_true",
+        default=False,
+        help="Run tests marked @pytest.mark.emulator (cloud emulator tests; may need Docker)",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "emulator: tests that require cloud emulators (Docker/network). Opt-in only.",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    run_emulator = config.getoption("--run-emulator", False) or _EMULATORS_ENABLED_BY_ENV
+    if run_emulator:
+        return
+    skip_emulator = pytest.mark.skip(
+        reason="emulator test: pass --run-emulator or set ELT_PIPELINE_TEST_EMULATORS=1 to run"
+    )
+    for item in items:
+        if "emulator" in item.keywords:
+            item.add_marker(skip_emulator)
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +82,22 @@ def spark_session(tmp_path_factory):
     )
     yield session
     session.stop()
+
+
+@pytest.fixture()
+def moto_s3() -> Iterator[None]:
+    """Activate moto's S3 mock for the duration of a test.
+
+    Usage:
+
+        @pytest.mark.emulator
+        def test_s3_write(moto_s3):
+            import boto3
+            client = boto3.client("s3", ...)
+            ...
+    """
+    pytest.importorskip("moto")
+    from moto import mock_aws
+
+    with mock_aws():
+        yield
