@@ -1,0 +1,45 @@
+# ============================================================
+# elt_pipeline .dockerignore
+# Keep the build context lean.
+# ============================================================
+
+# Python caches / bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Virtual envs / local tooling
+.venv/
+env/
+venv/
+ENV/
+.idea/
+.vscode/
+
+# Local scratch / runtime output (per project convention)
+.ignore/
+.artifacts/
+.cache/
+repo-run/
+docker-volumes/
+.DS_Store
+
+# Git / docs meta that aren't needed at runtime
+.git/
+.github/
+docs/
+tests/
+BACKLOG.md
+CLAUDE.md
+TRAE.md
+
+# Build artifacts (we re-build the wheel inside the builder stage)
+dist/
+build/
+
+# Per-user / local overrides
+.env
+.envrc
+.pypirc

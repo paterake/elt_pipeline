@@ -1,0 +1,95 @@
+# =============================================================================
+# elt_pipeline — Reference docker-compose deployment
+# -----------------------------------------------------------------------------
+# Two services:
+#   elt_pipeline   — CLI + Spark runtime (ingest / normalize / sql / publish /
+#                    maintain commands). Shares /var/lib/elt_pipeline with
+#                    the Trino serving service so the Iceberg warehouse and
+#                    the auto-generated JDBC SQLite metastore are both visible.
+#   trino          — Trino 468 serving engine (HTTP on :8080). Reads the same
+#                    Iceberg warehouse via the zero-service jdbc+sqlite catalog,
+#                    seeded from canonical Iceberg metadata JSON files.
+#
+# Quick start (run the end-to-end demo, then query via Trino):
+#   docker compose run --rm elt_pipeline demo
+#   docker compose up -d trino
+#   docker compose exec trino trino --catalog iceberg --execute 'SHOW SCHEMAS'
+#
+# Exposed volumes (bind-mounted from ./.docker-volumes/ for persistence):
+#   ./docker-volumes/repo_run   → /var/lib/elt_pipeline  (warehouse + cache)
+#   ./examples                  → /examples  (read-only example configs)
+# =============================================================================
+
+x-elt-common: &elt-common
+  image: elt-pipeline:0.1.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      EXTRAS: "spark,s3,gcs,adls,delta"
+  volumes:
+    - ./docker-volumes/repo_run:/var/lib/elt_pipeline:rw
+    - ./examples:/examples:ro
+    - ./ops:/ops:ro
+  environment:
+    &elt-env
+    ELT_PIPELINE_REPO_RUN_DIR: /var/lib/elt_pipeline
+    ELT_PIPELINE_CONFIG_PATH: /etc/elt_pipeline/pipeline.yaml
+    ELT_PIPELINE_ICEBERG_ENABLED: "true"
+    ELT_PIPELINE_ICEBERG_CATALOG_NAME: iceberg
+    # zero-service metastore: jdbc+sqlite shared with trino service
+    ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE: jdbc
+    ELT_PIPELINE_ICEBERG_SERVING_JDBC_DRIVER: org.sqlite.JDBC
+    # Trino serving env (used by ops/trino_serving/run_trino.sh inside the
+    # container and also by the trino service below via env inheritance).
+    ELT_PIPELINE_TRINO_HOST: 0.0.0.0
+    ELT_PIPELINE_TRINO_PORT: 8080
+
+services:
+  # -------------------------------------------------------------------------
+  # 1. CLI + Spark runtime
+  # -------------------------------------------------------------------------
+  elt_pipeline:
+    <<: *elt-common
+    profiles: []
+    command: ["elt-pipeline", "--help"]
+
+  # Shortcut aliases so you can type `docker compose run demo` / `run cli …`
+  cli:
+    <<: *elt-common
+    profiles: ["cli"]
+    command: ["elt-pipeline"]
+
+  demo:
+    <<: *elt-common
+    profiles: ["demo"]
+    command: ["bash", "/usr/share/elt_pipeline/docker/run_demo.sh"]
+
+  # -------------------------------------------------------------------------
+  # 2. Trino serving engine
+  # -------------------------------------------------------------------------
+  trino:
+    image: elt-pipeline:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        EXTRAS: "spark,s3,gcs,adls,delta"
+    profiles: ["serving"]
+    depends_on: []
+    command: ["bash", "/usr/share/elt_pipeline/docker/trino_foreground.sh"]
+    environment:
+      <<: *elt-env
+    volumes:
+      - ./docker-volumes/repo_run:/var/lib/elt_pipeline:rw
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/v1/info || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    labels:
+      elt_pipeline.service: trino-serving
+      elt_pipeline.role: iceberg-query

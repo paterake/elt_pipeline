@@ -3,7 +3,7 @@
 ## Document Status
 
 - Status: Canonical reference
-- Updated: 2026-08-21 (B-5 Cloud emulator integration tests closed: moto S3 + fake-gcs-server GCS + Azurite ADLS end-to-end StorageBackend + staging_swap + L1 landing tests behind opt-in pytest marker)
+- Updated: 2026-08-21 (B-5 Cloud emulator integration tests closed + G-4 deployment artifacts: multi-stage Dockerfile JDK 23/Spark 4.1.2/Trino 468, docker-compose with shared-volume Trino serving + CLI runner, Kustomize k8s base + dev overlay, container entrypoint + demo runner scripts)
 - Owner: maintainer
 
 ## Purpose
@@ -188,11 +188,11 @@ See BACKLOG item **G-3** (closed 2026-08-21: Airflow + Dagster + Prefect wrapper
 | Capability | Maturity | Notes |
 |---|---|---|
 | Python sdist + wheel via `build` | 🟠 Demo | Standard packaging via `pyproject.toml`; no bundled JDK/Spark/Trino — consumer must provide the JDK 23 + Spark 4.1 + Trino 468 stack. |
-| Docker image (JDK 23 + Spark 4.1 + Trino 468 + `elt_pipeline` wheel) | ⏳ Roadmap | Reproducible container for anything beyond a laptop. |
-| Local docker-compose (runtime + Trino serving) | ⏳ Roadmap | 0-command workstation demo. Depends on the Docker image above. |
-| Kubernetes manifests / Helm chart | ⏳ Roadmap | Only if real cluster deployments appear. Additive to the Docker image. |
+| Docker image (JDK 23 + Spark 4.1.2 + Trino 468 + `elt_pipeline` wheel) | 🟠 Demo | Multi-stage build: Stage 1 `python:3.11-slim` + uv wheel builder → Stage 2 `debian:bookworm-slim` Spark/Trino dist fetcher → Stage 3 `eclipse-temurin:23-jdk` runtime with tini init + `/opt/elt_pipeline_venv` + `/opt/spark` + `/opt/trino`. Build-arg `EXTRAS` selects optional deps (spark,s3,gcs,adls,delta,emr,dataproc,synapse). Pinned stack: JDK 23, Spark 4.1.2 Hadoop 3 dist, Trino 468 server + CLI, Iceberg 1.11.0 runtime jars, SQLite JDBC 3.46 pre-injected into Trino iceberg plugin. Closed in BACKLOG item **G-4** 2026-08-21. |
+| Local docker-compose (runtime + Trino serving) | 🟠 Demo | 2-service compose: `elt_pipeline` (CLI runner with `demo` sugar command running the 5-phase local_demo end-to-end) + `trino` (foreground serving on :8080 with HTTP healthcheck). Both services share `./docker-volumes/repo_run:/var/lib/elt_pipeline` bind mount so the Iceberg warehouse + auto-generated JDBC SQLite metastore are co-visible. x-elt-common anchor reuses build args + env + volumes across all aliases (`cli`, `demo`, `elt_pipeline`, `trino`). Zero-config `docker compose run --rm demo` then `docker compose up -d trino` + Trino CLI queries. Closed in **G-4**. |
+| Kubernetes manifests / Helm chart | 🟠 Demo | Reference manifests via Kustomize: `deploy/base/` (ConfigMap-pinned pipeline.yaml jdbc+sqlite zero-service catalog, 50Gi ReadWriteOnce warehouse PVC, ClusterIP Trino service, Deployment with 4-core/12Gi limits + readiness/liveness HTTP probes, CronJob 03:00 UTC daily 4-phase ELT with 2 retries), `deploy/overlays/dev/` (namespace, image override hook, commonLabels). Not Helm today; Helmification is additive-only on top of the base manifests. Recreate strategy because jdbc+sqlite catalog is single-reader single-writer; switch to catalog_type=rest (Polaris/Nessie) for multi-replica Trino. Closed in **G-4**. |
 
-See BACKLOG item **G-4**.
+See BACKLOG item **G-4** (closed 2026-08-21: Dockerfile + docker-compose + Kustomize manifests + entrypoint/demo/trino-foreground scripts + .dockerignore).
 
 ---
 

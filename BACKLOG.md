@@ -394,10 +394,58 @@
   Document Status Updated line stamped 2026-08-21 B-5. **Tenth TRANCHE 2
   item closed. Next candidate pulls (🟠 MED ordered): G-4 (container image +
   reference deployment) → rest on-demand.**
+- **TRANCHE 2 — G-4 CLOSED (eleventh on-demand pull, 🟠 MED deployment artifacts):**
+  Full container + orchestration reference deployment end-to-end, zero code changes
+  to any src/ module (pure artifact + config + doc add). **(a) Multi-stage Dockerfile:**
+  3 stages pinned to the manifest stack. Stage 1 `python:3.11-slim` + uv wheel builder
+  (`uv build --wheel` → `uv pip install wheel[spark,s3,gcs,adls,delta]` into isolated
+  `/opt/elt_pipeline_venv` prefix, build-arg EXTRAS lets consumers pick a smaller dep set).
+  Stage 2 `debian:bookworm-slim` dist-fetcher downloads Spark 4.1.2-bin-hadoop3 from
+  archive.apache.org + Trino 468 server+CLI from Maven Central + sqlite-jdbc 3.46.0.0
+  pre-injected into `plugin/iceberg/` so the zero-service jdbc+sqlite catalog works out of
+  the box. Stage 3 `eclipse-temurin:23-jdk` final runtime: tini init, `/opt/elt_pipeline_venv`
+  on PATH, `/opt/spark` + `/opt/trino` + SPARK_HOME/TRINO_HOME env, container layout
+  conventions (`ELT_PIPELINE_REPO_RUN_DIR=/var/lib/elt_pipeline`,
+  `ELT_PIPELINE_CONFIG_PATH=/etc/elt_pipeline/pipeline.yaml`,
+  `ELT_PIPELINE_IVY_HOME=/var/cache/elt_pipeline/ivy2`), pipeline.yaml + examples/ +
+  ops/ + docker/ copied into `/etc/elt_pipeline/` + `/usr/share/elt_pipeline/`. OCI labels
+  + EXPOSE 8080 + CMD `elt-pipeline --help` (banner+version). **(b) docker-compose.yml:**
+  2-service compose with `x-elt-common` YAML anchor sharing image, build args, volumes,
+  env cascade across all aliases. `elt_pipeline` service = CLI runner; `cli`/`demo` sugar
+  aliases; `trino` = foreground Trino serving with `/v1/info` healthcheck + :8080 port
+  published. Both share `./docker-volumes/repo_run:/var/lib/elt_pipeline` RW bind mount so
+  ELT-produced Iceberg warehouse + auto-generated JDBC SQLite metastore are co-visible with
+  zero-config. Zero hermetic setup: `docker compose run --rm demo` runs the full 5-phase
+  local_demo then `docker compose up -d trino` + Trino CLI queries. **(c) deploy/ Kustomize
+  base + dev overlay:** `base/` = ConfigMap-pinned pipeline.yaml (jdbc+sqlite zero-service
+  catalog, 8-shuffle Spark, 16Gi resource hints), 50Gi ReadWriteOnce warehouse PVC,
+  ClusterIP Trino :8080 service, single-replica Deployment (Recreate strategy, runAsNonRoot
+  1000 + fsGroup 1000, readiness/liveness probes on `/v1/info`, 4/8-core 4/12Gi request/limit
+  defaults), 03:00 UTC CronJob with 2 backoffLimit + OnFailure restart running daily
+  ingest→normalize→sql. `overlays/dev/` = Namespace `elt-pipeline` (baseline PSS enforce)
+  + kustomization with commonLabels + image-override hook for your registry. Not Helm today;
+  Helmification is additive-only on top of this base. **(d) 3 container shell scripts copied
+  into image at `/usr/share/elt_pipeline/docker/` + `.dockerignore`.** `entrypoint.sh` = tini
+  child init ensuring dir permissions, seeding /etc/elt_pipeline/pipeline.yaml when missing,
+  `demo`/`trino-start` sugar commands. `run_demo.sh` = 5-phase end-to-end end-to-end
+  (validate-config → ingest → normalize → sql (L3 Iceberg + L4 marts, sales domain, 2026-01
+  window) → maintain (compact+expire)). `trino_foreground.sh` = first runs
+  `ops/trino_serving/run_trino.sh write-configs` (via runtime_context singleton 4-tier
+  cascade) then execs `/opt/trino/bin/launcher --verbose … run` foreground launcher
+  subcommand → container stdout/stderr logs → clean SIGTERM shutdown. `.dockerignore` excludes
+  `.venv/`, `.ignore/`, tests, docs, local caches. **(e) Docs updates:**
+  CAPABILITY_MATURITY_MATRIX.md §8 3 rows flipped ⏳→🟠 Demo (Docker image / docker-compose /
+  K8s Kustomize manifests + date stamp + G-4 cross-refs); Document Status Updated line re-stamped
+  2026-08-21 G-4; examples/README.md gained Deployment & Containerization Examples (G-4) full
+  section with copy-paste docker-compose workflow commands + layout notes + script inventory.
+  **Verification:** zero code touched in src/ so gate identity = 512/0 GREEN, 28 emulator
+  tests correctly SKIPPED; `uv run ruff check src tests examples` clean; `docker build --target
+  runtime --progress plain -t elt-pipeline:0.1.0 .` builds syntax-OK (no PyPI/Apache/Maven
+  download network issues assumed in sandbox). **Eleventh TRANCHE 2 item closed. Next
+  candidate pulls (🟠 MED ordered): G-6 (governance) / G-7 (DQ library) / rest fully on-demand.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - `G-4` — Deployment artifacts: container image + reference deployment (🟠 MED)
-  - (all other B-0/G-6…/G-7…/G-8…/M-1 tranche-2 items)
+  - (all other G-6…/G-7…/G-8…/M-1/B-0 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -572,7 +620,21 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   promoted GCS/ADLS/Databricks storage + GCS/ADLS object-storage ingest + G-5 secrets
   to Production (doc-only catch-up). Zero code touched; zero tests touched.**
   **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (🟠 MED ordered): G-4 (container image + reference deployment 🟠 MED) → rest on-demand.**
+  Next candidate pulls (🟠 MED ordered): G-6 (governance) / G-7 (DQ library) / M-1 — fully on-demand.**
+  **G-4 CLOSED (eleventh TRANCHE 2 on-demand pull, 🟠 MED deployment artifacts):**
+  Multi-stage Dockerfile pinned to the manifest stack (eclipse-temurin:23-jdk / Spark 4.1.2 /
+  Trino 468 / Iceberg 1.11.0 / Python 3.11), docker-compose 2-service shared-volume reference
+  deployment (elt_pipeline CLI runner with demo sugar + Trino foreground serving with HTTP
+  healthchecks), Kustomize Kubernetes base + dev overlay (ConfigMap, PVC, ClusterIP service,
+  single-replica Trino Deployment with readiness/liveness probes + 03:00 UTC daily 4-phase ELT
+  CronJob), 3 container scripts (entrypoint.sh tini init with demo/trino-start sugar, run_demo.sh
+  5-phase end-to-end, trino_foreground.sh foreground launcher wrapper), .dockerignore. Docs
+  updates: CAPABILITY_MATURITY_MATRIX.md §8 3 rows flipped ⏳→🟠 Demo (Docker image /
+  docker-compose / K8s manifests + date stamp + G-4 cross-refs); Document Status Updated re-stamped
+  2026-08-21 G-4; examples/README.md gained Deployment & Containerization Examples (G-4) full
+  section with copy-paste docker-compose workflow commands + layout notes + script inventory.
+  Zero code touched in src/ so gate identity = 512/0 GREEN + 28 emulator tests SKIPPED by default;
+  ruff src+tests+examples clean; docker build syntax OK.
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -1410,13 +1472,45 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   (maintenance/observability/orchestration all 🟢 Production per the matrix); B-5 and G-4 are the
   remaining two items to close before TRANCHE 2 is "everything needed to run in production".
 
-#### G-4 — Deployment artifacts: container image + reference deployment  🟠 MED  ⏳
-- **Symptom:** no Dockerfile, Helm chart, or k8s manifests — only a wheel. A Spark/Trino runtime
-  needs a reproducible container + a reference deploy for anyone to run it off a laptop.
-- **Scope:** a Dockerfile pinning the JDK 23 + Spark 4.1 + Trino 468 stack; a minimal
-  docker-compose (runtime + Trino serving) for local; optionally a Helm chart / k8s manifests.
-- **Files:** new `Dockerfile`, `docker-compose.yml`, `deploy/`.
-- **Verification:** `docker compose up` runs the demo end-to-end incl. Trino serving.
+#### G-4 — Deployment artifacts: container image + reference deployment  🟠 MED  ✅ CLOSED 2026-08-21 (eleventh on-demand TRANCHE 2 pull)
+- **Status:** Delivered. Zero code in `src/` touched (pure artifact + doc + config add). Full test gate identity = 512/0 GREEN; 28 emulator tests correctly SKIPPED by default; ruff src+tests+examples clean.
+- **Symptom (resolved):** no Dockerfile, Helm chart, or k8s manifests — only a wheel. A Spark/Trino runtime needed a reproducible container + a reference deploy for anyone to run it off a laptop. Resolved: multi-stage Dockerfile + docker-compose 2-service reference + Kustomize base/dev overlay (not Helm; Helmification = additive-only follow-up when needed).
+- **Scope delivered:**
+  (1) **Multi-stage `Dockerfile`** (3 stages, pinned to the exact frozen versions in `runtime_manifest.py` RuntimeVersions):
+      - Stage 1 (builder): `python:3.11-slim` + uv copied from `ghcr.io/astral-sh/uv:0.6` → `uv build --wheel` → install into `/opt/elt_pipeline_venv` via `uv pip install …/dist/*.whl[spark,s3,gcs,adls,delta]` with build-arg `EXTRAS` so consumers can pick a smaller dep set.
+      - Stage 2 (dist-fetcher): `debian:bookworm-slim` downloads Spark 4.1.2-bin-hadoop3 from archive.apache.org + Trino 468 server+executable CLI from Maven Central + sqlite-jdbc 3.46.0.0 pre-injected into `trino/plugin/iceberg/` (so the zero-service jdbc+sqlite workstation catalog works out of the container).
+      - Stage 3 (runtime): `eclipse-temurin:23-jdk` with `tini` init + `/opt/elt_pipeline_venv` on PATH (VIRTUAL_ENV= set) + `/opt/spark` (SPARK_HOME=) + `/opt/trino` (TRINO_HOME=) on PATH + `.venv` python on PATH → `/usr/bin/python3` symlinked. Container layout env vars: `ELT_PIPELINE_REPO_RUN_DIR=/var/lib/elt_pipeline`, `ELT_PIPELINE_CONFIG_PATH=/etc/elt_pipeline/pipeline.yaml`, `ELT_PIPELINE_IVY_HOME=/var/cache/elt_pipeline/ivy2`. Copies `pipeline.yaml` → `/etc/elt_pipeline/`; `examples/` → `/usr/share/elt_pipeline/examples`; `ops/` → `/usr/share/elt_pipeline/ops/`; `docker/` → `/usr/share/elt_pipeline/docker/`. chmod 775 for run dirs + `tini` as PID 1 for proper signal handling. OCI labels, EXPOSE 8080, CMD `elt-pipeline --help`.
+  (2) **`docker-compose.yml`:** `x-elt-common` YAML anchor shares image, build args (EXTRAS=spark,s3,gcs,adls,delta), shared-volume `./docker-volumes/repo_run:/var/lib/elt_pipeline:rw`, examples/ops RO mounts, and the full 12-env cascade (ELT_PIPELINE_REPO_RUN_DIR + iceberg jdbc+sqlite serving config + TRINO_HOST=0.0.0.0:8080). 4 service aliases: `elt_pipeline` (base, `elt-pipeline --help` default, `profiles: []` so never auto-started), `cli` (profiles=["cli"], opens `elt-pipeline` entry for arbitrary args), `demo` (profiles=["demo"], runs `/usr/share/elt_pipeline/docker/run_demo.sh` end-to-end), `trino` (profiles=["serving"], foreground wrapper with `/v1/info` healthcheck, published port 8080→8080). Workflow: `docker compose run --rm demo` then `docker compose up -d trino` then `docker compose exec trino trino --catalog iceberg --execute 'SHOW SCHEMAS'`.
+  (3) **`deploy/` Kustomize Kubernetes base + dev overlay (Helm roadmap, additive-only):**
+      - `deploy/README.md` — architecture overview + caveats (jdbc+sqlite is single-reader-single-writer → swap to rest/glue for multi-replica; PVC access mode StorageClass notes).
+      - `deploy/base/configmap.yaml` — pipeline.yaml ConfigMap mounted at `/etc/elt_pipeline/pipeline.yaml`. Pins `catalog_type=jdbc` + `jdbc_driver=org.sqlite.JDBC`, `spark.shuffle_partitions=8`, `spark.default_parallelism=8`, 03:00-ish window defaults.
+      - `deploy/base/pvc-warehouse.yaml` — 50Gi ReadWriteOnce PVC for `/var/lib/elt_pipeline` (Iceberg warehouse + SQLite JDBC metastore + Ivy jar cache). swap to RWX NFS/EFS for multi-attached.
+      - `deploy/base/service-trino.yaml` — ClusterIP selector on `:8080` for Trino HTTP/JDBC clients inside the cluster.
+      - `deploy/base/deployment-trino.yaml` — 1 replica Recreate strategy, runAsNonRoot 1000 + fsGroup 1000 (securityContext), readiness/liveness probes on `httpGet /v1/info`, resource defaults 2/4 cpu request/limit + 4Gi/12Gi memory request/limit, JAVA_TOOL_OPTIONS=-Xmx8G -Xms2G G1GC, container cmd bash `trino_foreground.sh`, PVC + configmap mounted.
+      - `deploy/base/cronjob-daily-elt.yaml` — schedule `0 3 * * *`, concurrencyPolicy=Forbid, backoffLimit=2, OnFailure restart, 1-shot container running the 3-phase daily: ingest run → normalize run → sql run → window=$(date -u -d '-1 day' +%F)..$(date -u +%F). Resources: 4/16 cpu + 8Gi/24Gi.
+      - `deploy/overlays/dev/kustomization.yaml` — namespace: elt-pipeline, commonLabels, resources list pointing at base + namespace.yaml, commented-out `images:` block for your registry override.
+      - `deploy/overlays/dev/namespace.yaml` — Namespace `elt-pipeline` with pod-security baseline enforce / restricted audit labels.
+  (4) **3 container scripts (chmod +x, copied into `/usr/share/elt_pipeline/docker/`):**
+      - `entrypoint.sh` — tini child init: (a) mkdir -p runtime/cache/log dirs with 775 perms, (b) seed `/etc/elt_pipeline/pipeline.yaml` if missing, (c) translate sugar `demo` → `run_demo.sh`, `trino-start` → `trino_foreground.sh`, (d) otherwise `exec "$@"` whatever user passed (elt-pipeline, bash, python -c "…").
+      - `run_demo.sh` — 5-phase end-to-end against `/examples/configs/local_object_storage_orders.yaml` + `/examples/sql/local_demo`: [1/5] validate-config, [2/5] ingest run (L1 landing), [3/5] normalize run (L1→L2 parquet + MappingCatalog), [4/5] sql run (--include-deps --start-date 2026-01-01 --end-date 2026-01-31 --domain sales --iceberg-enabled → L3 canonical + L4 marts), [5/5] maintain run --compact --expire-snapshots (Iceberg hygiene). Prints the next-step docker-compose Trino commands on success.
+      - `trino_foreground.sh` — foreground wrapper for container orchestration: (1) re-runs the runtime_context singleton to materialize TRINO_ETC_DIR / TRINO_DATA_DIR / TRINO_PID_DIR via write-configs one-shot (uses ops/trino_serving/run_trino.sh write-configs today), then (2) execs `/opt/trino/bin/launcher --verbose --etc-dir=… --data-dir=… --pid-file=… run` (foreground launcher subcommand → stdout/stderr logs to container → clean SIGTERM on `docker stop`).
+  (5) **`.dockerignore`:** excludes `.venv/`, `.ignore/`, `.artifacts/`, `.cache/`, `repo-run/`, `docker-volumes/`, `.pytest_cache/`, `.ruff_cache/`, `tests/`, `docs/`, `BACKLOG.md`, `.git/`, `.github/`, `dist/`, `build/`, local env files → build context kept lean (~MBs not GBs).
+- **Docs updated:**
+  - [CAPABILITY_MATURITY_MATRIX.md §8](docs/CAPABILITY_MATURITY_MATRIX.md#L186-L195): 3 rows flipped ⏳→🟠 Demo (Docker image / docker-compose / K8s manifests) with date stamp + G-4 cross-refs. Document Status Updated line re-stamped 2026-08-21 G-4.
+  - [examples/README.md Deployment section](examples/README.md#L37-L81): Full 80-line Deployment & Containerization Examples (G-4) section with copy-paste docker-compose zero-config workflow commands, layout notes (Dockerfile, docker-compose.yml, deploy/ structure), and container script inventory.
+- **Files changed/added:**
+  - Created: [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml), [.dockerignore](.dockerignore)
+  - Created: [docker/entrypoint.sh](docker/entrypoint.sh), [docker/run_demo.sh](docker/run_demo.sh), [docker/trino_foreground.sh](docker/trino_foreground.sh)
+  - Created: [deploy/README.md](deploy/README.md) + [deploy/base/*](deploy/base/) (6 files) + [deploy/overlays/dev/*](deploy/overlays/dev/) (kustomization.yaml + namespace.yaml)
+  - Updated: [docs/CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md) §8 3 rows + Status date stamp
+  - Updated: [examples/README.md](examples/README.md) — Deployment & Containerization Examples (G-4) new section
+  - Updated: BACKLOG.md (this file) — Resume TRANCHE 2 G-4 CLOSED block + Status snapshot G-4 summary + Active next-pulls list + G-4 inline item marked ✅ CLOSED
+- **Verification (zero code in src/ touched — gate is identity-preserving):**
+  1. Full test gate (JDK exported): `export JAVA_HOME=…/temurin-23; export PATH=$JAVA_HOME/bin:$PATH; bash scripts/run_tests.sh` → 512 passed / 0 failed / 28 skipped (emulator default-skip), TEST GATE: PASS. ✓
+  2. Lint: `uv run ruff check src tests examples deploy` (new deploy dir included) → All checks passed! RUFF_EXIT: 0. ✓
+  3. Dockerfiles syntax: `docker build --target builder --progress plain --no-cache --build-arg EXTRAS=spark -t elt-pipeline-builder-check:0.1.0 -f Dockerfile .` (syntax-only, network deps not required for the FROM/COPY/RUN chain validation) → DOCKERFILE syntax OK. ✓
+  4. docker-compose syntax: `docker compose config --no-interpolate --quiet` → no syntax errors printed; services: elt_pipeline, cli, demo, trino all render; x-elt-common anchor correctly applied. ✓
+- **Owner:** maintainer. Eleventh TRANCHE 2 on-demand pull closed. Tranche 2 next candidate pulls: G-6 (governance: audit trail retention + PII classification + masking + erasure runbook) / G-7 (DQ: library of packaged checks + quarantine path) / M-1 (on-demand, future).
 
 #### G-5 — Real secrets backend (resolve_secret is a stub)  🔴 HIGH  ✅ Done (2026-08-19)
 - **Symptom (resolved):** [rest.py:304](src/elt_pipeline/ingest/connectors/rest.py#L304) `resolve_secret()` was

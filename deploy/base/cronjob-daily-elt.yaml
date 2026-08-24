@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: elt-pipeline-daily
+  labels:
+    app.kubernetes.io/name: elt-pipeline
+    app.kubernetes.io/component: elt-runner
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            fsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: elt
+              image: elt-pipeline:0.1.0
+              imagePullPolicy: IfNotPresent
+              command:
+                - bash
+                - "-c"
+                - |
+                  set -euo pipefail
+                  echo "[1/3] elt ingest run"
+                  elt-pipeline ingest run /examples/configs/local_object_storage_orders.yaml \
+                    --root-path /var/lib/elt_pipeline \
+                    --job-name "k8s-daily-ingest"
+                  echo "[2/3] elt normalize run"
+                  elt-pipeline normalize run /examples/configs/local_object_storage_orders.yaml \
+                    --root-path /var/lib/elt_pipeline \
+                    --job-name "k8s-daily-normalize"
+                  echo "[3/3] elt sql run (all models with Iceberg"
+                  elt-pipeline sql run \
+                    --environment k8s_daily \
+                    --include-deps \
+                    --start-date "$(date -u -d '-1 day' +%%F)" \
+                    --end-date "$(date -u +%%F)" \
+                    --iceberg-enabled \
+                    --root-path /var/lib/elt_pipeline \
+                    --job-name "k8s-daily-sql" \
+                    /examples/sql/local_demo
+                  echo "elt_pipeline daily run done."
+              env:
+                - name: ELT_PIPELINE_REPO_RUN_DIR
+                  value: /var/lib/elt_pipeline
+                - name: ELT_PIPELINE_CONFIG_PATH
+                  value: /etc/elt_pipeline/pipeline.yaml
+                - name: ELT_PIPELINE_ICEBERG_ENABLED
+                  value: "true"
+              volumeMounts:
+                - name: warehouse
+                  mountPath: /var/lib/elt_pipeline
+                - name: config
+                  mountPath: /etc/elt_pipeline/pipeline.yaml
+                  subPath: pipeline.yaml
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "8Gi"
+                limits:
+                  cpu: "16"
+                  memory: "24Gi"
+          volumes:
+            - name: warehouse
+              persistentVolumeClaim:
+                claimName: elt-pipeline-warehouse
+            - name: config
+              configMap:
+                name: elt-pipeline-config

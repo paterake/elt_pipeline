@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elt-pipeline-trino
+  labels:
+    app.kubernetes.io/name: elt-pipeline
+    app.kubernetes.io/component: trino-serving
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elt-pipeline
+      app.kubernetes.io/component: trino-serving
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elt-pipeline
+        app.kubernetes.io/component: trino-serving
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: trino
+          image: elt-pipeline:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: ["bash", "/usr/share/elt_pipeline/docker/trino_foreground.sh"]
+          env:
+            - name: ELT_PIPELINE_REPO_RUN_DIR
+              value: /var/lib/elt_pipeline
+            - name: ELT_PIPELINE_CONFIG_PATH
+              value: /etc/elt_pipeline/pipeline.yaml
+            - name: ELT_PIPELINE_ICEBERG_ENABLED
+              value: "true"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:+UseG1GC -Xmx8G -Xms2G"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: warehouse
+              mountPath: /var/lib/elt_pipeline
+            - name: config
+              mountPath: /etc/elt_pipeline/pipeline.yaml
+              subPath: pipeline.yaml
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "8"
+              memory: "12Gi"
+          readinessProbe:
+            httpGet:
+              path: /v1/info
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /v1/info
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+      volumes:
+        - name: warehouse
+          persistentVolumeClaim:
+            claimName: elt-pipeline-warehouse
+        - name: config
+          configMap:
+            name: elt-pipeline-config

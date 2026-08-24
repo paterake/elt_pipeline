@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: elt-pipeline-warehouse
+  labels:
+    app.kubernetes.io/name: elt-pipeline
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  # storageClassName: ""  # uncomment + set for specific StorageClass

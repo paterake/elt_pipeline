@@ -34,6 +34,52 @@ from elt_pipeline.integrations import (
 )
 ```
 
+## Deployment & Containerization Examples (G-4)
+
+Reference deployment artifacts live at the repo root. All share the same pinned
+stack (JDK 23 / Spark 4.1.2 Hadoop 3 / Trino 468 / Iceberg 1.11.0 / Python 3.11)
+via a single multi-stage Dockerfile.
+
+**Local workstation (docker-compose):** zero-service local Iceberg warehouse
+shared between the ELT CLI runner and a foreground Trino serving container:
+
+```bash
+# 1. Build image + run the 5-phase demo (ingest→normalize→sql→maintain)
+docker compose run --rm demo
+
+# 2. Bring up Trino serving on http://localhost:8080 (reads the same Iceberg warehouse)
+docker compose up -d trino
+sleep 30
+
+# 3. Query via Trino CLI inside the serving container
+docker compose exec trino trino --catalog iceberg --execute 'SHOW SCHEMAS'
+docker compose exec trino trino --catalog iceberg --execute 'SELECT COUNT(*) FROM sales.order_summary'
+```
+
+Layout:
+- `Dockerfile` — 3 stages: uv wheel-builder → Spark/Trino dist-fetcher → `eclipse-temurin:23-jdk` runtime with `tini` init + `/opt/elt_pipeline_venv` (wheel install) + `/opt/spark` + `/opt/trino`. Build-arg `EXTRAS=spark,s3,gcs,adls,delta` selects optional deps.
+- `docker-compose.yml` — 2 services (`elt_pipeline`, `trino`) with shared `./docker-volumes/repo_run:/var/lib/elt_pipeline` bind mount; `x-elt-common` YAML anchor reuses build args + env + volumes; `cli`/`demo` convenience aliases.
+- `.dockerignore` — excludes `.venv`, `.ignore/`, tests, docs, local caches.
+
+**Kubernetes (Kustomize base + dev overlay):** reference manifests for a real cluster:
+
+```bash
+kubectl apply -k deploy/overlays/dev
+```
+
+Layout (see `deploy/README.md` for the full contract):
+- `deploy/base/configmap.yaml` — pipeline.yaml mounted at `/etc/elt_pipeline/pipeline.yaml` (pins zero-service jdbc+sqlite serving catalog for the demo; swap to `rest`/`glue` for multi-replica).
+- `deploy/base/pvc-warehouse.yaml` — 50Gi ReadWriteOnce PVC for the shared Iceberg warehouse; swap StorageClass/RWX for your cluster.
+- `deploy/base/service-trino.yaml` — ClusterIP :8080 for Trino HTTP/JDBC clients inside the cluster.
+- `deploy/base/deployment-trino.yaml` — single-replica Deployment with Recreate strategy, readiness/liveness probes on `/v1/info`, 4-core/12Gi default resource limits, runAsNonRoot + fsGroup 1000.
+- `deploy/base/cronjob-daily-elt.yaml` — 03:00 UTC CronJob (2 backoffLimit retries, OnFailure restart) running daily ingest→normalize→sql end-to-end.
+- `deploy/overlays/dev/namespace.yaml` + `kustomization.yaml` — commonLabels + image-override hook for your registry.
+
+Container scripts (copied into image at `/usr/share/elt_pipeline/docker/`):
+- `entrypoint.sh` — `tini` child init with `demo` / `trino-start` sugar commands → run `/usr/share/elt_pipeline/docker/run_demo.sh` or `trino_foreground.sh`.
+- `run_demo.sh` — 5-phase local_demo end-to-end: validate-config → ingest run → normalize run → sql run (L3 Iceberg + L4 marts, sales domain, 2026-01 window) → `maintain run` compaction + snapshot expiry.
+- `trino_foreground.sh` — foreground wrapper for Trino: first runs `ops/trino_serving/run_trino.sh write-configs` then execs `/opt/trino/bin/launcher --verbose … run` (foreground launcher subcommand → container stdout/stderr logs → clean SIGTERM shutdown).
+
 ## Object Storage JSON
 
 ```bash

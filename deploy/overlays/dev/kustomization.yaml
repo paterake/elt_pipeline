@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: elt-pipeline
+
+commonLabels:
+  app.kubernetes.io/part-of: elt-pipeline
+  app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - ../base/configmap.yaml
+  - ../base/pvc-warehouse.yaml
+  - ../base/service-trino.yaml
+  - ../base/deployment-trino.yaml
+  - ../base/cronjob-daily-elt.yaml
+  - namespace.yaml
+
+# If your image is pushed to a registry, uncomment and edit:
+# images:
+#   - name: elt-pipeline:0.1.0
+#     newName: ghcr.io/your-org/elt-pipeline
+#     newTag: 0.1.0

@@ -241,3 +241,4 @@ __marimo__/
 /.artifacts/
 /.cache/
 /repo-run/
+/docker-volumes/

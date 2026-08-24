@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elt-pipeline-config
+  labels:
+    app.kubernetes.io/name: elt-pipeline
+data:
+  # Pins for the zero-service workstation pattern inside a pod: warehouse lives on PVC,
+  # serving catalog is jdbc+sqlite on the same PVC. Swap to rest/glue for prod multi-reader.
+  pipeline.yaml: |
+    schema_version: "1.0"
+    runtime:
+      repo_run_dir: "/var/lib/elt_pipeline"
+      spark:
+        master: "local[*]"
+        app_name: "elt_pipeline_k8s"
+        driver_host: "127.0.0.1"
+        driver_bind_address: "0.0.0.0"
+        shuffle_partitions: 8
+        default_parallelism: 8
+        aqe_enabled: true
+        enable_iceberg: true
+      iceberg_writer:
+        catalog_type: "hadoop"
+        catalog_name: "iceberg"
+        warehouse_dir: ""
+      iceberg_serving:
+        catalog_type: "jdbc"
+        jdbc_driver: "org.sqlite.JDBC"
+        catalog_uri: ""
+        rest_token: ""
+        rest_warehouse: ""
+        glue_region: ""
+      trino_serving:
+        host: "0.0.0.0"
+        port: 8080
+        version: "468"
+        http_authentication_type: "none"
+        coordinator: true
+        include_coordinator: true
+        node_environment: "elt_pipeline_iceberg_k8s"
+        fs_hadoop_enabled: true
+        register_table_procedure_enabled: true
+    environments:
+      default:
+        runtime: {}
+    sources: []
