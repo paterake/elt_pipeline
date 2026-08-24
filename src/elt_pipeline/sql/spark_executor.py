@@ -8,6 +8,7 @@ from pyspark.sql import DataFrame, SparkSession
 from elt_pipeline.config import runtime_context
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.shared.errors import PipelineError
+from elt_pipeline.shared.governance import build_governance_table_properties
 from elt_pipeline.shared.path_utils import join_paths
 from elt_pipeline.sql._staging_swap import (
     SwapMode,
@@ -368,6 +369,41 @@ class SparkSqlModelExecutor:
         best_effort_delete_staging(staging_path, scheme)
         return row_count
 
+    def _apply_governance_table_properties(
+        self,
+        *,
+        fq_table: str,
+        model: CompiledSqlModel,
+        row_count: int,
+        owner_name: str | None = None,
+        owner_email: str | None = None,
+    ) -> int:
+        props = build_governance_table_properties(
+            governance=model.governance,
+            domain=model.domain,
+            owner_name=owner_name,
+            owner_email=owner_email,
+        )
+        props["elt.run.last_model_id"] = model.model_id
+        props["elt.run.last_row_count"] = str(row_count)
+        if not props:
+            return row_count
+
+        def _escape_key(key: str) -> str:
+            return "'" + key.replace("'", "''") + "'"
+
+        def _escape_val(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
+        set_clauses = ", ".join(
+            f"{_escape_key(k)} = {_escape_val(v)}" for k, v in props.items()
+        )
+        try:
+            self.spark.sql(f"ALTER TABLE {fq_table} SET TBLPROPERTIES ({set_clauses})")
+        except PySparkException:
+            pass
+        return row_count
+
     def _execute_iceberg_write(
         self,
         *,
@@ -422,7 +458,10 @@ class SparkSqlModelExecutor:
                         "underlying_error": str(exc),
                     },
                 ) from exc
-            return self.spark.table(fq_table).count()
+            row_count = self.spark.table(fq_table).count()
+            return self._apply_governance_table_properties(
+                fq_table=fq_table, model=model, row_count=row_count
+            )
 
         if model.load_mode == SqlLoadMode.append:
             try:
@@ -458,7 +497,10 @@ class SparkSqlModelExecutor:
                             "underlying_error": str(create_exc),
                         },
                     ) from create_exc
-            return self.spark.table(fq_table).count()
+            row_count = self.spark.table(fq_table).count()
+            return self._apply_governance_table_properties(
+                fq_table=fq_table, model=model, row_count=row_count
+            )
 
         try:
             writer = (
@@ -483,7 +525,10 @@ class SparkSqlModelExecutor:
                     "underlying_error": str(exc),
                 },
             ) from exc
-        return self.spark.table(fq_table).count()
+        row_count = self.spark.table(fq_table).count()
+        return self._apply_governance_table_properties(
+            fq_table=fq_table, model=model, row_count=row_count
+        )
 
     def _validate_model(
         self,

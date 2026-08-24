@@ -13,3 +13,27 @@ sources:
     table_name: orders
 owner:
   name: platform
+  email: data-platform@example.com
+governance:
+  classification: confidential
+  retention_days: 2555
+  retention_partition_column: business_date
+  columns:
+    - name: customer_email
+      description: Customer account email address
+      classification: restricted_pii
+      masking: redact_email
+    - name: customer_phone
+      description: Customer contact phone number
+      classification: restricted_pii
+      masking: truncate_middle
+    - name: billing_zip
+      description: Billing address postal code
+      classification: confidential
+      masking: truncate_end
+    - name: order_total_usd
+      description: Gross order amount in USD
+      classification: internal
+  custom_properties:
+    data_owner: "Sales Ops"
+    sla_tier: gold

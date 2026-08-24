@@ -3,7 +3,7 @@
 ## Document Status
 
 - Status: Canonical reference
-- Updated: 2026-08-21 (B-5 Cloud emulator integration tests closed + G-4 deployment artifacts: multi-stage Dockerfile JDK 23/Spark 4.1.2/Trino 468, docker-compose with shared-volume Trino serving + CLI runner, Kustomize k8s base + dev overlay, container entrypoint + demo runner scripts)
+- Updated: 2026-08-24 (G-6 Governance closed: classification/masking enums + manifest Pydantic model, Iceberg TBLPROPERTIES injection across all 3 write modes, Trino SECURITY-DEFINER role-based masking view generator, retention DELETE builder, right-to-erasure SQL helpers + operator runbook)
 - Owner: maintainer
 
 ## Purpose
@@ -218,10 +218,10 @@ See BACKLOG item **G-5**.
 
 | Capability | Maturity | Notes |
 |---|---|---|
-| Run-level audit trail | 🟠 Demo | Every run writes an audit record (ingest → publish) with `run_id` + timestamps + row counts + serving endpoint. Readable by operators; no retention/access control enforced by the framework beyond path IAM. |
-| Data-classification tags (PII / sensitive) | ⏳ Roadmap | Tag columns in manifests + surface those tags in L3/L4 Iceberg table properties. |
-| Column-level masking (Trino serving) | ⏳ Roadmap | Masking rules applied at the Trino serving layer based on classification tags. Access control otherwise delegated to Trino's RBAC. |
-| Retention policy + right-to-erasure runbook | ⏳ Roadmap | Retention → snapshot expiry + `DELETE` + partition drop. Erasure → Iceberg row-level deletes (position/equality deletes) + G-1 maintenance sweep. Documented + tested runbook only; no custom enforcement code on the write path today. |
+| Run-level audit trail | 🟢 Production | Every run writes an audit record (ingest → publish) with `run_id` + timestamps + row counts + serving endpoint. Retention of audit output controlled via storage-backend lifecycle; access control via filesystem IAM. Audit record schema formalized in `shared/audit.py:AuditRecord`. Closed in **G-1** foundation, finalized in **G-6**. |
+| Data-classification tags (PII / sensitive) | 🟢 Production | 4-tier `DataClassification` enum (`public` / `internal` / `confidential` / `restricted_pii`) + per-column `SqlColumnSpec` entries declared in model manifests → surfaced via post-write `ALTER TABLE … SET TBLPROPERTIES` to L3/L4 Iceberg tables under `elt.governance.*` key namespace. Cross-field validators reject inconsistent manifests (e.g., `redact_email` on non-`restricted_pii`). Closed in **G-6**. |
+| Column-level masking (Trino serving) | 🟢 Production | `build_trino_masking_view(*)` generator outputs a `SECURITY DEFINER` Trino view with per-column SQL-level masking. 7 strategies: `none` / `nullify` / `hash_sha256` / `redact_email` / `redact_ssn` / `truncate_middle` / `truncate_end`. Optional `unmask_role` parameter wraps outputs in `IF(is_role_granted('ROLE'), raw, masked)` ternary so PII-auditor roles see raw, analysts see masked. Access control otherwise delegated to Trino RBAC. Closed in **G-6**. |
+| Retention policy + right-to-erasure runbook | 🟢 Production | Retention: `build_retention_delete_statement(*)` generates a partition/date-aware `DELETE … WHERE dt < cutoff_date` statement; `SqlModelGovernance.retention_days` + `retention_partition_column` stored as table properties; operator follows with G-1 `elt maintain run --expire-snapshots --remove-orphan-files`. Right-to-erasure: `build_erasure_statement(*)` (composite predicates, SQL-injection-safe literal escaping) + `build_row_level_erasure_statement(*)` with id-batching; followed by mandatory snapshot-expiry sweep with retain_last≥1. Full runbook: `docs/operator/GOVERNANCE_AND_RETENTION_RUNBOOK.md`. Closed in **G-6**. |
 
 See BACKLOG item **G-6**.
 

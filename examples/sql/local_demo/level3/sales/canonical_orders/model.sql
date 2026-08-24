@@ -18,6 +18,10 @@ WITH cte_src_base AS (
         order_date,
         customer__customer_id AS customer_id,
         customer__name AS customer_name,
+        CAST(NULL AS STRING) AS customer_email,
+        CAST(NULL AS STRING) AS customer_phone,
+        CAST(NULL AS STRING) AS billing_zip,
+        amount AS order_total_usd,
         source_name,
         ingest_date,
         order_date AS business_date

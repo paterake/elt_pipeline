@@ -53,7 +53,8 @@ The platform defines four first-class connector *families* (`rest`, `sql`, `kafk
 **Operational / platinum-hardening items:**
 Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup / manifest rewrite) is **Production** (via `elt maintain run …`; see [Capability Maturity Matrix §5](docs/CAPABILITY_MATURITY_MATRIX.md#L125-L141)).
 Observability (Prometheus metrics, OTLP tracing, webhook alerting) is **Production** via env-driven backends behind the `ObservabilityAdapter` seam; see [Capability Maturity Matrix §6](docs/CAPABILITY_MATURITY_MATRIX.md#L147-L167).
-Secrets resolution (env vars + files + cloud SMs/Vault roadmap) is **Production** via the G-5 subsystem: `secret_ref` URIs, `SecretValue` redaction, and the pluggable `SecretsProvider` Protocol/registry; see [Capability Maturity Matrix §9](docs/CAPABILITY_MATURITY_MATRIX.md#L184-L196).  Remaining roadmap items (not blocking publication): PII classification and masking, a deeper DQ library with quarantine/DLQ, container / Helm deployment artifacts, and orchestration integration — all additive behind existing seams, tracked in the Roadmap matrix in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
+Secrets resolution (env vars + files + cloud SMs/Vault roadmap) is **Production** via the G-5 subsystem: `secret_ref` URIs, `SecretValue` redaction, and the pluggable `SecretsProvider` Protocol/registry; see [Capability Maturity Matrix §9](docs/CAPABILITY_MATURITY_MATRIX.md#L184-L213).
+Governance — classification tags (4 tiers: public/internal/confidential/restricted_pii), column-level Trino masking (7 strategies, role-based), retention sweeps, and right-to-erasure runbook + SQL helpers is **Production** via the G-6 subsystem; see [Capability Maturity Matrix §10](docs/CAPABILITY_MATURITY_MATRIX.md#L217-L227).
 
 ## Source Code references
 

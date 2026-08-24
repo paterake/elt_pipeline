@@ -5,6 +5,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from elt_pipeline.shared.governance import SqlModelGovernance
+
 
 class SqlModelStage(str, Enum):
     level3 = "level3"
@@ -79,6 +81,7 @@ class SqlModelManifest(BaseModel):
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
     owner: SqlModelOwner
     tags: list[str] = Field(default_factory=list)
+    governance: SqlModelGovernance = Field(default_factory=SqlModelGovernance)
     staging_root: str | None = None
 
     @field_validator("name", "domain")
@@ -143,6 +146,7 @@ class CompiledSqlModel(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     sources: list[SqlModelSourceRef] = Field(default_factory=list)
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
+    governance: SqlModelGovernance = Field(default_factory=SqlModelGovernance)
     staging_root: str | None = None
 
 

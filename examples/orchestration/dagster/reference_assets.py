@@ -74,7 +74,9 @@ if asset is not None and AssetExecutionContext is not None and Config is not Non
                 "retry_number": context.retry_number + 1 if hasattr(context, "retry_number") else 1,
                 "tags": context.run_tags,
                 "partition_key": (
-                    context.partition_key if hasattr(context, "has_partition_key") and context.has_partition_key else None
+                    context.partition_key
+                    if hasattr(context, "has_partition_key") and context.has_partition_key
+                    else None
                 ),
             },
             timeout_seconds=600.0,
@@ -114,7 +116,9 @@ if asset is not None and AssetExecutionContext is not None and Config is not Non
                 "retry_number": context.retry_number + 1 if hasattr(context, "retry_number") else 1,
                 "tags": context.run_tags,
                 "partition_key": (
-                    context.partition_key if hasattr(context, "has_partition_key") and context.has_partition_key else None
+                    context.partition_key
+                    if hasattr(context, "has_partition_key") and context.has_partition_key
+                    else None
                 ),
             },
             timeout_seconds=900.0,
@@ -152,7 +156,9 @@ if asset is not None and AssetExecutionContext is not None and Config is not Non
                 "retry_number": context.retry_number + 1 if hasattr(context, "retry_number") else 1,
                 "tags": context.run_tags,
                 "partition_key": (
-                    context.partition_key if hasattr(context, "has_partition_key") and context.has_partition_key else None
+                    context.partition_key
+                    if hasattr(context, "has_partition_key") and context.has_partition_key
+                    else None
                 ),
             },
             timeout_seconds=300.0,
@@ -182,7 +188,9 @@ if asset is not None and AssetExecutionContext is not None and Config is not Non
                 "retry_number": context.retry_number + 1 if hasattr(context, "retry_number") else 1,
                 "tags": context.run_tags,
                 "partition_key": (
-                    context.partition_key if hasattr(context, "has_partition_key") and context.has_partition_key else None
+                    context.partition_key
+                    if hasattr(context, "has_partition_key") and context.has_partition_key
+                    else None
                 ),
             },
             timeout_seconds=1800.0,
@@ -215,7 +223,9 @@ if asset is not None and AssetExecutionContext is not None and Config is not Non
                 "retry_number": context.retry_number + 1 if hasattr(context, "retry_number") else 1,
                 "tags": context.run_tags,
                 "partition_key": (
-                    context.partition_key if hasattr(context, "has_partition_key") and context.has_partition_key else None
+                    context.partition_key
+                    if hasattr(context, "has_partition_key") and context.has_partition_key
+                    else None
                 ),
             },
             timeout_seconds=120.0,
@@ -240,7 +250,9 @@ if asset is not None and AssetExecutionContext is not None and Config is not Non
                 "retry_number": context.retry_number + 1 if hasattr(context, "retry_number") else 1,
                 "tags": context.run_tags,
                 "partition_key": (
-                    context.partition_key if hasattr(context, "has_partition_key") and context.has_partition_key else None
+                    context.partition_key
+                    if hasattr(context, "has_partition_key") and context.has_partition_key
+                    else None
                 ),
             },
             timeout_seconds=1200.0,

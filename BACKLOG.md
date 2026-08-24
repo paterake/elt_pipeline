@@ -443,9 +443,34 @@
   runtime --progress plain -t elt-pipeline:0.1.0 .` builds syntax-OK (no PyPI/Apache/Maven
   download network issues assumed in sandbox). **Eleventh TRANCHE 2 item closed. Next
   candidate pulls (🟠 MED ordered): G-6 (governance) / G-7 (DQ library) / rest fully on-demand.**
+- **TRANCHE 2 — G-6 CLOSED (2026-08-24, twelfth on-demand pull, 🟠 MED governance
+  alignment deliverable matching CAPABILITY_MATURITY_MATRIX §10 4 rows all ⏳→🟢):**
+  Full governance subsystem delivered end-to-end. **(a) Core module:** new `elt_pipeline/shared/governance.py`
+  (465-line, 39/39 tests green) — `DataClassification` 4-tier enum (`public` / `internal` / `confidential` / `restricted_pii`) +
+  `MaskingStrategy` 7 strategies with strict cross-field validator matrix; `SqlColumnSpec` +
+  `SqlModelGovernance` Pydantic v2 manifest models with strictest_classification() precedence +
+  effective_column_classification() / effective_column_masking() inheritance;
+  `build_governance_table_properties()` flattens tags to Iceberg TBLPROPERTIES dict;
+  `build_retention_delete_statement()` / build_erasure_statement() / build_row_level_erasure_statement()
+  SQL builders; `build_trino_masking_view()` generates SECURITY DEFINER Trino view with
+  optional is_role_granted() ternary; `hash_value_for_masking()` deterministic sha256 helper.
+  **(b) Manifest wiring:** `SqlModelManifest` + `CompiledSqlModel` each gain a governance field;
+  threaded through compiler.py. **(c) Iceberg write path:** spark_executor.py adds
+  `_apply_governance_table_properties()` (post-write ALTER TABLE SET TBLPROPERTIES with best-effort
+  PySparkException tolerance); all 3 write branches (partition_overwrite / append / full_refresh) wrapped.
+  Injects elt.run.last_model_id + elt.run.last_row_count run tags. **(d) Example update:**
+  canonical_orders model.sql adds 4 placeholder columns (customer_email / customer_phone / billing_zip /
+  order_total_usd); manifest gains governance block with 4 tiers + retention_days=2555 on business_date
+  partition key + owner.email + custom_properties (data_owner, sla_tier).
+  **(e) Operator runbook:** `docs/operator/GOVERNANCE_AND_RETENTION_RUNBOOK.md` covering classification tiers,
+  Iceberg TBLPROPERTIES verification, Trino masking generator recipes, retention + RTBF step-by-step
+  procedures, validation gates, and G-1 post-erasure sweep command recipes.
+  **Verification:** gate 551 passed / 0 failed / 28 emulator tests correctly SKIPPED;
+  `uv run ruff check src tests examples` clean. **Twelfth TRANCHE 2 on-demand pull closed. Next
+  candidate pulls (🟠 MED ordered): G-7 (DQ library) / M-1 — fully on-demand.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - (all other G-6…/G-7…/G-8…/M-1/B-0 tranche-2 items)
+  - (all other G-7…/G-8…/M-1/B-0 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -619,8 +644,6 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   Capability Maturity Matrix §1 Databricks DBFS row ⏳→🟢; README Honest Boundary
   promoted GCS/ADLS/Databricks storage + GCS/ADLS object-storage ingest + G-5 secrets
   to Production (doc-only catch-up). Zero code touched; zero tests touched.**
-  **Active: Tranche 2 idle (on-demand only — pull forward one per session when needed).
-  Next candidate pulls (🟠 MED ordered): G-6 (governance) / G-7 (DQ library) / M-1 — fully on-demand.**
   **G-4 CLOSED (eleventh TRANCHE 2 on-demand pull, 🟠 MED deployment artifacts):**
   Multi-stage Dockerfile pinned to the manifest stack (eclipse-temurin:23-jdk / Spark 4.1.2 /
   Trino 468 / Iceberg 1.11.0 / Python 3.11), docker-compose 2-service shared-volume reference
@@ -635,6 +658,20 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   section with copy-paste docker-compose workflow commands + layout notes + script inventory.
   Zero code touched in src/ so gate identity = 512/0 GREEN + 28 emulator tests SKIPPED by default;
   ruff src+tests+examples clean; docker build syntax OK.
+  **G-6 CLOSED (twelfth TRANCHE 2 on-demand pull, 🟠 MED governance deliverable; gate 551/0/28):**
+  New shared/governance.py core module with classification/masking enums, manifest Pydantic models
+  with cross-field validator matrix + strictest_classification precedence + effective_column_*
+  inheritance; TBLPROPERTIES builder; retention DELETE builder + erasure DELETE builders (single
+  predicate + id-batch); Trino SECURITY-DEFINER role-based masking view generator
+  (is_role_granted ternary); hash_value_for_masking deterministic sha256; 39 tests green.
+  SqlModelManifest + CompiledSqlModel governance fields wired through compiler. Spark executor
+  post-write ALTER TABLE SET TBLPROPERTIES best_effort wrapper on all 3 iceberg write branches
+  (partition_overwrite / append / createOrReplace). canonical_orders example gains 4 placeholder
+  PII columns + full governance manifest block. GOVERNANCE_AND_RETENTION_RUNBOOK.md operator doc
+  (6 sections, RTBF 4-step with validation gate). Capability Maturity Matrix §10 4 rows all ⏳→🟢.
+  README operational governance promoted Production. **Active: Tranche 2 idle (on-demand only — pull
+  forward one per session when needed). Next candidate pulls (🟠 MED ordered): G-7 (DQ library) /
+  M-1 — fully on-demand.**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -1590,15 +1627,20 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   adding Vault / AWS / Azure / GCP SM implementations is one class per provider — zero
   registry or dispatcher changes.
 
-#### G-6 — Governance: PII classification, masking, retention, right-to-erasure  🟠 MED  ⏳
+#### G-6 — Governance: PII classification, masking, retention, right-to-erasure  🟠 MED  ✅ CLOSED (2026-08-24)
 - **Symptom:** the README claims DAMA-DMBOK alignment (governance, security, quality), but there is
   **no** column masking, data classification, retention policy, or right-to-erasure — only an audit
   trail. Access control is delegated entirely to Trino.
-- **Scope:** decide the honest scope. Minimum: data-classification tags in manifests + column
-  masking in the serving layer (Trino) + a documented retention/erasure procedure (Iceberg
-  row-level deletes + snapshot expiry). Don't claim more than is enforced.
-- **Files:** manifest models; serving/Trino config ([ops/trino_serving/](ops/trino_serving/)); governance docs.
-- **Verification:** masking demonstrated via Trino; a retention/erasure runbook exists and is tested.
+- **Scope delivered:**
+  - Classification tier: `DataClassification` 4-level enum (`public` / `internal` / `confidential` / `restricted_pii`) + `MaskingStrategy` 7 strategies (none/nullify/hash_sha256/redact_email/redact_ssn/truncate_middle/truncate_end). Pydantic cross-field validator matrix: reject (a) masking WITHOUT explicit classification, (b) strategy not in per-tier allow-list, (c) pattern-strategies (redact_email/redact_ssn) on non-restricted_pii.
+  - Manifest models: `SqlColumnSpec` + `SqlModelGovernance` added to BOTH `SqlModelManifest` and `CompiledSqlModel` (default_factory). Compiler threads through untouched. `strictest_classification()` cross-tier precedence, effective_column_classification/masking() inheritance resolves table-default → column-override.
+  - Iceberg TBLPROPERTIES: `build_governance_table_properties()` flattens domain/owner/classification/retention/per-column-tag/custom_properties to flat `elt.governance.*` dict. Spark executor `_apply_governance_table_properties()` method: post-write ALTER TABLE SET TBLPROPERTIES tolerant (try/except PySparkException silent pass). All 3 write branches (partition_overwrite / append / createOrReplace) wrapped; also injects `elt.run.last_model_id` + `elt.run.last_row_count`.
+  - Retention + erasure SQL: `build_retention_delete_statement(*)` computes DATE `today - retention_days` reference cutoff. `build_erasure_statement(*)` composite predicate with quote-safe literals. `build_row_level_erasure_statement(*)` id-list IN clause with optional batch_size.
+  - Serving layer: `build_trino_masking_view(*)` generates SECURITY DEFINER CREATE OR REPLACE VIEW. `unmask_role` parameter wraps columns with `is_role_granted('ROLE') → raw ELSE masked` ternary. Each masking strategy is a pure Trino builtin (sha256/to_hex, substr/regexp_replace/split/split_email patterns).
+  - Runbook `docs/operator/GOVERNANCE_AND_RETENTION_RUNBOOK.md` delivered: 6 sections covering classification tiers, TBLPROPERTIES verification, Trino masking generator + RBAC roles, retention daily sweep, RTBF 4-step (predicate → confirm rowcounts zero → snapshot expiry + orphan sweep → audit log) with 4-point validation gate, ticket_ref attribute injection via RunContext.
+  - `tests/test_governance.py`: 39 tests covering enums (2), validation rejections (7), SqlModelGovernance helpers (9), table_properties builder (5), retention/erasure SQL (6), Trino masking views (3), hash determinism (3), manifest YAML roundtrip (1).
+  - Example: `canonical_orders` level3 model.sql adds 4 placeholder columns; manifest.yaml gains full governance block with classification=confidential (table default), 4 columns spanning restricted_pii+confidential+internal, retention_days=2555 on `business_date` partition, owner.email, and custom_properties (data_owner, sla_tier).
+- **Verification:** Gate `bash scripts/run_tests.sh` → **551 passed / 0 failed / 28 emulator tests correctly skipped**. `uv run ruff check src tests examples` clean. Cross-ref: CAPABILITY_MATURITY_MATRIX.md §10 4 rows flipped ⏳→🟢 with G-6 refs and 2026-08-24 stamp. README operational governance promoted Production with §10 link. Owner: maintainer. Twelfth TRANCHE 2 on-demand pull closed.
 
 #### G-7 — OpenLineage-compatible lineage export  🟠 MED  ⏳
 - **Symptom:** lineage is a **bespoke emitter** ([shared/lineage.py](src/elt_pipeline/shared/lineage.py),
