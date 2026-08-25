@@ -19,12 +19,12 @@ from elt_pipeline.ingest.connectors.object_storage import (
     ObjectStorageSyncMode,
 )
 from elt_pipeline.ingest.connectors.registry import (
-    ConnectorFamily,
     ConnectorFactory,
+    ConnectorFamily,
+    ConnectorFamilyUnsupportedError,
     ConnectorManifest,
     ConnectorPreset,
     ConnectorRegistryError,
-    ConnectorFamilyUnsupportedError,
     apply_connector_preset_defaults,
     get_connector_factory,
     is_connector_factory_registered,

@@ -27,10 +27,6 @@ from elt_pipeline.ingest.connectors import (
     load_connector_manifest_from_yaml,
     register_connector_factory,
 )
-from elt_pipeline.ingest.connectors.registry import (
-    _CONNECTOR_REGISTRY,
-    _ensure_default_connectors_registered,
-)
 from elt_pipeline.ingest.connectors.kafka import KafkaConnectorConfig
 from elt_pipeline.ingest.connectors.local_kafka import LocalKafkaConnector
 from elt_pipeline.ingest.connectors.local_object_storage import (
@@ -40,6 +36,10 @@ from elt_pipeline.ingest.connectors.local_rest import LocalRestConnector
 from elt_pipeline.ingest.connectors.local_sql import LocalSqlConnector
 from elt_pipeline.ingest.connectors.object_storage import (
     ObjectStorageConnectorConfig,
+)
+from elt_pipeline.ingest.connectors.registry import (
+    _CONNECTOR_REGISTRY,
+    _ensure_default_connectors_registered,
 )
 from elt_pipeline.ingest.connectors.rest import RestConnectorConfig
 from elt_pipeline.ingest.connectors.sql import SqlConnectorConfig
@@ -403,9 +403,11 @@ class TestRestFactory:
         rc = new_run_context(
             stage="ingest",
             job_name="test",
-            environment="test",
-            source_name="orders_api",
-            entity_name="orders",
+            attributes={
+                "environment": "test",
+                "source_name": "orders_api",
+                "entity_name": "orders",
+            },
         )
         conn = factory.build_connector(
             config=cfg, run_context=rc, root_path=str(tmp_path)
@@ -420,9 +422,11 @@ class TestRestFactory:
         rc = new_run_context(
             stage="ingest",
             job_name="test",
-            environment="test",
-            source_name="x",
-            entity_name="y",
+            attributes={
+                "environment": "test",
+                "source_name": "x",
+                "entity_name": "y",
+            },
         )
         with pytest.raises(ConfigValidationError, match="RestConnectorConfig"):
             factory.build_connector(
@@ -456,9 +460,11 @@ class TestSqlFactory:
         rc = new_run_context(
             stage="ingest",
             job_name="test",
-            environment="test",
-            source_name="analytics_db",
-            entity_name="transactions",
+            attributes={
+                "environment": "test",
+                "source_name": "analytics_db",
+                "entity_name": "transactions",
+            },
         )
         conn = factory.build_connector(
             config=cfg, run_context=rc, root_path=str(tmp_path)
@@ -493,9 +499,11 @@ class TestObjectStorageFactory:
         rc = new_run_context(
             stage="ingest",
             job_name="test",
-            environment="test",
-            source_name="data_lake",
-            entity_name="raw_logs",
+            attributes={
+                "environment": "test",
+                "source_name": "data_lake",
+                "entity_name": "raw_logs",
+            },
         )
         conn = factory.build_connector(
             config=cfg, run_context=rc, root_path=str(tmp_path)
@@ -536,9 +544,11 @@ class TestKafkaFactory:
         rc = new_run_context(
             stage="ingest",
             job_name="test",
-            environment="test",
-            source_name="events_bus",
-            entity_name="click_events",
+            attributes={
+                "environment": "test",
+                "source_name": "events_bus",
+                "entity_name": "click_events",
+            },
         )
         with pytest.raises(ConfigValidationError, match="log_path"):
             factory.build_connector(
@@ -558,9 +568,11 @@ class TestKafkaFactory:
         rc = new_run_context(
             stage="ingest",
             job_name="test",
-            environment="test",
-            source_name="events_bus",
-            entity_name="click_events",
+            attributes={
+                "environment": "test",
+                "source_name": "events_bus",
+                "entity_name": "click_events",
+            },
         )
         log_path = tmp_path / "kafka.log"
         log_path.touch()

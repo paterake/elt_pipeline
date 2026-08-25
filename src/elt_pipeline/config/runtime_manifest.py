@@ -147,6 +147,13 @@ class EnvVarNames:
     connector_registry_manifest: str = "ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST"
     connector_registry_strict: str = "ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT"
 
+    # Catalog preflight — pre-Spark boot connectivity/validity checks (BACKLOG B-0)
+    #   MODE: "off" → skip entirely; "best_effort" (default) → warn on failure,
+    #     never block; "strict" → ConfigValidationError on any failed check.
+    #   TIMEOUT_SECONDS: per-check HTTP/TCP timeout, default 5.
+    catalog_preflight_mode: str = "ELT_PIPELINE_CATALOG_PREFLIGHT_MODE"
+    catalog_preflight_timeout_seconds: str = "ELT_PIPELINE_CATALOG_PREFLIGHT_TIMEOUT_SECONDS"
+
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
 

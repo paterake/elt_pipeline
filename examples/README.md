@@ -400,6 +400,137 @@ run identically to pre-M-1 (the manifest loader returns `None` on unset
 path in non-strict mode, and `apply_connector_preset_defaults` is a no-op
 when `connector_preset` is absent).
 
+## Catalog Preflight (B-0)
+
+The B-0 catalog preflight validator runs **before every SparkSession boot**
+in both `sql run` and `publish run` branches, failing fast on catalog
+misconfiguration / connectivity issues instead of letting Spark surface
+an opaque multi-hundred-line `Py4JJavaError` stack trace mid-stage (after
+waiting for JVM boot and potentially minutes of prior L1/L2 work). It
+covers ALL valid catalog-type bindings: writer types `{jdbc, rest, nessie,
+hive_metastore, glue, hadoop}` × serving types `{jdbc, rest, nessie,
+hive_metastore, glue, hadoop, snowflake}` with scheme-aware checks per
+binding.
+
+### Mode semantics (3 modes, additive-only, backward-compat default)
+
+| Mode | Failure behaviour | Operator output | Intended use |
+|---|---|---|---|
+| `off` | No checks run. NONE. Zero overhead. | Nothing. | CI fire-and-forget runs where Spark-boot success is already asserted by a separate job, or sandboxed workstation invocations where the default SQLite/hadoop binding is already known-good. |
+| `best_effort` (**DEFAULT**) | Check failures **NEVER block the run**. Spark boot still proceeds. | Structured warning block to STDERR: `[sql] catalog preflight: best_effort — 2 failures before Spark boot` + one bulleted line per failure: `- [writer] hive_metastore_uri_format: missing thrift:// prefix`. The operator sees the misconfig immediately; Spark still runs (may fail later if catalog is truly unreachable, but triage signal is preserved in logs). | Workstation default. Existing pipelines behave EXACTLY as pre-B-0 — this is why it's the default. |
+| `strict` | Check failures **raise `ConfigValidationError` BEFORE any JVM/Spark boot**. Exitcode non-zero. | Structured multi-line error message: one `[binding] checkname: message` per failure, plus a machine-readable `context` dict with `failed_checks` (list of dicts), `total_checks`, `failed_count`. | **Recommended CI / orchestration production mode.** Fail the run at stage-start time, cleanly, with operator-readable triage. |
+
+Two env vars (centralized in `EnvVarNames` dataclass):
+
+```
+ELT_PIPELINE_CATALOG_PREFLIGHT_MODE     = off | best_effort | strict
+ELT_PIPELINE_CATALOG_PREFLIGHT_TIMEOUT_SECONDS = 3 | 5 | 10 ... (default 5)
+```
+
+### Example 1: best_effort workstation default (no env changes needed)
+
+The default is already `best_effort`. Existing pipelines run with zero
+env changes and see transparent warning output on misconfigured catalogs,
+never blocked:
+
+```bash
+# Default behaviour (no env vars set) → best_effort mode.
+# Write a broken hive_metastore URI to trigger a preflight warning.
+export ELT_PIPELINE_WRITER_CATALOG_TYPE=hive_metastore
+export ELT_PIPELINE_HIVE_METASTORE_URI="http://wrong-scheme.example.com:9083"
+
+# Runs sql run → emits structured stderr WARNING, then proceeds to Spark
+# boot transparently (Spark may fail later, but you already see the
+# preflight warning in the logs FIRST).
+uv run elt-pipeline sql run examples/configs/local_orders.yaml \
+  --root-path .ignore/runtime-preflight-best-effort
+```
+
+### Example 2: strict CI / orchestration (recommended production mode)
+
+For CI pipelines and orchestration wrappers (Airflow / Dagster / Prefect
+/ custom k8s jobs), enable strict mode to **fail cleanly before JVM boot**:
+
+```bash
+export ELT_PIPELINE_CATALOG_PREFLIGHT_MODE=strict
+export ELT_PIPELINE_CATALOG_PREFLIGHT_TIMEOUT_SECONDS=3
+
+# Same broken hive_metastore URI as above.
+export ELT_PIPELINE_WRITER_CATALOG_TYPE=hive_metastore
+export ELT_PIPELINE_HIVE_METASTORE_URI="http://wrong-scheme.example.com:9083"
+
+# sql run → EXITS cleanly with a structured ConfigValidationError
+# BEFORE any Spark boot happens. Exitcode != 0 → CI step fails at
+# stage-start time, not after 2+ minutes of waiting for Spark + parquet.
+uv run elt-pipeline sql run examples/configs/local_orders.yaml \
+  --root-path .ignore/runtime-preflight-strict
+```
+
+**Strict-mode output shape (the exact ConfigValidationError context):**
+
+```
+ConfigValidationError: catalog preflight (strict): 2 check(s) failed before Spark boot
+  [writer] hive_metastore_uri_format: missing thrift:// prefix — expected thrift://<host>:<port>
+  [writer] hive_metastore_tcp_connect: skipped because URI format check failed; fix format first
+
+failed_checks:
+  - binding: writer
+    check_name: hive_metastore_uri_format
+    message: missing thrift:// prefix — expected thrift://<host>:<port>
+  - binding: writer
+    check_name: hive_metastore_tcp_connect
+    message: skipped because URI format check failed; fix format first
+total_checks: 4
+failed_count: 2
+```
+
+### Example 3: Pure-Python API (embedding in custom operators)
+
+The preflight library is also usable as a pure-Python module with no env
+reads and no CLI dependency — ideal for embedding in custom orchestration
+operators that want to check catalog bindings before launching an
+elt-pipeline subprocess:
+
+```python
+from elt_pipeline.shared.catalog_preflight import (
+    CatalogPreflightMode,
+    CatalogPreflightCheckName,
+    run_catalog_preflight,
+)
+
+results = run_catalog_preflight(
+    writer_catalog_type="hive_metastore",
+    writer_config={
+        "hive_metastore_uri": "thrift://hive.example.com:9083",
+    },
+    serving_catalog_type="snowflake",
+    serving_config={
+        "snowflake_catalog_uri": "https://myorg.snowflakecomputing.com",
+    },
+    mode=CatalogPreflightMode.best_effort,     # or CatalogPreflightMode.strict
+    timeout_seconds=3,
+)
+
+failed = [r for r in results if not r.passed]
+if failed:
+    for r in failed:
+        print(f"[{r.binding}] {r.check_name.value}: {r.message}")
+    # Or: mode=strict above raises ConfigValidationError for you.
+```
+
+### 8 checks included (scheme-aware)
+
+1. **`jdbc_uri_valid`** — validates `jdbc:<subprotocol>:…` URI format with subprotocol extraction + context.
+2. **`jdbc_sqlite_parent_dir`** — lazily creates the parent directory of `jdbc:sqlite:file://` paths (mirrors Spark's sqlite-jdbc). Gracefully skips `:memory:` / in-memory variants.
+3. **`rest_catalog_connectivity`** — GET `/v1/config` probe. Treats BOTH 2xx AND 4xx as PASS (4xx = reachable, just auth-gated — the common case for REST catalogs). Only DNS / connection refused / timeout → FAIL. Optional Bearer token Authorization header when `rest_token` is provided.
+4. **`hive_metastore_uri_format`** — validates `thrift://<host>:<port>` shape with explicit `thrift://` prefix + port parseability (1-65535).
+5. **`hive_metastore_tcp_connect`** — TCP socket connect (3-way handshake only, no thrift handshake) — cascaded (only runs if format check passes). Timeout-bound, socket closed immediately after success.
+6. **`glue_identity_available`** — `STS.get_caller_identity()` probe. SKIPs with PASS when `boto3` is not installed (workstation-only setups). FAILs with actual boto3 error message when credentials are unresolvable.
+7. **`hadoop_warehouse_dir`** — exists-or-creates path with parent fallback: dir exists → PASS; parent exists (no dir yet) → PASS; parent missing → mkdir parents then PASS; empty path → FAIL.
+8. **`snowflake_serving_params`** (serving-only, `snowflake` catalog type) — validates `snowflake_catalog_uri` is present with `https://…` or `snowflake://…` scheme (the two Snowflake Polaris patterns).
+
+All checks are pure-unit-testable (no JVM / no real network): HTTP/TCP/boto3 are fully mocked with `unittest.mock.patch` in the 50-test suite.
+
 ## Object Storage JSON
 
 ```bash

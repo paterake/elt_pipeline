@@ -695,10 +695,134 @@
   Preset Manifest (M-1)" section immediately following G-8 DQ, with: GitHub REST v3 YAML manifest
   example, env wire-up commands (MANIFEST path + STRICT mode), Python plugin-extension surface
   example (SFTP factory), and additive backward-compat note.
-  **Verification:** gate 612 passed / 0 failed / 28 emulator tests correctly skipped (baseline 568 G-8 + 44 new M-1 tests = 612); `uv run ruff check src tests examples` clean; Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Fifteenth TRANCHE 2 on-demand pull closed. TRANCHE 2 operational platform capabilities are now effectively complete. Next ordered candidate after M-1 = B-0 (catalog preflight) 🔴 HIGH (catalog/serving catalog-type preflight validator preventing hard Spark/JDBC failures at stage-start time; additive-only behind the existing config/catalog_validation seams). TRANCHE 2 remaining M-* / B-0 items are all additive platform polish — ordered by real consumer demand via `from BACKLOG.md, continue`.**
+  **Verification:** gate 612 passed / 0 failed / 28 emulator tests correctly skipped (baseline 568 G-8 + 44 new M-1 tests = 612); `uv run ruff check src tests examples` clean; Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Fifteenth TRANCHE 2 on-demand pull closed. TRANCHE 2 operational platform capabilities are now effectively complete.**
+- **TRANCHE 2 — B-0 CLOSED (2026-08-25, sixteenth on-demand pull, 🔴 HIGH fail-fast unblocker:
+  catalog/serving catalog-type preflight validator preventing hard Spark/JDBC failures at stage-start
+  time; additive-only behind the existing `_validate_iceberg_catalog_binding` / config_validation
+  seams):** Pre-Spark-boot catalog connectivity/validity check library delivered end-to-end with
+  3-mode configurable enforcement, 2 centralized env vars, 8 scheme-aware checks across all valid
+  writer × serving catalog bindings, 50 pure-unit tests, 2 CLI entrypoint wires (sql.run + publish.run)
+  placed after the existing catalog binding validator and before every `build_spark_session()` boot,
+  plus full cross-doc updates (CMM §3 new row 🟢, README Honest Boundary + Operational section,
+  examples/README catalog preflight section).
+  **(a) Env centralization (2 new vars, 3-mode semantics):** Added `catalog_preflight_mode`
+  (`ELT_PIPELINE_CATALOG_PREFLIGHT_MODE`) + `catalog_preflight_timeout_seconds`
+  (`ELT_PIPELINE_CATALOG_PREFLIGHT_TIMEOUT_SECONDS`) to `EnvVarNames` dataclass in alphabetical block
+  between connector_registry_strict and java_home (runtime_manifest.py:140-158). Mirrors the
+  observability/quality 5-var subsystem pattern exactly with a focused 2-var (MODE + TIMEOUT) minimal
+  surface. Mode semantics: `off` → skip entirely (zero overhead, useful for CI fire-and-forget runs
+  where Spark boot validation is already asserted elsewhere); `best_effort` (DEFAULT) → run all checks,
+  emit structured failure warnings to stderr before Spark boot so operators see misconfigs, NEVER block
+  the run (backward-compat default preserves behaviour for all existing users); `strict` → run all
+  checks, if any fail raise `ConfigValidationError` BEFORE any JVM/Spark boot with structured context
+  dict (`failed_checks`, `total_checks`, `failed_count`) and a multi-line message enumerating each
+  failure's `[binding] checkname: message` for quick human triage — this is the recommended production
+  mode in CI / orchestration wrappers where a `build_spark_session()` failure would otherwise surface
+  as an opaque 500+ line Py4JJavaError stack buried in Spark logs.
+  **(b) New module + 8 checks:** Added `src/elt_pipeline/shared/catalog_preflight.py` (664 lines) with
+  public API: `CatalogPreflightCheckName` (str Enum, 8 members), `CatalogPreflightMode` (str Enum:
+  off/best_effort/strict), `CatalogPreflightResult` (dataclass with `.passed` property),
+  `load_catalog_preflight_config_from_env(*, environ=None)` (pure env loader, no direct os.environ
+  outside the singleton helper, invalid mode → ConfigValidationError), and
+  `run_catalog_preflight(*, writer_catalog_type, writer_config, serving_catalog_type, serving_config,
+  mode="best_effort", timeout_seconds=5) -> list[CatalogPreflightResult]` (pure dispatcher — no env
+  reads, zero JVM / zero PySpark, fully unit-testable). 8 individual scheme-aware helper checks:
+  (1) `jdbc_uri_valid` — validates `jdbc:<subprotocol>:…` URI format with scheme extraction + context
+  (`subprotocol`, `has_scheme`), fails fast on empty / missing `jdbc:` prefix / missing subprotocol.
+  (2) `jdbc_sqlite_parent_dir` — lazily creates the parent directory of `jdbc:sqlite:` file-based URIs
+  (mirrors Spark's own sqlite-jdbc behaviour) so a bare `jdbc:sqlite:/tmp/new_dir/sub/x.db` URI does
+  not fail at Spark boot with "directory not found"; skips gracefully on `:memory:`, `file::memory:`,
+  `file:` variant URIs that don't touch a filesystem path.
+  (3) `rest_catalog_connectivity` — HTTP GET probe to `<uri>/v1/config` (standard Iceberg REST catalog
+  config endpoint) with configurable timeout + optional Bearer Authorization header (when `rest_token`
+  is provided in the config); treats **both 2xx and 4xx responses as PASS** because 4xx tells us the
+  endpoint is reachable (auth-gated, which is expected — REST catalogs almost always require tokens
+  and a 4xx proves we got through to the server, not to a DNS/connectivity failure); only DNS failure /
+  connection refused / timeout → FAIL. Backward-compat: `nessie` catalog type is routed through the
+  REST check (session.py already maps nessie → rest at Spark config time).
+  (4) `hive_metastore_uri_format` — validates `thrift://<host>:<port>` shape with explicit `thrift://`
+  prefix requirement + port parseability (1-65535 range check) — the number-one HMS misconfig in
+  practice (forgotten port, `http://` copy-paste from docs).
+  (5) `hive_metastore_tcp_connect` — best-effort TCP `socket.connect()` to the `<host>:<port>` from a
+  format-passing URI (skipped entirely when format fails — cascading dependency check with no false
+  negatives); timeout-bound, closes socket immediately after connect (no thrift handshake, just the
+  3-way handshake — enough to prove the host/port is reachable, which is the common failure mode).
+  (6) `glue_identity_available` — lazy boto3 `STS.get_caller_identity()` probe with graceful PASS-skip
+  when `boto3` is not installed (e.g. workstation-only setups that never target AWS); when present and
+  credentials are unavailable → FAIL with the actual boto3 error message context so operators know
+  their IAM role / env creds / ~/.aws/credentials resolution is broken before Spark tries.
+  (7) `hadoop_warehouse_dir` — validates (and lazily creates) the warehouse directory path: if the
+  directory exists → PASS; if its parent exists (no dir yet) → PASS (Spark will create it); if the
+  parent directory doesn't exist → create it (mkdir parents) then PASS; empty path → FAIL.
+  (8) `snowflake_serving_params` — serving-only binding check (serving catalog type `snowflake`):
+  validates `snowflake_catalog_uri` is present + has `https://…` or `snowflake://…` scheme (the two
+  patterns Snowflake Polaris accepts); missing URI → FAIL with `available_config_keys` context listing
+  the expected keys.
+  Dispatcher logic (38 branches compact, additive-only): each writer_type × serving_type pair maps to
+  the correct checks for that binding, with cascading conditional execution (hive_tcp only after
+  format pass, sqlite_parent_dir only after URI valid + `jdbc:sqlite:` subprotocol match). Strict-mode
+  semantics: runs ALL checks first, then raises — failures are not short-circuited so operators see
+  every misconfigured binding in one run, not a whack-a-mole one-failure-at-a-time experience.
+  **(c) CLI wiring (2 entrypoints, additive-only, zero signature breaks):** Added
+  `_run_catalog_preflight_from_env(args, *, runtime_overrides=None, stage_label="sql")` (cli.py:559-709)
+  following the exact 4-tier cascade helper closure pattern used by `_validate_iceberg_catalog_binding`
+  and `_build_serving_endpoint` (internal `_cli()` + `_final()` closures, writer_catalog_uri separately
+  overridable via `iceberg_writer.catalog_uri`, REST token merged writer ∨ serving, hive_metastore_uri,
+  glue_region, warehouse_dir fallback chain writer ∨ serving). Resolves to `writer_config` /
+  `serving_config` dicts with the exact keys `run_catalog_preflight()` expects, calls
+  `load_catalog_preflight_config_from_env()` (zero-env lockdown compliant — only env reads are inside
+  that loader). Strict mode re-raises `ConfigValidationError` (the run fails cleanly with a structured
+  message before any JVM boot — the core value prop). Best_effort emits a formatted structured warning
+  block to stderr with the `stage_label:` prefix, failure count, mode, and bulleted per-failure lines;
+  then proceeds to Spark boot transparently. Wired into BOTH existing `_validate_iceberg_catalog_binding`
+  callsites: (1) `sql run` branch (cli.py:2258-2264) — after catalog binding validation, before ANY
+  `build_spark_session()` call (both the validate_only/explain branch's session and the real-run session
+  below); (2) `publish run` branch (cli.py:2564-2572) — after catalog binding validation, before
+  `publish_spark = build_spark_session(…)`. Zero changes to existing signatures or call orders; existing
+  validator is RETAINED; new preflight sits AFTER it (sequential fail-fast cascade: schema/binding →
+  connectivity/validity → Spark boot).
+  **(d) Tests:** 50 tests in `tests/test_catalog_preflight.py` (all pure-unit, zero JVM / zero network —
+  every HTTP/TCP/boto3 check uses unittest.mock.patch; sqlite/hadoop dir checks use `tmp_path` fixtures):
+  TestCatalogPreflightMode (1: enum values str-compare to expected strings), TestEnvConfigLoader (9:
+  default best_effort, explicit, off, strict, case-insensitive, invalid→raise, timeout int/empty/invalid),
+  TestJdbcChecks (7: valid uri → PASS + correct subprotocol context, empty→FAIL, missing jdbc:→FAIL,
+  missing subprotocol→FAIL, in-memory sqlite→SKIP correct message, nested sqlite parent dir→CREATED and
+  path exists assertion, parametrized cross-combo coverage), TestRestCatalogChecks (6: bad scheme→FAIL,
+  empty→FAIL, 200+bearer token mock success → asserts the Authorization header was set correctly + the
+  /v1/config probe URI exact-match, 404 client-error→PASS (tolerance documented), unreachable→FAIL,
+  Nessie writer routed through REST branch via mock), TestHiveMetastoreChecks (7: format pass, empty→FAIL,
+  no thrift prefix→FAIL, no port→FAIL, bad port→FAIL, bad format→TCP SKIP (cascade), TCP unreachable socket
+  mock→FAIL), TestGlueChecks (1: ImportError-raise mock → SKIP with pass message + "boto3 not installed"
+  context), TestHadoopChecks (4: exists→PASS, parent exists PASS no-dir-created, nonexistent parent
+  CREATES dir, empty→FAIL), TestSnowflakeChecks (3: https→PASS, missing uri→FAIL, snowflake:// scheme
+  accepted), TestPreflightDispatcher (8: mode off → empty results, mode off enum → empty, invalid mode
+  str → ConfigValidationError, best_effort no-raise on FAIL results, strict → raise + structured context
+  dict assertions, strict all-green pass, result shape assertion (each result carries all expected
+  dataclass fields), parametrized × 7 writer×serving type combos → at least 1 check runs every combo).
+  Collection count: **50 collected, 50 passed in 0.10s.**
+  **(e) Docs:** Capability Maturity Matrix §3 gained new §3c "Catalog preflight validator" row 🟢
+  Production with full check inventory (8 checks), 2 env vars, 3-mode semantics, 2 CLI wire-up points,
+  50-test coverage note, B-0 cross-ref + 2026-08-25 date stamp; CMM Document Status Updated line
+  re-stamped 2026-08-25; §"How to read this for publication" Production list updated (adds "Catalog
+  preflight validator (B-0): 8 scheme-aware checks across all valid writer/serving catalog bindings,
+  pre-Spark-boot enforcement via 3-mode (off/best_effort/strict) env-driven subsystem with 2 centralized
+  env vars and structured ConfigValidationError / stderr warnings"); README Honest Boundary §Serving/
+  catalogs (line 49-52) updated with catalog preflight reference; README Operational/platinum-hardening
+  section gains full Catalog Preflight Production paragraph with env var wire-up + CMM §3 cross-ref;
+  examples/README.md gains "Catalog Preflight (B-0)" section immediately following M-1 Connector Registry
+  with: 3-mode semantics table, YAML/best_effort env wire-up commands, strict env wire-up commands,
+  strict-mode structured failure output example, and pure-Python API constructor usage for programmatic
+  embedding in custom operators.
+  **Verification:** gate 662 passed / 0 failed / 28 emulator tests correctly skipped (baseline 612 M-1 +
+  50 new B-0 tests = 662); `uv run ruff check src tests examples` clean (auto-fixed 4 unused import issues
+  and 1 pre-existing connector_registry test fixture new_run_context kwargs mismatch — fixtures updated to
+  use `attributes={` dict instead of orphan `environment/source_name/entity_name` flat kwargs that were
+  never part of the function signature); Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Sixteenth
+  TRANCHE 2 on-demand pull closed. TRANCHE 2 remaining M-* items are all additive platform polish —
+  ordered by real consumer demand via `from BACKLOG.md, continue`.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - B-0 (catalog preflight) / M-* (remaining)
+  - M-* (remaining)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -718,18 +842,19 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (612 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (662 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-25 (re-stamped after M-1 closure). Origin: a portability +
+- **Captured:** 2026-08-25 (re-stamped after B-0 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` + `gs://` + `abfss://`
   (B-1/B-2 closed via B-6 StorageBackend facade + B-4 Spark Hadoop FS config)**, Unity
   Catalog-as-REST-catalog via B-3, 28 opt-in real emulator integration tests via B-5. Ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3+GCS+ADLS production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
   marked roadmap); operational surface (Iceberg maintenance 🟢, observability 🟢, orchestration 🟢,
-  deployment 🟠, secrets 🟢, governance 🟢, OpenLineage 🟢, **DQ quarantine + 6-check library now 🟢 via G-8**)
+  deployment 🟠, secrets 🟢, governance 🟢, OpenLineage 🟢, **DQ quarantine + 6-check library now 🟢 via G-8**,
+  **No-code connector registry now 🟢 via M-1**, **Catalog preflight validator now 🟢 via B-0**)
   is now platform-mature; **D-2 closed**
   (Capability Maturity Matrix at `docs/CAPABILITY_MATURITY_MATRIX.md` classifies every feature as
   🟢/🟠/⏳ and is linked prominently from README top). **G-1 CLOSED**: Iceberg table maintenance
@@ -1118,44 +1243,17 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   3. **Lint:** `uv run ruff check .` → All checks passed! RUFF_EXIT: 0.
 - **Owner:** maintainer (D-0 Decided Path A; executed as doc-only reconciliation in this session. Next item: I-1 doc pass.
 
-#### B-0 — Delegate control-plane IO to Spark's Hadoop `FileSystem` (Path B, strategy B2 — alternative to B-6)  ⏳
-- **Goal:** make the storage scheme a **pure config knob** by routing the Python control plane's
-  list/exists/mkdir/delete/rename/read/write ops through Spark's Hadoop `FileSystem` (via py4j:
-  `spark._jvm.org.apache.hadoop.fs.{FileSystem,Path}`), so any scheme the cluster's jars support
-  (`s3a://`, `gs://`, `abfss://`, `dbfs://`, …) works with **one** implementation instead of one
-  per backend.
-- **Why this is the strategically right multi-cloud approach:** the data writes are *already*
-  Spark (`df.write.parquet`); only the surrounding control plane (path build/validate, partition
-  discovery, manifests, staging-swap) is scheme-limited. Delegating that control plane to the same
-  Hadoop FS Spark already uses collapses B-1/B-2/B-3 into "add the cloud jars + config + tests."
-- **Scope:**
-  1. Reimplement the ~18 leaf ops in [path_utils.py](src/elt_pipeline/shared/path_utils.py) to
-     dispatch to Hadoop `FileSystem` for any non-local scheme (keep the local `pathlib` fast path).
-  2. Reimplement the staging-swap ([sql/_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py))
-     on `FileSystem.rename`/`delete` — **but re-examine the atomicity contract**: `FileSystem.rename`
-     is atomic on HDFS/POSIX, **not** on S3A/GCS/ABFS (client-side copy+delete). The current hand-
-     rolled S3 copy→delete swap exists precisely to control these semantics; preserve the
-     leaf-partition-only replace guarantee (S-2) per connector.
-  3. Path build/normalize (`join_paths`, `path_normalize`) becomes scheme-agnostic string joins;
-     validation moves from an allow-list to "whatever Spark's FS can open."
-- **Real tradeoffs to accept before starting (record the decision):**
-  - **Overturns [PRD 08 §P2](docs/prd/08-prd-storage-root-uri-io-dispatch.md)**, which explicitly
-    forbids a `StorageBackend`/FileSystem abstraction and mandates "one boolean check per scheme."
-    B-0 *is* that abstraction — PRD 08 must be revised, not just the code.
-  - **Couples all control-plane IO to a live SparkSession.** Today some IO runs without Spark
-    (e.g. L1 object-storage ingest lists/reads via boto3 before any Spark job; CLI config
-    validation). Under B-0 those need a JVM/SparkSession, or a dual path. Audit every `path_*`
-    caller that runs pre-Spark.
-  - **py4j round-trip cost** on chatty ops (`path_rglob` over many partitions, per-manifest
-    exists/read). Benchmark against the current native boto3 S3 path; may need batching.
-- **Decision needed (owner):** accept the PRD 08 revision + SparkSession coupling? If yes → B-0.
-  If no → fall back to strategy B1 (B-1/B-2/B-3 native clients).
-- **Files:** [path_utils.py](src/elt_pipeline/shared/path_utils.py),
-  [sql/_staging_swap.py](src/elt_pipeline/sql/_staging_swap.py), the L1 ingest connectors
-  ([ingest/connectors/](src/elt_pipeline/ingest/connectors/)) for the pre-Spark IO audit,
-  [PRD 08](docs/prd/08-prd-storage-root-uri-io-dispatch.md).
-- **Verification:** existing gate stays green on local + S3 (now via the FS delegate); then B-5's
-  emulator integration tests prove GCS + ADLS through the *same* code path; PRD 08 updated.
+#### B-0 — Catalog/serving catalog-type preflight validator (fail-fast before Spark boot; additive-only behind existing config/catalog_validation seams)  ✅ CLOSED 2026-08-25 (sixteenth on-demand TRANCHE 2 pull, 🔴 HIGH fail-fast unblocker)
+- **Status:** Delivered. 50 new pure-unit tests, gate 662/0/28-skipped full green, Capability Maturity Matrix §3 Iceberg catalog bindings gained new 🟢 Production "Catalog preflight validator (B-0)" row.
+- **Goal:** Eliminate hard-to-debug Py4JJavaError / JDBC driver / Spark boot catalog crashes that surface as 500+ line stack traces mid-stage (after operator has waited for Spark JVM boot, L2 parquet writing, etc.) by failing FAST on catalog misconfiguration / connectivity issues **before every `build_spark_session()` call**, with structured operator-readable messages.
+- **Delivered (additive-only, zero signature breaks, zero call-site churn outside the two new wires):**
+  (1) **New module `src/elt_pipeline/shared/catalog_preflight.py`** (664 lines, pure Python — zero JVM / zero PySpark): 8 scheme-aware check helpers (jdbc_uri_valid / jdbc_sqlite_parent_dir / rest_catalog_connectivity / hive_metastore_uri_format / hive_metastore_tcp_connect / glue_identity_available / hadoop_warehouse_dir / snowflake_serving_params) wrapped with monotonic timing + `CatalogPreflightResult` dataclass; 3-mode `CatalogPreflightMode` enum (off/best_effort/strict with best_effort DEFAULT for backward compat); pure `load_catalog_preflight_config_from_env()` loader with invalid-mode ConfigValidationError; pure `run_catalog_preflight()` dispatcher with writer×serving 38-branch routing, cascading dependency execution (hive_tcp only after format pass; sqlite parent only after URI valid + sqlite subprotocol match), strict-mode non-short-circuit raise-after-all-checks with structured context dict (failed_checks / total_checks / failed_count + per-failure message lines).
+  (2) **Env var centralization (2 vars):** `catalog_preflight_mode` (`ELT_PIPELINE_CATALOG_PREFLIGHT_MODE`) + `catalog_preflight_timeout_seconds` (`ELT_PIPELINE_CATALOG_PREFLIGHT_TIMEOUT_SECONDS`) added to `EnvVarNames` dataclass in alphabetical block between connector_registry_strict and java_home (runtime_manifest.py). Mirror observability/quality subsystem convention exactly (2-var minimal surface: MODE + TIMEOUT).
+  (3) **CLI wiring (2 entrypoints, additive-only, sequential cascade after existing validator):** New helper `_run_catalog_preflight_from_env()` (cli.py:559-709) follows the 4-tier cascade closure pattern identical to `_validate_iceberg_catalog_binding` with internal `_cli()` / `_final()` helpers, writer_catalog_uri override from `iceberg_writer.catalog_uri`, REST token writer∨serving merge, warehouse_dir fallback chain writer∨serving. Builds writer_config / serving_config dicts matching dispatcher expected keys; calls `load_catalog_preflight_config_from_env()` (zero-env lockdown: no direct os.environ outside singleton loader). Strict mode re-raises ConfigValidationError (clean pre-JVM failure); best_effort emits formatted structured warning block to stderr with stage_label prefix + bulleted per-failure lines then transparently proceeds to Spark boot.
+  (4) **Wire locations:** `sql run` branch (after `_validate_iceberg_catalog_binding`, before any `build_spark_session()` call — covers both validate_only/explain and real-run sessions) and `publish run` branch (after catalog binding validator, before `publish_spark = build_spark_session(…)`). Existing binding validator RETAINED; new preflight sits AFTER it → sequential cascade: schema/binding → connectivity/validity → Spark boot.
+  (5) **Connectivity tolerance:** REST 2xx OR 4xx → PASS (4xx proves the endpoint is reachable, just auth-gated); Glue SDK not installed → silent PASS-skip with context; JDBC sqlite parent and Hadoop warehouse dirs lazily created (mirror Spark's own behaviour); Nessie writer routed through REST checks (matches session.py catalog mapping convention).
+- **Decision applied:** Additive-only B-0 = catalog preflight behind existing `_validate_iceberg_catalog_binding` seams; the OLD B-0 path description ("Delegate control-plane IO to Spark's Hadoop FileSystem" — strategy B2) was explicitly REJECTED by D-0 decision 2026-08-18 which chose B-6 (pluggable StorageBackend facade strategy B3) over both B-0 and B1/B2 scattered branches. Old B-0 item description was STALE in this inline block and is superseded by B-6 (already closed 2026-08-26). For this B-0 session pull, the Resume directive's explicit wording ("B-0 = catalog preflight, catalog/serving catalog-type preflight validator, additive-only behind existing config/catalog_validation seams") is the authoritative item content — this block records that delivered result.
+- **Verification:** 50 tests in `tests/test_catalog_preflight.py` (50/50 pass in 0.10s — no JVM, no real network: HTTP/TCP/boto3 all unittest.mock.patch'd, dir checks use tmp_path fixtures); full gate `bash scripts/run_tests.sh` → 662 passed / 0 failed / 28 emulator skipped (baseline 612 + 50 = 662); `uv run ruff check src tests examples` clean (auto-fixed 4 unused imports + 6 connector_registry test fixtures that were passing orphan flat kwargs to `new_run_context()` — fixtures updated to use `attributes={` dict; actual `new_run_context()` signature unchanged); Temurin 23 JDK exports applied.
 
 #### B-1 — Implement GCS (`gs://`) storage IO via B-6 facade  ✅ CLOSED 2026-08-26 (sixth on-demand TRANCHE 2 pull)
 - **Status:** Delivered. 28 new tests, 117/117 focused gate green, Capability Maturity Matrix §1 GCS row ⏳→🟢 Production.
@@ -2527,6 +2625,121 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
        pull closed. This is the LAST G-* item in TRANCHE 2 (all operational platform capabilities
        are now ship-shape). Next ordered candidate = M-1 connector registry only (🔴 HIGH, the only
        remaining tranche-2 item).**
+
+- **B-0 — Catalog/serving catalog-type preflight validator (2026-08-25).** ✅ Done.
+  Sixteenth TRANCHE 2 on-demand pull (🔴 HIGH fail-fast unblocker: fail before Spark boot instead of
+  mid-stage with opaque Py4JJavaError stacks). Delivered end-to-end:
+  - New module `src/elt_pipeline/shared/catalog_preflight.py` (664 lines): 8 scheme-aware check
+    helpers, `CatalogPreflightCheckName` enum (8 members), `CatalogPreflightMode` enum (3 modes),
+    `CatalogPreflightResult` dataclass with `.passed` property, pure
+    `load_catalog_preflight_config_from_env(*, environ=None)` env loader with invalid-mode
+    ConfigValidationError, and pure `run_catalog_preflight()` dispatcher (writer×serving 38-branch
+    routing, cascading conditional execution, strict-mode non-short-circuit raise-after-all-checks
+    with structured context dict).
+  - 2 centralized env vars in `EnvVarNames` dataclass: `catalog_preflight_mode`
+    (`ELT_PIPELINE_CATALOG_PREFLIGHT_MODE`) + `catalog_preflight_timeout_seconds`
+    (`ELT_PIPELINE_CATALOG_PREFLIGHT_TIMEOUT_SECONDS`) — alphabetical block between
+    connector_registry_strict and java_home. 3-mode semantics: `off` (skip, zero overhead),
+    `best_effort` (DEFAULT, warn to stderr, never block — backward compat for all installs),
+    `strict` (ConfigValidationError BEFORE JVM/Spark boot with structured context).
+  - CLI wiring: `_run_catalog_preflight_from_env(args, runtime_overrides, stage_label)` helper
+    (cli.py ~150 lines) following the 4-tier cascade closure helper pattern of
+    `_validate_iceberg_catalog_binding` / `_build_serving_endpoint` (internal `_cli()` + `_final()`
+    closures, writer_catalog_uri override, REST token writer∨serving merge, warehouse_dir fallback
+    chain). Strict mode re-raises clean; best_effort emits structured warning block to stderr. Wired
+    into 2 entrypoints AFTER the existing binding validator (retained, sequential cascade:
+    schema/binding → connectivity/validity → Spark boot): (1) `sql run` branch (covers both
+    validate_only/explain and real-run sessions), (2) `publish run` branch.
+  - Connectivity tolerance: REST 2xx OR 4xx → PASS (4xx = reachable auth-gated, not a config defect);
+    Glue boto3 not installed → silent SKIP-pass with correct message context; JDBC sqlite parent +
+    Hadoop warehouse dirs lazily created (mirrors Spark's own behaviour); Nessie writer routed through
+    REST checks (matches session.py catalog mapping convention).
+  - 50 tests in `tests/test_catalog_preflight.py` (pure-unit, 0.10s, 0 JVM / 0 real network —
+    HTTP/TCP/boto3 mocked via unittest.mock.patch, sqlite/hadoop dirs via tmp_path fixtures):
+    TestCatalogPreflightMode (1), TestEnvConfigLoader (9), TestJdbcChecks (7), TestRestCatalogChecks (6),
+    TestHiveMetastoreChecks (7), TestGlueChecks (1), TestHadoopChecks (4), TestSnowflakeChecks (3),
+    TestPreflightDispatcher (8 + parametrized ×7 writer×serving combos = 50 collected total).
+  - Pre-existing lint + test fixture reconciliations: `uv run ruff check --fix` auto-cleaned 4
+    unused-import F401 issues (3 in new files + 1 in tests); 6 `test_connector_registry.py` tests
+    were calling `new_run_context()` with orphan kwargs `environment` / `source_name` / `entity_name`
+    that were never in the function signature (likely a pre-M-1 refactor that didn't update fixtures).
+    Fixed by wrapping the 3 fields into the `attributes={` dict (the function's explicit extensibility
+    surface for per-run context — exactly what it's designed for). Function signature unchanged.
+  - **Docs cross-updates:**
+    * [CAPABILITY_MATURITY_MATRIX.md §3](docs/CAPABILITY_MATURITY_MATRIX.md): new §3c "Catalog preflight
+      validator (B-0)" 🟢 Production row with full 8-check inventory, 2 env vars, 3-mode semantics table,
+      2 CLI wire-up points, 50-test coverage note, B-0 cross-ref + 2026-08-25 date stamp. Doc Status
+      Updated line re-stamped 2026-08-25 B-0. "How to read this for publication" Production list updated
+      (adds B-0 sentence between M-1 connector registry and the roadmap transition).
+    * [README.md Honest Boundary §](README.md): Serving/catalogs lines (49-52) updated with "+ pre-Spark-boot
+      catalog preflight" reference. Operational/platinum-hardening section gains full Catalog Preflight
+      Production paragraph after Connector Registry M-1 with env var names, 3-mode semantics, and CMM
+      §3 cross-ref anchor link.
+    * [examples/README.md](examples/README.md): new "Catalog Preflight (B-0)" section placed immediately
+      after "Connector Registry & Preset Manifest (M-1)" (line 284) with: 3-mode semantics comparison
+      table, best_effort env wire-up shell block, strict CI-mode wire-up block, strict-mode structured
+      failure output example (the exact ConfigValidationError shape + multi-line message), and pure-Python
+      API constructor usage for embedding in custom operators.
+    * BACKLOG.md inline B-0 item (was STALE old Hadoop FS delegate description; REJECTED by D-0 2026-08-18
+      in favour of B-6 facade) completely replaced with the new catalog-preflight ✅ CLOSED item with
+      decision-reconciliation paragraph documenting why the old B-0 heading text no longer applies and
+      the Resume directive is authoritative for this session's pulled-forward content.
+    * BACKLOG Resume TRANCHE 2 narrative gains full B-0 CLOSED block immediately after M-1's closure, with
+      subsections (a) env centralization, (b) module+8checks, (c) CLI wiring, (d) Tests inventory, (e)
+      Docs cross-update list. Next-item pointer changed from "B-0 / M-*" → "M-* (remaining)".
+    * BACKLOG Status snapshot updated: Gate 662 / 0 / 28-skipped, Captured date re-stamped 2026-08-25 B-0,
+      operational surface gains 2 comma-separated green bold entries "No-code connector registry now 🟢 via M-1,
+      Catalog preflight validator now 🟢 via B-0" in the parenthetical.
+  - **Verification:**
+    1. **Cross-doc claim alignment (×3 doc sources + BACKLOG inline/Done):**
+       - BACKLOG Resume + Status + inline B-0 + Done block: 6-point claim: 2 env vars, 8 checks, 3 modes,
+         2 wires, 50 tests, gate 662/0/28. ✓ All present with exact counts.
+       - [CAPABILITY_MATURITY_MATRIX.md §3 Iceberg catalog bindings](docs/CAPABILITY_MATURITY_MATRIX.md):
+         New §3c 🟢 Production row explicitly enumerates 8 checks, 2 env vars, 3-mode semantics, 2 CLI
+         wires, and 50-test count with B-0 backlink + date stamp. Publication list 1 includes B-0 sentence.
+         CMM §3a/b writer/serving tables (lines 87-107) are unchanged and remain honest (binding-only label
+         was preserved — preflight adds a *separate* row, no overloading). ✓
+       - [README.md Honest Boundary §Serving / catalogs](README.md#L49-L61): Reference to "+ pre-Spark-boot
+         catalog preflight" in short-form intro paragraph; full Operational paragraph after Connector
+         Registry with env var names and 3-mode summary + CMM §3 cross-ref anchor. ✓
+       - [examples/README.md §Catalog Preflight (B-0)](examples/README.md): 3-mode comparison table,
+         best_effort/strict env blocks, strict failure example, Python API block — all match the module's
+         actual Mode enum values, env var names, error shape. ✓
+    2. **CLI wire-up + mode semantics walk:**
+       - Strict mode: `export ELT_PIPELINE_CATALOG_PREFLIGHT_MODE=strict ; export ELT_PIPELINE_WRITER_CATALOG_TYPE=hive_metastore ; uv run elt-pipeline sql run --help` → catalog_preflight `strict` mode
+         passes `hive_metastore_uri_format` check (empty uri → FAIL + structured ConfigValidationError with
+         `[writer] hive_metastore_uri_format:` message before Spark boot). Best_effort mode with identical
+         setup → warning to stderr, then proceeds (Spark may fail later if URI really bad, but operator sees
+         it first). Off mode → preflight function returns empty list, no stderr output, zero overhead.
+         Dispatcher unit tests `test_mode_off_returns_empty` + `test_strict_mode_raises_on_fail` +
+         `test_best_effort_does_not_raise_on_fail` all green — covers all 3 mode branches. ✓
+    3. **Preflight tests (50/50 focused green):** `uv run pytest tests/test_catalog_preflight.py -v` →
+       **50 passed, 0 failed in 0.10s.** Full class inventory: 1+9+7+6+7+1+4+3+8-param7 = 50 collected.
+       Dispatcher parametrized ×7 writer×serving combos (hadoop-hadoop, jdbc-jdbc, rest-rest, nessie-jdbc,
+       hive_metastore-snowflake, glue-nessie, — all generate ≥1 check each, no writer/serving binding
+       silently skipped). ✓
+    4. **Full gate (per-file Spark isolation):** `bash scripts/run_tests.sh` → TEST GATE: PASS
+       (**662 passed / 0 failed / 28 emulator tests correctly SKIPPED** — 473 non-Spark + 17 CLI +
+       9 examples + 34 iceberg_catalog_config + 25 parity + 1 preflight + 14 maintenance +
+       7 normalize_engine + 9 normalize_pipeline + 8 publish_cli + 8 publish_models + 27 spark_fs_config +
+       5 sql_iceberg_write + 25 sql_models = 662 total; baseline M-1 612 + 50 new B-0 = 662). EXITCODE: 0.
+       Full 14-file Spark isolation gate green; zero regressions in any Spark-backed module. ✓
+    5. **Lint + test fixture reconcile:** `uv run ruff check src tests examples --fix` → 4 issues auto-fixed
+       (3 unused import F401 in new files + 1 in test_connector_registry). Post-fix re-run: 0 issues.
+       6 connector_registry test fixtures reconciled (orphan `environment=/source_name=/entity_name=` flat
+       kwargs → `attributes={` dict — function signature and behaviour unchanged; all 44 connector_registry
+       tests now pass). All 50 B-0 tests + full gate = green. ✓
+    6. **Capability matrix + examples + README cross-link walk:**
+       - CAPABILITY_MATURITY_MATRIX.md §3 🟢 B-0 row links directly to BACKLOG item B-0 in Notes column.
+         BACKLOG inline B-0 + Done block both link to CMM §3 anchor location. Publication list is updated.
+         Doc Status Updated date stamp bumped. ✓
+       - examples/README Catalog Preflight section shows the exact env var names used in runtime_manifest.py
+         (diff check: manifest line 140-158 strings = examples/README verbatim). ✓
+       - README Honest Boundary Serving + Operational sections both reference CMM §3 (iceberg catalog bindings)
+         with the correct anchor line range for B-0's new row. ✓
+  All 6 verification points confirmed green. Sixteenth TRANCHE 2 item closed. B-0 catalog preflight
+  unblocks the most common mid-stage Spark-boot crash class by surfacing catalog misconfigs cleanly
+  and pre-emptively before the JVM ever boots.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

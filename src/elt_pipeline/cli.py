@@ -22,7 +22,6 @@ from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntit
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.ingest import (
     ConnectorFamily,
-    ConnectorFamilyUnsupportedError,
     ConnectorRegistryError,
     KafkaConnectorConfig,
     LocalArtifactStore,
@@ -36,7 +35,6 @@ from elt_pipeline.ingest import (
     SqlConnectorConfig,
     apply_connector_preset_defaults,
     get_connector_factory,
-    is_connector_factory_registered,
     load_connector_manifest_from_json,
     load_connector_manifest_from_yaml,
 )
@@ -62,6 +60,10 @@ from elt_pipeline.publish import (
     run_publish_definitions_locally,
 )
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
+from elt_pipeline.shared.catalog_preflight import (
+    load_catalog_preflight_config_from_env,
+    run_catalog_preflight,
+)
 from elt_pipeline.shared.errors import (
     ConfigValidationError,
     ErrorCategory,
@@ -552,6 +554,158 @@ def _validate_iceberg_catalog_binding(
                 "provided_uri": bool(catalog_uri),
             },
         )
+
+
+def _run_catalog_preflight_from_env(
+    args: Any,
+    *,
+    runtime_overrides: dict[str, Any] | None = None,
+    stage_label: str = "sql",
+) -> None:
+    import sys
+
+    ro: dict[str, Any] = (
+        runtime_overrides if isinstance(runtime_overrides, dict) else {}
+    )
+    has_singleton = runtime_context.is_initialized()
+
+    def _cli(*attrs: str) -> Any:
+        for a in attrs:
+            v = getattr(args, a, None)
+            if v not in (None, ""):
+                return v
+        return None
+
+    def _final(
+        singleton_key: str,
+        ro_path: tuple[str, ...],
+        manifest_default: Any,
+    ) -> Any:
+        if has_singleton:
+            v = runtime_context.get(singleton_key)
+            if v not in (None, ""):
+                return v
+        from_ro = _get_from_runtime_overrides(ro, *ro_path)
+        if from_ro not in (None, ""):
+            return from_ro
+        return manifest_default
+
+    writer_catalog_type = (
+        _cli("iceberg_writer_catalog_type", "iceberg_catalog_type")
+        or _final(
+            "iceberg_writer.catalog_type",
+            ("iceberg_writer", "catalog_type"),
+            runtime_manifest.catalogs.workstation_default_writer_catalog,
+        )
+    )
+    if isinstance(writer_catalog_type, str):
+        writer_catalog_type = writer_catalog_type.strip().lower()
+    serving_catalog_type = _final(
+        "iceberg_serving.catalog_type",
+        ("iceberg_serving", "catalog_type"),
+        runtime_manifest.catalogs.workstation_default_serving_catalog,
+    )
+    if isinstance(serving_catalog_type, str):
+        serving_catalog_type = serving_catalog_type.strip().lower()
+    catalog_uri = (
+        _cli("iceberg_catalog_uri")
+        or _final(
+            "iceberg_serving.catalog_uri",
+            ("iceberg_serving", "catalog_uri"),
+            "",
+        )
+        or ""
+    )
+    writer_catalog_uri = (
+        _cli("iceberg_catalog_uri")
+        or _final(
+            "iceberg_writer.catalog_uri",
+            ("iceberg_writer", "catalog_uri"),
+            "",
+        )
+        or ""
+    )
+    rest_token = _final(
+        "iceberg_writer.rest_token",
+        ("iceberg_writer", "rest_token"),
+        "",
+    ) or _final(
+        "iceberg_serving.rest_token",
+        ("iceberg_serving", "rest_token"),
+        "",
+    )
+    hive_metastore_uri = (
+        _cli("iceberg_hive_metastore_uri")
+        or _final(
+            "iceberg_writer.hive_metastore_uri",
+            ("iceberg_writer", "hive_metastore_uri"),
+            "",
+        )
+        or ""
+    )
+    glue_region = (
+        _cli("iceberg_glue_region")
+        or _final(
+            "iceberg_writer.glue_region",
+            ("iceberg_writer", "glue_region"),
+            "",
+        )
+        or ""
+    )
+    warehouse_dir = (
+        _cli("iceberg_warehouse_dir")
+        or _final(
+            "iceberg_writer.warehouse_dir",
+            ("iceberg_writer", "warehouse_dir"),
+            "",
+        )
+        or _final(
+            "iceberg_serving.warehouse_dir",
+            ("iceberg_serving", "warehouse_dir"),
+            "",
+        )
+        or ""
+    )
+    writer_config: dict[str, Any] = {
+        "catalog_uri": writer_catalog_uri or catalog_uri,
+        "rest_token": rest_token,
+        "hive_metastore_uri": hive_metastore_uri,
+        "glue_region": glue_region,
+        "warehouse_dir": warehouse_dir,
+    }
+    serving_config: dict[str, Any] = {
+        "catalog_uri": catalog_uri,
+        "rest_token": rest_token,
+    }
+    preflight_conf = load_catalog_preflight_config_from_env()
+    mode = preflight_conf["mode"]
+    timeout_seconds = preflight_conf["timeout_seconds"]
+    if mode == "off" or mode.value == "off":
+        return
+    try:
+        results = run_catalog_preflight(
+            writer_catalog_type=writer_catalog_type,
+            writer_config=writer_config,
+            serving_catalog_type=serving_catalog_type,
+            serving_config=serving_config,
+            mode=mode,
+            timeout_seconds=timeout_seconds,
+        )
+    except ConfigValidationError:
+        raise
+    failures = [r for r in results if not r.passed]
+    if failures:
+        lines = [
+            f"[{stage_label}] catalog_preflight WARNING: "
+            f"{len(failures)}/{len(results)} check(s) failed "
+            f"(mode={mode}, best_effort — continuing before SparkSession boot):"
+        ]
+        for f in failures:
+            lines.append(
+                f"  • [{f.binding}] {f.check_name.value}: {f.message}"
+            )
+        sys.stderr.write("\n".join(lines) + "\n\n")
+        sys.stderr.flush()
 
 
 def _build_serving_endpoint(
@@ -2103,6 +2257,11 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.sql_command == "run":
                 _validate_iceberg_catalog_binding(args, runtime_overrides=_sql_runtime_overrides)
+                _run_catalog_preflight_from_env(
+                    args,
+                    runtime_overrides=_sql_runtime_overrides,
+                    stage_label="sql",
+                )
                 if args.validate_only or args.explain:
                     sql_spark = build_spark_session(
                         **_resolve_iceberg_session_kwargs(
@@ -2405,6 +2564,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.publish_command == "run":
                 _validate_iceberg_catalog_binding(
                     args, runtime_overrides=_publish_runtime_overrides
+                )
+                _run_catalog_preflight_from_env(
+                    args,
+                    runtime_overrides=_publish_runtime_overrides,
+                    stage_label="publish",
                 )
                 publish_spark = build_spark_session(
                     **_resolve_iceberg_session_kwargs(

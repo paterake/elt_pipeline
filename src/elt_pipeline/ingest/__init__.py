@@ -1,12 +1,12 @@
 """Ingestion stage package."""
 
 from elt_pipeline.ingest.connectors import (
-    ConnectorFamily,
     ConnectorFactory,
+    ConnectorFamily,
+    ConnectorFamilyUnsupportedError,
     ConnectorManifest,
     ConnectorPreset,
     ConnectorRegistryError,
-    ConnectorFamilyUnsupportedError,
     KafkaConnectorBase,
     KafkaConnectorConfig,
     KafkaMessage,
