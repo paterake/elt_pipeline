@@ -325,3 +325,62 @@ class LocalArtifactStore:
         )
         _append_jsonl_file(path, alert_event)
         return path
+
+    def append_quarantine_records(
+        self,
+        *,
+        run_context: RunContext,
+        environment: str,
+        stage: str,
+        check_name: str,
+        dataset_id: str | None,
+        dataset_name: str | None,
+        records: list[dict[str, Any]],
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Append failed-quality rows to a DLQ JSONL file.
+
+        Per-run + per-stage + per-check quarantine artifact. Uses B-6 scheme-aware
+        path utilities so writes land local/S3/GCS/ADLS identically to the rest of
+        the run artifacts. Each appended line wraps the offending record with
+        capture metadata (check name, dataset, run id, etc.).
+        """
+        import re as _re
+
+        safe_stage = _re.sub(r"[^A-Za-z0-9._-]+", "_", (stage or "unknown").strip().lower())
+        safe_check = _re.sub(r"[^A-Za-z0-9._-]+", "_", (check_name or "unknown").strip().lower())
+        dataset_segment_raw = (dataset_id or dataset_name or "dataset").strip() or "dataset"
+        safe_dataset = _re.sub(r"[^A-Za-z0-9._-]+", "_", dataset_segment_raw.lower())
+        quarantine_filename = f"{safe_check}__{safe_dataset}.jsonl"
+        base_dir = join_paths(
+            self.layout.run_dir(run_context=run_context, environment=environment),
+            "quality_quarantine",
+            safe_stage,
+        )
+        path = join_paths(base_dir, quarantine_filename)
+        base_metadata: dict[str, Any] = {
+            "captured_at": datetime.now(UTC).isoformat(),
+            "run_id": run_context.run_id,
+            "stage": safe_stage,
+            "check_name": safe_check,
+            "dataset_id": dataset_id,
+            "dataset_name": dataset_name,
+            "environment": environment,
+        }
+        if extra_metadata:
+            base_metadata["extra"] = dict(extra_metadata)
+        for index, record in enumerate(records or []):
+            if isinstance(record, dict):
+                wrapped = {
+                    "quarantine": dict(base_metadata),
+                    "quarantine_row_index": index,
+                    "record": dict(record),
+                }
+            else:
+                wrapped = {
+                    "quarantine": dict(base_metadata),
+                    "quarantine_row_index": index,
+                    "value": record,
+                }
+            _append_jsonl_file(path, wrapped)
+        return path

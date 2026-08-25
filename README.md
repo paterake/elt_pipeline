@@ -48,7 +48,7 @@ The platform defines four first-class connector *families* (`rest`, `sql`, `kafk
 **Serving / catalogs — implemented:**
 - Iceberg L3/L4 tables with a 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`, `hive_metastore`, `glue`.
 - Trino 468 JDBC serving endpoint (first-class spoke; SQLite-backed metastore default for workstation).
-- Airflow reference orchestration wrapper; OpenLineage-compatible lineage adapter; row-count DQ adapter.
+- Airflow reference orchestration wrapper; OpenLineage-compatible lineage adapter; row-count DQ adapter + 6-check built-in DQ library with quarantine/DLQ.
 
 **Operational / platinum-hardening items:**
 Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup / manifest rewrite) is **Production** (via `elt maintain run …`; see [Capability Maturity Matrix §5](docs/CAPABILITY_MATURITY_MATRIX.md#L125-L141)).
@@ -56,6 +56,7 @@ Observability (Prometheus metrics, OTLP tracing, webhook alerting) is **Producti
 Secrets resolution (env vars + files + cloud SMs/Vault roadmap) is **Production** via the G-5 subsystem: `secret_ref` URIs, `SecretValue` redaction, and the pluggable `SecretsProvider` Protocol/registry; see [Capability Maturity Matrix §9](docs/CAPABILITY_MATURITY_MATRIX.md#L184-L213).
 Governance — classification tags (4 tiers: public/internal/confidential/restricted_pii), column-level Trino masking (7 strategies, role-based), retention sweeps, and right-to-erasure runbook + SQL helpers is **Production** via the G-6 subsystem; see [Capability Maturity Matrix §10](docs/CAPABILITY_MATURITY_MATRIX.md#L217-L227).
 Lineage — **OpenLineage 2.0.2 wire-compatible export is Production** via env-driven `openlineage_http` backend behind the existing adapter seam; native bespoke JSONL sink remains authoritative (always written, demo-scoped). Auto-injects standard `EnvironmentRunFacet`. Targets Marquez, DataHub, OpenMetadata, Apache Atlas out of the box. See [Capability Maturity Matrix §12](docs/CAPABILITY_MATURITY_MATRIX.md#L242-L249).
+Data Quality — **Built-in 6-check library + scheme-agnostic quarantine/DLQ is Production** behind the existing adapter seam. Ships `BuiltinQualityHook` (not-null, uniqueness, range, referential integrity, freshness, format regex checks) loaded from JSON/YAML env, plus the original `RowCountQualityHook`. Failed rows are written to a quarantine JSONL layout via the same B-6 pluggable storage backend (local/S3/GCS/ADLS) as logs/errors/lineage, with a `quality_quarantine_written` audit log event listing every path. Blocking and non-blocking policies supported; quarantine is always written first. See [Capability Maturity Matrix §11](docs/CAPABILITY_MATURITY_MATRIX.md#L230-L238).
 
 ## Source Code references
 
@@ -318,14 +319,43 @@ Disablement and failure behavior:
 
 ## Optional Data-Quality Hooks
 
-The runtime now includes one optional reference data-quality integration for normalization and SQL outputs.
+The runtime now includes **two built-in data-quality backends** behind the `QualityHookAdapter` seam, plus a full quarantine/DLQ write path for failed rows:
 
-- The current reference backend is `row_count_threshold`.
+### 1. Row-count sanity backend (`row_count_threshold`)
+Original reference backend: asserts each output dataset's row count meets a configured minimum. See supported variables below.
+
+### 2. Built-in check library backend (`builtin_checks`)
+Production 6-check library loaded from JSON or YAML file:
+
+| Check kind | Purpose |
+|---|---|
+| `not_null` | No nulls in target column |
+| `uniqueness` | Unique key across one or more columns |
+| `range` | Numeric min/max (inclusive) bounds for a column |
+| `referential_integrity` | Source key exists in target dataset's key column (in-run datasets auto-seeded as refs) |
+| `freshness` | Max age for a timestamp column (seconds) |
+| `regex_format` | Values in a column match a compiled Python regex pattern |
+
+### Quarantine / DLQ write path
+Any check failure (regardless of blocking policy) writes failed records to a scheme-agnostic JSONL layout:
+```
+{runs_dir}/quality_quarantine/{stage}/{check_name}__{dataset_id}.jsonl
+```
+Each line wraps the bad record with:
+- `quarantine.run_id`, `quarantine.stage`, `quarantine.check_name`, `quarantine.dataset_id`
+- `quarantine.policy`, `quarantine.blocking`, `quarantine.backend_type`
+- `quarantine.observed_value`, `quarantine.expected_value`, `quarantine.kind`
+- `quarantine.extra_metadata` (backend-specific)
+- `quarantine_row_index` (0-based within this quarantine file)
+- `record` or `value` (the offending row / offending scalar)
+
+A WARNING-class `quality_quarantine_written` log event is emitted with every written path + row count, so audit streams can forward quarantine locations downstream for triage.
+
 - Quality hooks run only after `normalize run` and `sql run`; publish-stage quality is still out of scope unless a later PRD extends it.
 - Local stage artifacts remain authoritative whether the quality backend is enabled or disabled.
 - Quality outcomes are recorded in stage audit `validation_results`, structured `logs.jsonl`, and stage metrics such as `quality.pass`, `quality.warn`, `quality.fail`, and `quality.skipped`.
 
-Example enablement:
+Example enablement (row-count backend):
 
 ```bash
 export ELT_PIPELINE_QUALITY_BACKEND=row_count_threshold
@@ -334,12 +364,23 @@ export ELT_PIPELINE_QUALITY_POLICY=best_effort
 export ELT_PIPELINE_QUALITY_STAGES=normalize,sql
 ```
 
+Example enablement (builtin check library via YAML):
+
+```bash
+export ELT_PIPELINE_QUALITY_BACKEND=builtin_checks
+export ELT_PIPELINE_QUALITY_CHECKS_YAML=./config/builtin_quality_checks.yaml
+export ELT_PIPELINE_QUALITY_POLICY=blocking
+export ELT_PIPELINE_QUALITY_STAGES=normalize,sql
+```
+
 Supported variables:
 
-- `ELT_PIPELINE_QUALITY_BACKEND`: set to `row_count_threshold` to enable the reference backend
-- `ELT_PIPELINE_QUALITY_ROW_COUNT_MIN`: minimum allowed row count for each evaluated output dataset
-- `ELT_PIPELINE_QUALITY_POLICY`: `best_effort` or `blocking`
+- `ELT_PIPELINE_QUALITY_BACKEND`: `row_count_threshold` OR `builtin_checks` (enable a backend)
+- `ELT_PIPELINE_QUALITY_POLICY`: `best_effort` (continue on failure) or `blocking` (fail run on failure)
 - `ELT_PIPELINE_QUALITY_STAGES`: comma-separated subset of `normalize` and `sql`
+- `ELT_PIPELINE_QUALITY_ROW_COUNT_MIN`: minimum allowed row count per dataset (row_count_threshold backend only)
+- `ELT_PIPELINE_QUALITY_CHECKS_JSON`: absolute or relative path to builtin checks JSON file (`builtin_checks` backend only)
+- `ELT_PIPELINE_QUALITY_CHECKS_YAML`: absolute or relative path to builtin checks YAML file (`builtin_checks` backend only)
 
 All `ELT_PIPELINE_QUALITY_*` values are trimmed before validation.
 `ELT_PIPELINE_QUALITY_BACKEND`, `ELT_PIPELINE_QUALITY_POLICY`, and
@@ -350,8 +391,10 @@ and documentation.
 Disablement and failure behavior:
 
 - Leave `ELT_PIPELINE_QUALITY_BACKEND` unset to disable the integration entirely.
+- Do NOT set both `ELT_PIPELINE_QUALITY_CHECKS_JSON` and `ELT_PIPELINE_QUALITY_CHECKS_YAML` simultaneously (raises `ConfigValidationError` with `ambiguous_builtin_dq_config`).
 - Use `best_effort` when quality evidence should be captured without failing an otherwise successful stage.
 - Use `blocking` when any failed quality result must fail the stage with `QUALITY_CHECK_FAILED`.
+- **Quarantine files are ALWAYS written before the run outcome is decided**: even a blocking stage failure leaves the triage dataset behind (never silently dropped).
 - Backend execution failures are recorded locally with `QUALITY_BACKEND_EXECUTION_FAILED`, so operators can distinguish core stage success from optional quality integration failure.
 
 ## Runnable Examples

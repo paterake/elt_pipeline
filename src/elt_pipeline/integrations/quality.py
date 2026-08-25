@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field
 
+from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.ingest.storage import LocalArtifactStore
 from elt_pipeline.shared.errors import (
     ConfigValidationError,
@@ -17,12 +18,17 @@ from elt_pipeline.shared.errors import (
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.runtime import RunContext
 
-_QUALITY_BACKEND_ENV = "ELT_PIPELINE_QUALITY_BACKEND"
-_QUALITY_POLICY_ENV = "ELT_PIPELINE_QUALITY_POLICY"
-_QUALITY_ROW_COUNT_MIN_ENV = "ELT_PIPELINE_QUALITY_ROW_COUNT_MIN"
-_QUALITY_STAGES_ENV = "ELT_PIPELINE_QUALITY_STAGES"
+_env = runtime_manifest.env
+_QUALITY_BACKEND_ENV = _env.quality_backend
+_QUALITY_POLICY_ENV = _env.quality_policy
+_QUALITY_ROW_COUNT_MIN_ENV = _env.quality_row_count_min
+_QUALITY_STAGES_ENV = _env.quality_stages
+_QUALITY_CHECKS_JSON_ENV = _env.quality_checks_json
+_QUALITY_CHECKS_YAML_ENV = _env.quality_checks_yaml
 _QUALITY_ERROR_RECORDED_CONTEXT_KEY = "quality_error_recorded"
 _SUPPORTED_QUALITY_STAGES = frozenset({"normalize", "sql"})
+BUILTIN_CHECKS_BACKEND_TYPE = "builtin_checks"
+ROW_COUNT_BACKEND_TYPE = "row_count_threshold"
 
 
 class QualityHookPolicy(str, Enum):
@@ -45,6 +51,7 @@ class QualityDatasetRef(BaseModel):
     output_path: str | None = None
     row_count: int | None = None
     metrics: dict[str, int | float | str] = Field(default_factory=dict)
+    records: list[dict[str, object]] = Field(default_factory=list)
 
 
 class QualityHookRequest(BaseModel):
@@ -54,6 +61,7 @@ class QualityHookRequest(BaseModel):
     environment: str
     datasets: list[QualityDatasetRef] = Field(default_factory=list)
     metrics: dict[str, int | float | str] = Field(default_factory=dict)
+    reference_datasets: dict[str, list[dict[str, object]]] = Field(default_factory=dict)
 
 
 class QualityCheckResult(BaseModel):
@@ -66,6 +74,8 @@ class QualityCheckResult(BaseModel):
     message: str | None = None
     observed_value: int | float | str | None = None
     expected_value: int | float | str | None = None
+    violated_records: list[dict[str, object]] = Field(default_factory=list)
+    check_details: dict[str, object] = Field(default_factory=dict)
 
 
 class QualityHookSummary(BaseModel):
@@ -117,7 +127,7 @@ class _RowCountBackendConfig:
 
 
 class RowCountQualityHook:
-    backend_type = "row_count_threshold"
+    backend_type = ROW_COUNT_BACKEND_TYPE
 
     def __init__(
         self,
@@ -195,6 +205,163 @@ class RowCountQualityHook:
                     ),
                 )
             )
+        return results
+
+
+@dataclass(frozen=True)
+class _BuiltinChecksBackendConfig:
+    checks: Any  # list[BuiltinQualityCheck] from shared/quality; typed lazily
+    enabled_stages: frozenset[str]
+    policy: QualityHookPolicy
+
+
+class BuiltinQualityHook:
+    """Starter built-in check library (BACKLOG item G-8).
+
+    Runs a configured list of `BuiltinQualityCheck` specs against each dataset
+    that populates `QualityDatasetRef.records` with materialized rows. For
+    each failing check, the resulting `QualityCheckResult.violated_records`
+    carries the bad rows so the adapter can persist them into the
+    quarantine/DLQ artifact location (see `QualityHookAdapter.evaluate`).
+    """
+
+    backend_type = BUILTIN_CHECKS_BACKEND_TYPE
+
+    def __init__(
+        self,
+        *,
+        checks: list[Any],
+        enabled_stages: set[str] | frozenset[str] | None = None,
+    ) -> None:
+        from elt_pipeline.shared.quality import (
+            BUILTIN_QUALITY_CHECK_ADAPTER as _BQC_TA,
+        )
+        from elt_pipeline.shared.quality import (
+            FreshnessCheck,
+            NotNullCheck,
+            RangeCheck,
+            ReferentialIntegrityCheck,
+            RegexFormatCheck,
+            UniquenessCheck,
+        )
+
+        _bqc_base = (
+            NotNullCheck,
+            RangeCheck,
+            RegexFormatCheck,
+            ReferentialIntegrityCheck,
+            FreshnessCheck,
+            UniquenessCheck,
+        )
+        normalized_checks: list[Any] = []
+        for idx, check in enumerate(checks or []):
+            if isinstance(check, _bqc_base):
+                normalized_checks.append(check)
+            elif isinstance(check, dict):
+                normalized_checks.append(_BQC_TA.validate_python(check))
+            else:
+                raise ConfigValidationError(
+                    message=(
+                        "BuiltinQualityHook.checks entries must be "
+                        "BuiltinQualityCheck instances or dict specs"
+                    ),
+                    context={
+                        "backend_type": self.backend_type,
+                        "invalid_index": idx,
+                        "invalid_type": type(check).__name__,
+                    },
+                )
+        self._checks: list[Any] = normalized_checks
+        self._enabled_stages = _validate_enabled_stages(
+            enabled_stages or {"normalize", "sql"},
+            backend_type=self.backend_type,
+        )
+
+    @property
+    def checks(self) -> list[Any]:
+        return list(self._checks)
+
+    def evaluate(self, *, request: QualityHookRequest) -> list[QualityCheckResult]:
+        from elt_pipeline.shared.quality import (
+            builtin_check_result_to_adapter,
+            evaluate_builtin_checks_for_dataset,
+        )
+
+        stage_name = request.stage.strip().lower()
+        if stage_name not in self._enabled_stages:
+            return [
+                QualityCheckResult(
+                    backend_type=self.backend_type,
+                    check_name="builtin_checks_stage_gate",
+                    status=QualityCheckStatus.skipped,
+                    message=(
+                        f"Stage '{request.stage}' is not enabled for builtin DQ checks"
+                    ),
+                )
+            ]
+        if not request.datasets:
+            return [
+                QualityCheckResult(
+                    backend_type=self.backend_type,
+                    check_name="builtin_checks_no_datasets",
+                    status=QualityCheckStatus.skipped,
+                    message=(
+                        "No datasets were emitted for builtin quality evaluation"
+                    ),
+                )
+            ]
+
+        results: list[QualityCheckResult] = []
+        reference_datasets: dict[str, list[dict[str, Any]]] = dict(
+            request.reference_datasets or {}
+        )
+        # Seed reference_datasets with any dataset that has a dataset_id + records
+        # so referential integrity checks can cross-reference within the same run
+        # without requiring the caller to pre-populate reference_datasets.
+        for ds in request.datasets:
+            if ds.dataset_id and ds.dataset_id not in reference_datasets and ds.records:
+                reference_datasets[ds.dataset_id] = list(ds.records)
+            if (
+                ds.dataset_name
+                and ds.dataset_name not in reference_datasets
+                and ds.records
+            ):
+                reference_datasets.setdefault(ds.dataset_name, list(ds.records))
+
+        for dataset in request.datasets:
+            builtin_results = evaluate_builtin_checks_for_dataset(
+                dataset=dataset,
+                checks=self._checks,
+                reference_datasets=reference_datasets,
+            )
+            for bres in builtin_results:
+                adapted = builtin_check_result_to_adapter(
+                    bres,
+                    backend_type=self.backend_type,
+                )
+                if bres.violated_records:
+                    adapted.violated_records = [
+                        dict(r) if isinstance(r, dict) else {"value": r}
+                        for r in bres.violated_records
+                    ]
+                adapted.check_details = {"kind": bres.kind, **(adapted.check_details or {})}
+                results.append(adapted)
+
+            if not builtin_results:
+                results.append(
+                    QualityCheckResult(
+                        backend_type=self.backend_type,
+                        check_name="builtin_checks_dataset_no_matching_specs",
+                        status=QualityCheckStatus.skipped,
+                        dataset_id=dataset.dataset_id,
+                        dataset_name=dataset.dataset_name,
+                        message=(
+                            f"No builtin quality check specs targeted dataset "
+                            f"'{dataset.dataset_name or dataset.dataset_id}' "
+                            f"(specs count={len(self._checks)})."
+                        ),
+                    )
+                )
         return results
 
 
@@ -303,12 +470,69 @@ class QualityHookAdapter:
             )
             for result in results
         ]
-        return QualityHookSummary(
+
+        quarantine_paths: dict[str, int] = {}
+        for result in coerced_results:
+            if result.status != QualityCheckStatus.fail:
+                continue
+            if not result.violated_records:
+                continue
+            wrote_path = self._artifact_store.append_quarantine_records(
+                run_context=run_context,
+                environment=environment,
+                stage=request.stage,
+                check_name=result.check_name,
+                dataset_id=result.dataset_id,
+                dataset_name=result.dataset_name,
+                records=[dict(r) for r in result.violated_records],
+                extra_metadata={
+                    "backend_type": self._backend.backend_type if self._backend else "unknown",
+                    "blocking": bool(result.blocking),
+                    "observed_value": result.observed_value,
+                    "expected_value": result.expected_value,
+                    "kind": (
+                        result.check_details.get("kind")
+                        if isinstance(result.check_details, dict)
+                        else None
+                    ),
+                },
+            )
+            quarantine_paths[wrote_path] = (
+                quarantine_paths.get(wrote_path, 0) + len(result.violated_records)
+            )
+
+        summary = QualityHookSummary(
             backend_type=self._backend.backend_type,
             stage=request.stage,
             passed=all(result.status != QualityCheckStatus.fail for result in coerced_results),
             results=coerced_results,
         )
+        if quarantine_paths:
+            self._artifact_store.append_log_event(
+                run_context=run_context,
+                environment=environment,
+                log_event=build_log_event(
+                    run_context=run_context,
+                    severity="WARNING",
+                    component="quality",
+                    event_type="quality_quarantine_written",
+                    message=(
+                        f"DQ check failures written to quarantine for stage "
+                        f"{request.stage!r}: {sum(quarantine_paths.values())} rows across "
+                        f"{len(quarantine_paths)} file(s)."
+                    ),
+                    details={
+                        "stage": request.stage,
+                        "backend_type": self._backend.backend_type if self._backend else "unknown",
+                        "policy": self._policy.value,
+                        "quarantine_paths": list(quarantine_paths.keys()),
+                        "quarantine_row_counts": quarantine_paths,
+                        "status_counts": summary.counts_by_status(),
+                        "blocking_failure_count": summary.blocking_failure_count,
+                    },
+                ),
+            )
+        return summary
 
     def _build_backend_failure_summary(
         self,
@@ -389,13 +613,35 @@ def build_quality_hook(
     configured_policy = policy
 
     if configured_backend is None:
-        backend_config = _load_row_count_backend_config_from_env()
-        if backend_config is not None:
-            configured_backend = RowCountQualityHook(
-                row_count_min=backend_config.row_count_min,
-                enabled_stages=set(backend_config.enabled_stages),
+        row_cfg = _load_row_count_backend_config_from_env()
+        builtin_cfg = _load_builtin_checks_backend_config_from_env()
+        if row_cfg is not None and builtin_cfg is not None:
+            raise ConfigValidationError(
+                message=(
+                    "Ambiguous data-quality env configuration: both "
+                    "row_count_threshold and builtin_checks backends are configured. "
+                    "Set only ONE of ELT_PIPELINE_QUALITY_BACKEND values."
+                ),
+                context={
+                    "row_count_configured_via": _QUALITY_BACKEND_ENV
+                    + f"={RowCountQualityHook.backend_type!r}",
+                    "builtin_checks_configured_via": (
+                        f"{_QUALITY_CHECKS_JSON_ENV} or {_QUALITY_CHECKS_YAML_ENV}"
+                    ),
+                },
             )
-            configured_policy = configured_policy or backend_config.policy
+        if row_cfg is not None:
+            configured_backend = RowCountQualityHook(
+                row_count_min=row_cfg.row_count_min,
+                enabled_stages=set(row_cfg.enabled_stages),
+            )
+            configured_policy = configured_policy or row_cfg.policy
+        elif builtin_cfg is not None:
+            configured_backend = BuiltinQualityHook(
+                checks=builtin_cfg.checks,
+                enabled_stages=set(builtin_cfg.enabled_stages),
+            )
+            configured_policy = configured_policy or builtin_cfg.policy
 
     return QualityHookAdapter(
         artifact_store=LocalArtifactStore(root_path),
@@ -430,12 +676,17 @@ def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:
         return None
 
     backend_type = raw_backend_type.strip().lower()
+    if backend_type == BUILTIN_CHECKS_BACKEND_TYPE:
+        return None
     if backend_type != RowCountQualityHook.backend_type:
         raise ConfigValidationError(
             message="Unsupported data-quality backend type",
             context={
                 "backend_type": backend_type,
-                "supported_backend_types": [RowCountQualityHook.backend_type],
+                "supported_backend_types": [
+                    RowCountQualityHook.backend_type,
+                    BUILTIN_CHECKS_BACKEND_TYPE,
+                ],
             },
         )
 
@@ -473,6 +724,74 @@ def _load_row_count_backend_config_from_env() -> _RowCountBackendConfig | None:
 
     return _RowCountBackendConfig(
         row_count_min=row_count_min,
+        enabled_stages=enabled_stages,
+        policy=policy,
+    )
+
+
+def _load_builtin_checks_backend_config_from_env() -> _BuiltinChecksBackendConfig | None:
+    json_path = os.getenv(_QUALITY_CHECKS_JSON_ENV)
+    yaml_path = os.getenv(_QUALITY_CHECKS_YAML_ENV)
+    backend_hint = (os.getenv(_QUALITY_BACKEND_ENV) or "").strip().lower()
+    if not json_path and not yaml_path and backend_hint != BUILTIN_CHECKS_BACKEND_TYPE:
+        return None
+
+    checks: list[Any]
+    if json_path and yaml_path:
+        raise ConfigValidationError(
+            message=(
+                "Ambiguous builtin DQ configuration: both checks JSON and YAML paths set."
+            ),
+            context={
+                "backend_type": BUILTIN_CHECKS_BACKEND_TYPE,
+                _QUALITY_CHECKS_JSON_ENV: json_path,
+                _QUALITY_CHECKS_YAML_ENV: yaml_path,
+            },
+        )
+
+    from elt_pipeline.shared.quality import (
+        load_builtin_checks_from_json,
+        load_builtin_checks_from_yaml,
+    )
+
+    if json_path:
+        checks = load_builtin_checks_from_json(json_path.strip())
+    elif yaml_path:
+        checks = load_builtin_checks_from_yaml(yaml_path.strip())
+    else:
+        if backend_hint == BUILTIN_CHECKS_BACKEND_TYPE:
+            raise ConfigValidationError(
+                message=(
+                    "ELT_PIPELINE_QUALITY_BACKEND=builtin_checks requires either "
+                    f"{_QUALITY_CHECKS_JSON_ENV} or {_QUALITY_CHECKS_YAML_ENV} to be set."
+                ),
+                context={
+                    "backend_type": BUILTIN_CHECKS_BACKEND_TYPE,
+                },
+            )
+        return None
+
+    raw_policy = os.getenv(_QUALITY_POLICY_ENV, QualityHookPolicy.best_effort.value)
+    try:
+        policy = QualityHookPolicy(raw_policy.strip().lower())
+    except ValueError as exc:
+        raise ConfigValidationError(
+            message="Data-quality hook policy is invalid",
+            context={
+                "backend_type": BUILTIN_CHECKS_BACKEND_TYPE,
+                "policy": raw_policy,
+                "supported_values": [item.value for item in QualityHookPolicy],
+            },
+        ) from exc
+
+    raw_stages = os.getenv(_QUALITY_STAGES_ENV, "normalize,sql")
+    enabled_stages = _validate_enabled_stages(
+        [s for s in raw_stages.split(",") if s.strip()],
+        backend_type=BUILTIN_CHECKS_BACKEND_TYPE,
+    )
+
+    return _BuiltinChecksBackendConfig(
+        checks=checks,
         enabled_stages=enabled_stages,
         policy=policy,
     )

@@ -120,6 +120,23 @@ class EnvVarNames:
     lineage_timeout_seconds: str = "ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS"
     lineage_auth_header: str = "ELT_PIPELINE_LINEAGE_AUTH_HEADER"
 
+    # Data Quality — built-in check library + quarantine/DLQ write path (BACKLOG G-8)
+    #   Optional post-write DQ hook surface, normalize + sql stages only.
+    #   BACKEND: empty = disabled; "row_count_threshold" (v1 BYO baseline);
+    #     "builtin_checks" (G-8: not-null/uniqueness/range/referential/freshness/format)
+    #   POLICY: "best_effort" default (warn; bad rows written to quarantine);
+    #     "blocking" (fail run on DQ fail; bad rows still quarantined)
+    #   ROW_COUNT_MIN: row_count_threshold backend: min row count per dataset (int)
+    #   STAGES: comma list, default "normalize,sql"
+    #   CHECKS_JSON/YAML: builtin_checks backend: JSON/YAML path listing per-dataset
+    #     builtin check specs. Leave empty when wiring via Python API directly.
+    quality_backend: str = "ELT_PIPELINE_QUALITY_BACKEND"
+    quality_policy: str = "ELT_PIPELINE_QUALITY_POLICY"
+    quality_row_count_min: str = "ELT_PIPELINE_QUALITY_ROW_COUNT_MIN"
+    quality_stages: str = "ELT_PIPELINE_QUALITY_STAGES"
+    quality_checks_json: str = "ELT_PIPELINE_QUALITY_CHECKS_JSON"
+    quality_checks_yaml: str = "ELT_PIPELINE_QUALITY_CHECKS_YAML"
+
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
 

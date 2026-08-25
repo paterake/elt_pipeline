@@ -147,6 +147,140 @@ from elt_pipeline.integrations import (
 )
 ```
 
+## Data Quality & Quarantine (G-8)
+
+The platform ships two built-in data-quality backends behind the existing
+adapter seam. **Any failing quality check writes a quarantine artifact** —
+even blocking failures persist triage data before failing the run. Use
+`ELT_PIPELINE_QUALITY_CHECKS_YAML` (or JSON) to configure the built-in
+library; the classic `row_count_threshold` backend remains unchanged.
+
+### Example 1: 6-check builtin library via YAML + blocking policy
+
+Create `./config/builtin_quality_checks.yaml`:
+
+```yaml
+checks:
+  # Users table: enforce not-null email + valid format + user_id unique
+  - kind: not_null
+    check_name: users.email.not_null
+    column: email
+    dataset_id: level2.users
+
+  - kind: regex_format
+    check_name: users.email.format_match
+    column: email
+    pattern: "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$"
+    dataset_id: level2.users
+
+  - kind: uniqueness
+    check_name: users.user_id.unique
+    columns: [user_id]
+    dataset_id: level2.users
+
+  # Orders table: amount in band; placed_at <= 7 days stale (pipeline freshness)
+  - kind: range
+    check_name: orders.amount.in_band
+    column: amount
+    min_value: 0.0
+    max_value: 1_000_000.0
+    dataset_id: level2.orders
+
+  - kind: freshness
+    check_name: orders.placed_at.freshness_7d
+    timestamp_column: placed_at
+    max_age_seconds: 604800.0   # 7 days
+    dataset_id: level2.orders
+
+  # Referential integrity: every order.user_id exists in users.user_id
+  # (No need to seed reference_datasets manually — in-run datasets are
+  #  auto-seeded from same-stage outputs that carry records, so orders→users
+  #  works out of the box when both appear in QualityHookRequest.datasets.)
+  - kind: referential_integrity
+    check_name: orders.users.fk
+    source_column: user_id
+    target_dataset_id: level2.users
+    target_column: user_id
+    dataset_id: level2.orders
+```
+
+Enable via env vars and run a normalize or SQL stage:
+
+```bash
+export ELT_PIPELINE_QUALITY_BACKEND=builtin_checks
+export ELT_PIPELINE_QUALITY_CHECKS_YAML=./config/builtin_quality_checks.yaml
+export ELT_PIPELINE_QUALITY_POLICY=blocking
+export ELT_PIPELINE_QUALITY_STAGES=normalize,sql
+
+uv run elt-pipeline sql run \
+  --root-path .ignore/runtime-publish \
+  --warehouse-root .ignore/warehouse-publish \
+  examples/configs/local_demo_pipeline.yaml
+```
+
+### Expected quarantine layout on check failure
+
+When a check fails, failed rows land in the B-6 storage-backend path
+utils-driven quarantine layout alongside logs/errors/lineage artifacts:
+
+```
+{root_path}/runs/stage={stage}/job={job}/run_id={run_id}/
+├── logs.jsonl
+├── errors.jsonl
+├── lineage.jsonl
+└── quality_quarantine/
+    └── {stage}/
+        ├── users.email.not_null__level2.users.jsonl
+        ├── users.email.format_match__level2.users.jsonl
+        ├── orders.amount.in_band__level2.orders.jsonl
+        └── orders.placed_at.freshness_7d__level2.orders.jsonl
+```
+
+Each JSONL line wraps the bad record with metadata so a triage job can
+re-issue corrections:
+
+```json
+{
+  "quarantine": {
+    "run_id": "run-abc…",
+    "stage": "sql",
+    "check_name": "orders.amount.in_band",
+    "dataset_id": "level2.orders",
+    "policy": "blocking",
+    "blocking": true,
+    "backend_type": "builtin_checks",
+    "kind": "range",
+    "observed_value": 2,
+    "expected_value": "[0.0, 1000000.0]",
+    "extra": {}
+  },
+  "quarantine_row_index": 0,
+  "record": {"order_id": 99, "user_id": 3, "amount": -50.0}
+}
+```
+
+A `quality_quarantine_written` WARNING event also surfaces in `logs.jsonl`
+with the full set of written paths + row counts for downstream audit /
+alerting integrations to pick up the triage artifact locations without
+scanning the filesystem.
+
+### Example 2: row-count sanity backend (unchanged; for quick setup)
+
+For ultra-minimal sanity checks (zero config, just assert "we wrote rows"):
+
+```bash
+export ELT_PIPELINE_QUALITY_BACKEND=row_count_threshold
+export ELT_PIPELINE_QUALITY_ROW_COUNT_MIN=1
+export ELT_PIPELINE_QUALITY_POLICY=best_effort
+export ELT_PIPELINE_QUALITY_STAGES=normalize,sql
+```
+
+Backward compatibility note: `QualityDatasetRef.records`,
+`QualityHookRequest.reference_datasets`, and `QualityCheckResult.violated_records / check_details`
+are all additive with default factories; existing BYO backends that never
+populated them continue to behave identically (zero quarantine writes for
+BYO backends that don't surface `violated_records`).
+
 ## Object Storage JSON
 
 ```bash

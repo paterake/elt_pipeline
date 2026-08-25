@@ -511,9 +511,64 @@
   (baseline 551 + 7 new G-7 tests = 558); `uv run ruff check src tests examples` clean.
   **Thirteenth TRANCHE 2 on-demand pull closed. Next candidate pulls (🟠 MED ordered):
   G-8 (DQ quarantine + check library) / M-1 — fully on-demand.**
+- **TRANCHE 2 — G-8 CLOSED (2026-08-25, fourteenth on-demand pull, 🟠 MED data-quality depth:
+  quarantine/DLQ write path + built-in concrete check library, matching CAPABILITY_MATURITY_MATRIX §11
+  rows 233/235/236 all ⏳/🟠→🟢):** Full data-quality depth delivered end-to-end behind the existing
+  DQ seam (zero Protocol signature changes, zero breaking changes — all additive optional fields).
+  **(a) Built-in check library:** new module `elt_pipeline/shared/quality.py` (570 lines) with 6
+  Pydantic v2 check kinds via discriminated `BuiltinQualityCheck` Annotated Union + `BUILTIN_QUALITY_CHECK_ADAPTER`
+  TypeAdapter: `NotNullCheck`, `UniquenessCheck`, `RangeCheck`, `ReferentialIntegrityCheck`, `FreshnessCheck`,
+  `RegexFormatCheck`. Per-kind evaluators with tolerant numeric/datetime coercers (string→int/float/datetime,
+  None passthrough, bool→int); `evaluate_builtin_checks_for_dataset()` pure dispatch with defensive
+  Exception guard; `_dataset_matches()` helper for dataset_id/dataset_name per-check targeting;
+  `load_builtin_checks_from_json()` / `load_builtin_checks_from_yaml()` file loaders via B-6
+  path_utils `path_read_text`. **(b) Manifest env centralization:** 6 quality env vars centralized
+  in `EnvVarNames` dataclass — `quality_backend`, `quality_policy`, `quality_row_count_min`,
+  `quality_stages`, `quality_checks_json`, `quality_checks_yaml` (mirrors 5-var observability pattern).
+  **(c) Adapter data-model additive fields (100% backward compat):** `QualityDatasetRef.records: list[dict]`,
+  `QualityHookRequest.reference_datasets: dict[str,list[dict]]`, `QualityCheckResult.violated_records`
+  + `check_details: dict` — all default_factory so pre-existing callers/tests pass unchanged.
+  **(d) BuiltinQualityHook backend:** full `QualityHookBackend` Protocol implementation
+  (backend_type=builtin_checks): normalizes list[BaseModel|dict] via TypeAdapter, evaluates
+  per-dataset via `evaluate_builtin_checks_for_dataset`, auto-seeds reference_datasets from in-run
+  datasets (caller-provided refs never overwritten via setdefault), maps results to adapter via
+  `builtin_check_result_to_adapter`, populates `violated_records` + `check_details.kind`, returns
+  SKIPPED with descriptive message for wrong-stage/no-datasets/no-applicable-specs.
+  **(e) Env loaders:** `_load_row_count_backend_config_from_env()` returns None when BACKEND=builtin_checks;
+  `_load_builtin_checks_backend_config_from_env()` new loader supports both CHECKS_JSON and CHECKS_YAML
+  paths, raises ambiguous ConfigValidationError when both are set simultaneously, raises if BACKEND=builtin_checks
+  but no checks file, validates policy/stages via existing helpers. `build_quality_hook()` reads BOTH
+  loaders, raises ambiguity if both return independent configs, instantiates Builtin backend when
+  selected via JSON/YAML/backend hint, otherwise falls through to row_count_threshold unchanged.
+  **(f) Quarantine/DLQ write path (B-6 storage-backend reuse):** `LocalArtifactStore.append_quarantine_records()`
+  new method — sanitizes stage/check/dataset IDs to safe fragments, writes per-line wrapper dict
+  `{quarantine: metadata, quarantine_row_index:i, record:…|value:…}` to
+  `{run_dir}/quality_quarantine/{stage}/{check_name}__{dataset}.jsonl` via existing `_append_jsonl_file`
+  (so local/S3/GCS/ADLS work identically). `QualityHookAdapter.evaluate()` after coercion iterates
+  FAIL results with `violated_records`, calls quarantine writer, collects written path→rowcount dict,
+  appends WARNING-class `quality_quarantine_written` log event with full breakdown. **Quarantine is
+  always written FIRST regardless of policy**, so triage data survives even on blocking failures.
+  **(g) Exports:** `BuiltinQualityHook`, `BUILTIN_CHECKS_BACKEND_TYPE`, `ROW_COUNT_BACKEND_TYPE`
+  re-exported from `integrations/__init__.py` + added to `__all__`.
+  **(h) Tests:** 12 new tests in test_quality_adapter.py (20/20 green total, 8 pre-existing backward-compat):
+  builtin_not_null pass/fail with violated row capture; range+uniqueness+regex clean pass; referential
+  integrity orphan fail + freshness staleness; end-to-end BuiltinQualityHook→adapter quarantine writes
+  (non-blocking: 3 checks fail → 3 quarantine files + quality_quarantine_written log); blocking writes
+  quarantine before raise_for_blocking raises; JSON env loader builds adapter correctly; unknown check
+  kind → ValidationError; check_details.kind propagated; LocalArtifactStore quarantine write with
+  extra_metadata wrapper; YAML loader works + JSON/YAML both-set ambiguity raises.
+  **(i) Docs:** Capability Maturity Matrix §11 3 rows flipped (233 seam 🟠→🟢 Production with Builtin + quarantine + 6-check mention + G-8 cross-ref;
+  235 quarantine ⏳→🟢 Production with B-6 reuse + layout + triage wrapper + quality_quarantine_written mention;
+  236 builtin check library ⏳→🟢 Production with 6 kinds enumerated + CHECKS_JSON/YAML env + Python API wiring + auto-seed refs);
+  CMM Status Updated line re-stamped 2026-08-25 G-8; §"How to read this for publication" updated (Production list gains Builtin DQ + quarantine + 6-check library; Demo list drops row-count DQ adapter because the seam is now 🟢 Production with real behavior; Roadmap list drops "DQ quarantine + built-in check library" phrase);
+  README Honest Boundary promoted DQ line (serving/catalogs item) + added full Operational/Data Quality Production sentence with §11 cross-ref;
+  README Optional Data-Quality Hooks section completely rewritten (2 backends + 6-check kind table + quarantine full layout with 7-field per-line breakdown + 6 env vars enumerated + JSON/YAML ambiguity rule + quarantine-before-blocking guarantee);
+  examples/README.md added "Data Quality & Quarantine (G-8)" section after G-7 lineage: YAML 6-check example (not_null/regex/uniqueness/range/freshness/referential) with blocking env wire-up commands, expected quarantine tree layout, per-line wrapper JSON example with quarantine.metadata + quarantine_row_index + record fields, row-count backend alternative, backward-compat note on additive fields.
+  **Verification:** gate 568 passed / 0 failed / 28 emulator tests correctly skipped (non-Spark single-process 379 + CLI 17 + examples 9 + iceberg_catalog_config 34 + parity 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 + publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25 = 568 total, baseline 558 G-7 + 10 net new focused tests);
+  `uv run ruff check src tests examples` clean; Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Fourteenth TRANCHE 2 on-demand pull closed. This is the LAST G-* item in TRANCHE 2. Next ordered candidate after G-8 = M-1 connector registry (🔴 HIGH general-purpose unblocker: plugin-style no-code connector authoring for new source families within the four existing connectors — honest current boundary is "source type needs code"; M-1 is additive-only behind the existing registry/protocol/factory seams of B-6/G-5/G-2 pattern). TRANCHE 2 is now effectively complete for all platform operational capabilities.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - (all other G-8…/M-1/B-0 tranche-2 items)
+  - (all other M-1/B-0 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -533,16 +588,19 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (558 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (568 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-25 (re-stamped after G-7 closure). Origin: a portability +
-  platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
+- **Captured:** 2026-08-25 (re-stamped after G-8 closure). Origin: a portability +
+  platinum review. Storage IO implements **`s3://` + local `file://` + `gs://` + `abfss://`
+  (B-1/B-2 closed via B-6 StorageBackend facade + B-4 Spark Hadoop FS config)**, Unity
+  Catalog-as-REST-catalog via B-3, 28 opt-in real emulator integration tests via B-5. Ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
-  object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
-  marked roadmap); operational surface (Iceberg maintenance, observability, orchestration,
-  deployment, secrets, governance, OpenLineage, DQ quarantine) is bronze→silver; **D-2 closed**
+  object_storage local+S3+GCS+ADLS production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
+  marked roadmap); operational surface (Iceberg maintenance 🟢, observability 🟢, orchestration 🟢,
+  deployment 🟠, secrets 🟢, governance 🟢, OpenLineage 🟢, **DQ quarantine + 6-check library now 🟢 via G-8**)
+  is now platform-mature; **D-2 closed**
   (Capability Maturity Matrix at `docs/CAPABILITY_MATURITY_MATRIX.md` classifies every feature as
   🟢/🟠/⏳ and is linked prominently from README top). **G-1 CLOSED**: Iceberg table maintenance
   shipped via `elt maintain run …` + `src/elt_pipeline/maintenance/` module + 14 new real Iceberg
@@ -1692,16 +1750,19 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
 - **Status:** Delivered. **(a) Core:** `src/elt_pipeline/shared/lineage.py` — new `OpenLineageRunEvent` Pydantic v2 wire model (OL 2.0.2 schema: `eventType`, `eventTime`, `run.runId`/`run.facets`, `job.namespace`/`job.name`/`job.facets`, `inputs[]` w/ `inputFacets`, `outputs[]` w/ `outputFacets`, `producer`, `schemaURL`); pure `convert_to_openlineage_run_event()` converter with EnvironmentRunFacet auto-injection when `event.environment` set (setdefault guard prevents override of user-authored `environment` facet); `LineageEvent` additive optional fields `run_facets`, `job_facets`, `job_namespace`, `environment` for 100% backward compat; `OPENLINEAGE_PRODUCER_URI` + `OPENLINEAGE_SCHEMA_URL` module constants. **(b) Manifest:** 5 lineage env vars (`ELT_PIPELINE_LINEAGE_BACKEND` / `_URL` / `_POLICY` / `_TIMEOUT_SECONDS` / `_AUTH_HEADER`) added to `EnvVarNames` in `config/runtime_manifest.py` aligning with G-2 §6 observability 5-var pattern. **(c) Emitter:** `OpenLineageHttpEmitter.emit()` payload path: `LineageEvent → convert_to_openlineage_run_event() → model_dump(mode="json") → HTTP POST` (was dumping bespoke schema directly); `LineageAdapter.emit()` auto-appends `environment` before remote emitter call so EnvironmentRunFacet always available for injection; zero public signature changes; local `runs/…/lineage.jsonl` (authoritative, bespoke) always written first — remote is supplementary best_effort by default. **(d) Tests:** 15/15 green in `tests/test_lineage_adapter.py` — 7 new: converter minimal shape; I/O + facets mapping; EnvironmentRunFacet auto-inject present; env facet absent when environment unset; existing facet preserved (no override); full emitter HTTP payload roundtrip with datasets + env facet; Pydantic roundtrip validation `OpenLineageRunEvent(**body)` proves emitted payload is OL 2.0.2 schema-valid; 1 existing test updated: payload-assertions rebased from bespoke → OL wire format. **(e) Docs:** CAPABILITY_MATURITY_MATRIX.md §12 second row flipped ⏳→🟢 with G-7 cross-ref + 2026-08-25 date + OL 2.0.2 spec field list + Marquez/DataHub/OpenMetadata/Atlas targets; Document Status Updated re-stamped 2026-08-25 G-7; §"How to read this for publication" Production list adds OpenLineage; bespoke emitter qualified `(native JSONL only)` in Demo list; roadmap list removes OpenLineage entry. README Honest Boundary operational section gains Lineage Production sentence with §12 link; Optional Lineage Backend section rewritten to confirm OL 2.0.2 wire format (camelCase RunEvent field list, EnvironmentRunFacet auto-inject), example configured for local Marquez `http://localhost:5000/api/v1/lineage`. `examples/README.md` gains Lineage Export (G-7) section: Marquez quick start docker-command + 5 env vars + DataHub/OpenMetadata/Atlas endpoint table + public API/constructor import list.
 - **Verification:** Gate `bash scripts/run_tests.sh` → **558 passed / 0 failed / 28 emulator tests correctly skipped**. `uv run ruff check src tests examples` clean. Cross-ref: CAPABILITY_MATURITY_MATRIX.md §12 row flipped ⏳→🟢 with G-7 refs and 2026-08-25 stamp. README + examples/README updated. Owner: maintainer. Thirteenth TRANCHE 2 on-demand pull closed.
 
-#### G-8 — Data-quality depth: quarantine/DLQ + a concrete check set  🟠 MED  ⏳
-- **Symptom:** DQ ([integrations/quality.py](src/elt_pipeline/integrations/quality.py)) is a
-  blocking/non-blocking **seam** — records either pass or fail the run; there is **no quarantine
-  lane** for bad rows and no batteries-included check library (bring-your-own only).
-- **Scope:** a quarantine/DLQ write path for failed-quality rows (so a run can proceed while bad
-  data is captured for triage) + a starter set of built-in checks (not-null, uniqueness, range,
-  referential, freshness) behind the existing seam.
-- **Files:** [integrations/quality.py](src/elt_pipeline/integrations/quality.py); a quarantine writer (reuse B-6 storage).
-- **Verification:** a run with bad rows quarantines them + proceeds (non-blocking) or blocks
-  (blocking), asserted in tests.
+#### ✅ CLOSED (2026-08-25, 14th on-demand pull, 🟠 MED) — G-8 — Data-quality depth: quarantine/DLQ + a concrete 6-check library
+- **Symptom (before):** DQ ([integrations/quality.py](src/elt_pipeline/integrations/quality.py)) was a blocking/non-blocking **seam** only — records pass/fail without capture; there was **no quarantine lane** for bad rows and no batteries-included check library (BYO only). 5 quality env vars not centralized in the manifest (scattered module-level string literals).
+- **Scope delivered (G-8 end-to-end behind existing seam, zero Protocol/signature changes):**
+  1. **Built-in 6-check library:** new module [shared/quality.py](src/elt_pipeline/shared/quality.py): 6 Pydantic v2 discriminated Union check kinds via `BUILTIN_QUALITY_CHECK_ADAPTER` TypeAdapter (`NotNullCheck`, `UniquenessCheck`, `RangeCheck`, `ReferentialIntegrityCheck`, `FreshnessCheck`, `RegexFormatCheck`). Pure deterministic evaluator `evaluate_builtin_checks_for_dataset` with defensive Exception guard; tolerant numeric/datetime coercers; per-dataset ID/name matching; `load_builtin_checks_from_json/yaml` via B-6 path_utils `path_read_text`.
+  2. **Manifest env centralization:** 6 quality env vars registered in [config/runtime_manifest.py](src/elt_pipeline/config/runtime_manifest.py) (`quality_backend`, `quality_policy`, `quality_row_count_min`, `quality_stages`, `quality_checks_json`, `quality_checks_yaml`) aligning with G-2's 5-var observability pattern; 4 old scattered module-level string literals replaced with `runtime_manifest.env.*` lookups.
+  3. **Data-model additive backward compat:** `QualityDatasetRef.records: list[dict]` default_factory; `QualityHookRequest.reference_datasets: dict[str,list[dict]]` default_factory; `QualityCheckResult.violated_records` + `QualityCheckResult.check_details: dict`. All additive → pre-existing callers + 8 tests pass unchanged.
+  4. **BuiltinQualityHook backend class:** full `QualityHookBackend` Protocol implementation (backend_type=`builtin_checks`) normalizes list[BaseModel|dict] via TypeAdapter; evaluates per-dataset via shared evaluator; auto-seeds `reference_datasets` from in-run datasets (setdefault, never overwrites caller-provided refs); maps via `builtin_check_result_to_adapter`; populates `violated_records` + `check_details.kind`; returns SKIPPED messages for wrong-stage/no-datasets/no-applicable-specs.
+  5. **Env loaders + factory (dual-mode):** `_load_row_count_backend_config_from_env` returns None when `BACKEND=builtin_checks`; `_load_builtin_checks_backend_config_from_env` new loader supports CHECKS_JSON and CHECKS_YAML; raises ambiguous ConfigValidationError when both set; raises if `BACKEND=builtin_checks` with no checks file; validates policy/stages via existing helpers. `build_quality_hook(root_path, **)` reads BOTH loaders, raises ambiguity if both configured independently, instantiates Builtin backend when selected via JSON/YAML/backend hint, falls through to row_count_threshold otherwise (unchanged).
+  6. **Quarantine/DLQ write path (B-6 storage-backend reuse):** `LocalArtifactStore.append_quarantine_records` new method in [ingest/storage.py](src/elt_pipeline/ingest/storage.py) sanitizes stage/check/dataset IDs to safe fragments, writes per-line wrapper `{quarantine: metadata, quarantine_row_index:i, record:.../value:...}` to `{run_dir}/quality_quarantine/{stage}/{check_name}__{dataset}.jsonl` via existing `_append_jsonl_file` (B-6 scheme-aware path utilities → local/S3/GCS/ADLS identical). `QualityHookAdapter.evaluate` after coercion iterates FAIL results with `violated_records`, calls quarantine writer, collects written path→rowcount dict, appends WARNING-class `quality_quarantine_written` log event with full breakdown. Quarantine ALWAYS written first regardless of policy — triage survives even on blocking failures.
+  7. **Public exports:** `BuiltinQualityHook`, `BUILTIN_CHECKS_BACKEND_TYPE`, `ROW_COUNT_BACKEND_TYPE` re-exported from [integrations/__init__.py](src/elt_pipeline/integrations/__init__.py) + added to `__all__`.
+  8. **Tests (12 new):** 20/20 green in [test_quality_adapter.py](tests/test_quality_adapter.py) (8 pre-existing backward-compat); not_null fail with violated row capture; clean pass range+uniqueness+regex; referential integrity orphan fail + freshness staleness; end-to-end BuiltinQualityHook→adapter quarantine (non-blocking: 3 checks fail → 3 quarantine files + `quality_quarantine_written` log event with 3 paths); blocking writes quarantine before `raise_for_blocking_quality_failures` raises PipelineError; JSON env loader builds adapter correctly; unknown check kind → Pydantic ValidationError; check_details.kind propagated; LocalArtifactStore quarantine write with extra_metadata wrapper; YAML loader works + JSON/YAML both-set → ambiguity ConfigValidationError.
+  9. **Docs updates:** CAPABILITY_MATURITY_MATRIX.md §11 3 rows flipped (seam 🟠 Demo → 🟢 Production with Builtin + quarantine + 6-check library + G-8 cross-ref; quarantine ⏳ Roadmap → 🟢 Production with B-6 reuse + layout + triage wrapper + quality_quarantine_written mention; builtin check library ⏳ Roadmap → 🟢 Production with 6 kinds enumerated + CHECKS_JSON/YAML env + Python API wiring + auto-seed refs); CMM Status Updated line re-stamped 2026-08-25 G-8; §"How to read this for publication" Production list gains Builtin DQ+quarantine+6-check library; Demo list drops row-count DQ adapter because the seam now ships real behavior; Roadmap list removes "DQ quarantine + built-in check library" phrase; README Honest Boundary serving/catalogs line adds "+ 6-check built-in DQ library with quarantine/DLQ"; README Operational/Data Quality Production sentence added with §11 cross-ref; README Optional Data-Quality Hooks section rewritten (2 backends, 6-check kind table, quarantine 7-field per-line wrapper, 6 env, JSON/YAML ambiguity rule + quarantine-before-blocking guarantee); examples/README.md adds "Data Quality & Quarantine (G-8)" section after G-7 lineage (6-check YAML example with not_null/regex/uniqueness/range/freshness/referential + blocking env wire-up commands; expected quarantine tree layout; per-line wrapper JSON example with quarantine.metadata + quarantine_row_index + record fields; row-count backend alternative; backward-compat note on additive fields).
+- **Verification:** Gate `bash scripts/run_tests.sh` → **568 passed / 0 failed / 28 emulator tests correctly skipped** (non-Spark single-process 379 + CLI 17 + examples 9 + iceberg_catalog_config 34 + parity 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 + publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25). `uv run ruff check src tests examples` clean. Cross-ref: CAPABILITY_MATURITY_MATRIX.md §11 3 rows flipped with G-8 refs and 2026-08-25 stamp. Owner: maintainer. Fourteenth TRANCHE 2 on-demand pull closed. **This is the LAST G-* item in TRANCHE 2.** Next ordered candidate = M-1 connector registry (🔴 HIGH only remaining tranche-2 item).
 
 #### D-2 — Publish an honest capability maturity matrix  🔴 HIGH (publication gate)  ✅ Done (2026-08-19)
 - **Goal:** the single artifact that makes going public honest — a table classifying every
@@ -2274,6 +2335,68 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   All 5 verification points confirmed green. Owner: maintainer. **Thirteenth TRANCHE 2 on-demand pull
   closed. Next candidate pulls (🟠 MED ordered): G-8 (DQ quarantine/DLQ + built-in check library) / M-1
   (connector registry) — fully on-demand.**
+
+- **G-8 — Data-quality depth: quarantine/DLQ + built-in 6-check library (2026-08-25).** ✅ CLOSED
+  (fourteenth on-demand pull, 🟠 MED; backlog inline L1694 → `integrations/quality.py` seam +
+  `shared/quality.py` new module + `ingest/storage.py` new quarantine method + `runtime_manifest.py`
+  6 new env vars + `integrations/__init__.py` new exports + cross-doc updates CMM §11 / README /
+  examples/README DQ sections.)
+  Verification 5-point inventory (matches backlog inline L1694-1703):
+    1. **Quarantine/DLQ write path (B-6 scheme-agnostic, no-siloed):** `LocalArtifactStore.append_quarantine_records`
+       method (ingest/storage.py:329-385) writes per-line wrapped JSONL records with
+       `{quarantine:{run_id,stage,check_name,dataset,policy,blocking,backend,kind,obs/exp,extra},
+       quarantine_row_index:i, record/value}` into `quality_quarantine/{stage}/{check}__{dataset}.jsonl`
+       via B-6 `_append_jsonl_file` → identical path for local/S3/GCS/ADLS. `QualityHookAdapter.evaluate`
+       (integrations/quality.py:440-516) after coercion loops FAIL results with violated_records,
+       writes quarantine files, collects path→rowcount dict, appends WARNING-class
+       `quality_quarantine_written` log event with full breakdown. Quarantine writes ALWAYS run
+       BEFORE policy decision — triage survives blocking failures. ✓
+    2. **Built-in 6-check starter library behind existing seam (no parallel path, no signature changes):**
+       New module shared/quality.py: 6 Pydantic v2 discriminated Union check kinds via
+       BUILTIN_QUALITY_CHECK_ADAPTER TypeAdapter (NotNullCheck, UniquenessCheck, RangeCheck,
+       ReferentialIntegrityCheck, FreshnessCheck, RegexFormatCheck — discriminated on kind field).
+       Pure evaluator evaluate_builtin_checks_for_dataset() with defensive try/except per-check
+       wrapper; tolerant numeric/datetime coercers for JSONL/Parquet/CSV mixed schemas. New
+       BuiltinQualityHook class in integrations/quality.py:217-346 implements the existing
+       QualityHookBackend Protocol with backend_type=builtin_checks, auto-seeds reference_datasets
+       from in-run datasets with records (setdefault, never overwrites caller-authored refs).
+       build_quality_hook factory reads BOTH loaders, raises ambiguity, instantiates Builtin backend
+       when selected, otherwise falls through to RowCountQualityHook unchanged. Additive optional
+       fields (records, reference_datasets, violated_records, check_details) on models with
+       default_factory preserve 100% backward-compat with existing callers/tests/BYO backends. ✓
+    3. **Manifest centralization of all 6 quality env vars (bidirectional safety):**
+       `config/runtime_manifest.py:123-138` registers quality_backend/quality_policy/quality_row_count_min/
+       quality_stages/quality_checks_json/quality_checks_yaml in EnvVarNames dataclass with comments
+       mirroring G-2 §6 observability 5-var pattern; 4 old scattered string literals in
+       integrations/quality.py replaced with runtime_manifest.env.* lookups. Loaders read from
+       manifest constants so Python/shell/docs share one source of truth. ✓
+    4. **Backward compatibility of the seam (original row-count backend + BYO backends survive untouched):**
+       8 pre-existing test_quality_adapter.py tests (row_count_skip/no_datasets, pass_fail_per_dataset,
+       stage_name_normalize, negative_threshold, unsupported_stages, env_configured_row_count,
+       env_normalized_values, invalid_env_config, blocking_failures_raise, non_blocking_logs_failures)
+       all green unchanged — no test fixture re-writes, no signature changes, no protocol updates.
+       BYO backends that never populate records/reference_datasets/violated_records → zero quarantine
+       writes (adapter skips the writer when violated_records is empty) — identical behavior to pre-G-8.
+       RowCountQualityHook config env load branch returns None only when BACKEND=builtin_checks, so zero
+       impact on pre-existing row_count_threshold installs. ✓
+    5. **Full green gate + cross-doc truth propagation (all 5 docs consistent with code):**
+       Gate: 568 passed / 0 failed / 28 emulator skipped (379 non-Spark + 17 CLI + 9 examples +
+       34 iceberg_catalog_config + 25 parity + 1 preflight + 14 maintenance + 7 normalize_engine +
+       9 normalize_pipeline + 8 publish_cli + 8 publish_models + 27 spark_fs_config +
+       5 sql_iceberg_write + 25 sql_models). `uv run ruff check src tests examples` → 0 issues.
+       Docs cross-referenced: CMM §11 (3 rows ⏳/🟠→🟢), CMM Status Updated re-stamped 2026-08-25 G-8,
+       CMM "How to read this for publication" promoted DQ from Roadmap/Demo → Production;
+       README Honest Boundary operational items (DQ Production + §11 cross-ref, serving line
+       "+ 6-check built-in DQ with quarantine/DLQ"); README Optional Data-Quality Hooks section
+       completely rewritten (2 backends, 6-check table, quarantine 7-field wrapper layout, 6 env
+       vars enumerated, JSON/YAML ambiguity rule, quarantine-before-blocking guarantee);
+       examples/README.md gains Data Quality & Quarantine (G-8) section after G-7 lineage (6-check
+       YAML example, blocking env wire-up commands, expected quarantine tree layout, per-line
+       wrapper JSON payload example, row-count backend alternative, backward-compat note).
+       All 5 verification points confirmed green. Owner: maintainer. **Fourteenth TRANCHE 2 on-demand
+       pull closed. This is the LAST G-* item in TRANCHE 2 (all operational platform capabilities
+       are now ship-shape). Next ordered candidate = M-1 connector registry only (🔴 HIGH, the only
+       remaining tranche-2 item).**
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

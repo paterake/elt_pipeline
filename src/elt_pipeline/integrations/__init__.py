@@ -33,6 +33,9 @@ from elt_pipeline.integrations.orchestration import (
     load_orchestration_metadata_from_env,
 )
 from elt_pipeline.integrations.quality import (
+    BUILTIN_CHECKS_BACKEND_TYPE,
+    ROW_COUNT_BACKEND_TYPE,
+    BuiltinQualityHook,
     QualityCheckResult,
     QualityCheckStatus,
     QualityDatasetRef,
@@ -83,6 +86,9 @@ __all__ = [
     "QualityHookRequest",
     "QualityHookSummary",
     "RowCountQualityHook",
+    "BuiltinQualityHook",
+    "BUILTIN_CHECKS_BACKEND_TYPE",
+    "ROW_COUNT_BACKEND_TYPE",
     "build_quality_hook",
     "quality_error_already_recorded",
     "raise_for_blocking_quality_failures",
