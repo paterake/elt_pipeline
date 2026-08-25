@@ -565,10 +565,140 @@
   README Optional Data-Quality Hooks section completely rewritten (2 backends + 6-check kind table + quarantine full layout with 7-field per-line breakdown + 6 env vars enumerated + JSON/YAML ambiguity rule + quarantine-before-blocking guarantee);
   examples/README.md added "Data Quality & Quarantine (G-8)" section after G-7 lineage: YAML 6-check example (not_null/regex/uniqueness/range/freshness/referential) with blocking env wire-up commands, expected quarantine tree layout, per-line wrapper JSON example with quarantine.metadata + quarantine_row_index + record fields, row-count backend alternative, backward-compat note on additive fields.
   **Verification:** gate 568 passed / 0 failed / 28 emulator tests correctly skipped (non-Spark single-process 379 + CLI 17 + examples 9 + iceberg_catalog_config 34 + parity 25 + preflight 1 + maintenance 14 + normalize_engine 7 + normalize_pipeline 9 + publish_cli 8 + publish_models 8 + spark_fs_config 27 + sql_iceberg_write 5 + sql_models 25 = 568 total, baseline 558 G-7 + 10 net new focused tests);
-  `uv run ruff check src tests examples` clean; Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Fourteenth TRANCHE 2 on-demand pull closed. This is the LAST G-* item in TRANCHE 2. Next ordered candidate after G-8 = M-1 connector registry (🔴 HIGH general-purpose unblocker: plugin-style no-code connector authoring for new source families within the four existing connectors — honest current boundary is "source type needs code"; M-1 is additive-only behind the existing registry/protocol/factory seams of B-6/G-5/G-2 pattern). TRANCHE 2 is now effectively complete for all platform operational capabilities.**
+  `uv run ruff check src tests examples` clean; Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Fourteenth TRANCHE 2 on-demand pull closed. This is the LAST G-* item in TRANCHE 2.**
+- **TRANCHE 2 — M-1 CLOSED (2026-08-25, fifteenth on-demand pull, 🔴 HIGH general-purpose unblocker:
+  plugin-style connector registry with no-code preset authoring WITHIN the 4 existing families,
+  matching CAPABILITY_MATURITY_MATRIX §13 row 257 ⏳→🟢):** Full connector extensibility ceiling
+  delivered end-to-end behind the existing B-6/G-5/G-2 registry/protocol/factory seams (zero breaking
+  changes — all entity configs, CLI call signatures, and LocalXxxConnector concretes unchanged;
+  additive-only optional fields + registry lookup).
+  **(a) Built-in factory delegates:** 4 concrete factories in
+  `elt_pipeline/ingest/connectors/registry.py` (`_RestConnectorFactory`, `_SqlConnectorFactory`,
+  `_ObjectStorageConnectorFactory`, `_KafkaConnectorFactory`) — each is a thin zero-logic delegate to
+  the existing `XxxConnectorConfig.from_resolved_entity_config()` classmethod for validated config
+  production and to `LocalXxxConnector(config, run_context, root_path, …)` for runnable connector
+  instantiation; Kafka factory validates that the `log_path` kwarg is present (mirrors the existing
+  CLI wrapper's `log_path`-passing contract).
+  **(b) Manifest env centralization:** 2 connector-registry env vars centralized in `EnvVarNames`
+  dataclass — `connector_registry_manifest` (`ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST`, path to
+  YAML/JSON manifest file, extension auto-detect with fallback try-ordering) and
+  `connector_registry_strict` (`ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT`, strict=1 raises
+  ConfigValidationError on manifest load failure, strict=0 silent-skips returning None). Mirrors the
+  5/6-var observability/quality pattern exactly.
+  **(c) Protocol + registry singleton (G-5 shape):** `ConnectorFamily(str, Enum)` explicit boundary
+  enum = `{rest, sql, kafka, object_storage}` (no free-form strings; new families require explicit
+  enum entry + register call — parallel to SecretScheme). `ConnectorFactory` `@runtime_checkable`
+  Protocol with one attr (`family_type: str`) + two methods (`build_config_from_resolved(*,
+  resolved_config) -> BaseModel`, `build_connector(*, config, run_context, root_path, **kwargs) ->
+  Any`). `_CONNECTOR_REGISTRY: dict[ConnectorFamily, ConnectorFactory]` module-private singleton.
+  Public API `register_connector_factory(family, factory)` with duplicate-register guard (raises
+  `ConnectorRegistryError`) + Protocol `isinstance` check (raises `TypeError`). Public API
+  `get_connector_factory(family)` calls lazy init, raises `ConnectorFamilyUnsupportedError` on
+  unknown (includes builtin_families sorted list in message). Public API
+  `is_connector_factory_registered(family) -> bool`. Lazy idempotent default registration
+  `_ensure_default_connectors_registered()` with empty-dict guard (runs once at first
+  `get_connector_factory` call — no import-time side effects beyond dict creation).
+  **(d) ConnectorManifest + ConnectorPreset YAML/JSON no-code preset system:** `ConnectorPreset`
+  Pydantic v2 BaseModel with `name: str`, `family: ConnectorFamily`, `description: str | None`,
+  `extraction_defaults / auth_defaults / settings_defaults / persistence_defaults: dict[str, Any]`
+  (all default_factory empty-dict). `ConnectorManifest` BaseModel with `schema_version: str =
+  "1.0"`, `presets: list[ConnectorPreset]`, method `preset_by_name(name: str) -> ConnectorPreset |
+  None`. `_parse_manifest_from_text(text)` tries JSON→YAML in order, aggregates last_errors, raises
+  `ConfigValidationError` with combined parse/validation detail. `load_connector_manifest_from_yaml`
+  / `load_connector_manifest_from_json` file loaders via B-6 path_utils `path_read_text` with
+  `_MANIFEST_CACHE` keyed by `"{format}:{path}"` (cache=True default; cache=False bypasses).
+  `apply_connector_preset_defaults(resolved_config, manifest, *, preset_name_override=None)`: (1)
+  resolves preset_name from override or from `resolved_config.settings["connector_preset"]` (no-op
+  if neither is set); (2) unknown preset → ConfigValidationError with `available_presets: list[str]`
+  in message; (3) family cross-check (`preset.family.value != resolved_config.connector_type` →
+  ConfigValidationError); (4) shallow top-level merge for all 4 default dicts: `new_section =
+  dict(preset_section_defaults)` then `new_section.update(entity_section)` (entity wins on every
+  overlapping top-level key; no deep key-level dict merge inside nested dicts like headers/auth —
+  matches the existing G-5 pattern).
+  **(e) Lazy init + idempotent registry contract:** `_ensure_default_connectors_registered()` uses
+  `if _CONNECTOR_REGISTRY: return` guard; all 4 built-in factories are instantiated inline. Importing
+  registry.py has zero observable side effects (no env reads, no config validations, no filesystem
+  IO) — matches the B-6 storage backend and G-5 secrets lazy-init contracts.
+  **(f) CLI ingest dispatch refactor + preset integration:** `cli.py` adds
+  `_load_connector_manifest_from_env()` helper (placed before `_resolve_checkpoint_override`, 34
+  lines) following the G-5 quality module pattern exactly: reads
+  `os.getenv(runtime_manifest.env.connector_registry_manifest/strict)`; strict mode raises on load
+  failure, non-strict returns None; extension auto-detect `.yaml`/`.yml`/`.json` with fallback
+  try-ordering on unknown ext. `_run_ingest_entity` dispatch block (lines ~3044) refactored in-place:
+  (1) before the family `if/elif` chain, calls `_load_connector_manifest_from_env()` then
+  `apply_connector_preset_defaults(resolved_config, connector_manifest)` when manifest is not None;
+  (2) EACH of the 4 family branches now goes through `factory =
+  get_connector_factory(connector_type); validated_config =
+  factory.build_config_from_resolved(resolved_config=resolved_config)` (registry-factory lookup
+  contract is 100% satisfied for all 4 built-ins); (3) same `_CliLocalXxxConnector` wrapper classes
+  are instantiated with the validated_config + same checkpoint_override + window + kafka_log_path
+  kwargs as before (backward byte-for-byte compat — checkpoint-override mixin + resolve_window()
+  overrides untouched). Else branch on unknown connector_type updated with
+  `register_connector_factory()` guidance + sorted builtin_families list (ConnectorFamily enum
+  values) in the error context.
+  **(g) Exports (full 2-level package chain):** 12 public symbols exported from
+  `ingest/connectors/__init__.py` + identical 12 re-exported from `ingest/__init__.py` (all added
+  to `__all__` in both): `ConnectorFamily`, `ConnectorFactory`, `ConnectorManifest`,
+  `ConnectorPreset`, `ConnectorRegistryError`, `ConnectorFamilyUnsupportedError`,
+  `apply_connector_preset_defaults`, `get_connector_factory`, `is_connector_factory_registered`,
+  `load_connector_manifest_from_json`, `load_connector_manifest_from_yaml`,
+  `register_connector_factory`. Ruff I001 auto-sorted alphabetically at both levels;
+  `_CONNECTOR_REGISTRY` + `_ensure_default_connectors_registered` remain module-private (intentional
+  — internal-only symbols matching the B-6/G-5 convention).
+  **(h) Tests:** 44 new tests in `test_connector_registry.py` (44/44 green in 0.14s — no overlap with
+  existing connector-specific test files; unittest.mock.patch + model_construct delegation pattern
+  avoids re-testing heavy config validation already covered in test_rest_connectors.py etc.):
+  TestConnectorFamilyEnum (3: 4 members present, str enum equality comparison works with plain
+  strings, .value access prints correctly), TestConnectorFactoryProtocol (4: Protocol is
+  @runtime_checkable isinstance-validated for both ABC-inheritance and plain-class impls, missing
+  family_type attr → isinstance False, wrong method signatures → isinstance False),
+  TestErrorHierarchy (2: ConnectorRegistryError base Exception,
+  ConnectorFamilyUnsupportedError is a subclass), TestDefaultRegistryRegistration (5: after one
+  get_connector_factory() all 4 families are registered, second call returns same instances
+  (idempotent), is_connector_factory_registered before init → False, after init True per-family,
+  get_factory on unknown → ConnectorFamilyUnsupportedError with builtin_families list),
+  TestRegisterAndDuplicates (3: register custom-family works + subsequent get_factory retrieves,
+  duplicate re-raises ConnectorRegistryError, non-Protocol factory raises TypeError), TestRestFactory
+  (3: delegates to RestConnectorConfig.from_resolved_entity_config via mock, build_connector returns
+  LocalRestConnector instance, factory.family_type == "rest"), TestSqlFactory (2: mock delegate to
+  SqlConnectorConfig.from_resolved_entity_config, build_connector returns LocalSqlConnector),
+  TestObjectStorageFactory (2: mock delegate to ObjectStorageConnectorConfig.from_resolved,
+  build_connector returns LocalObjectStorageConnector), TestKafkaFactory (3: mock delegate to
+  KafkaConnectorConfig.from_resolved, build_connector returns LocalKafkaConnector when log_path
+  kwarg present, raises when log_path kwarg missing), TestManifestModels (4: ConnectorManifest
+  schema_version defaults to "1.0", preset_by_name() finds correct preset / returns None on unknown,
+  manifest.model_validate rejects unknown family with ConnectorFamily ValueError, empty manifest
+  (zero presets) validates OK), TestManifestLoading (5: YAML load validates + caches second call,
+  JSON load works identically, cache=False bypasses cache rereading file, invalid-YAML syntax error
+  → ConfigValidationError, unknown preset family in valid YAML → ConfigValidationError via Pydantic
+  validation), TestApplyPresetDefaults (5: no-op when no connector_preset key and no override,
+  unknown preset_name → ConfigValidationError with available_presets list, family mismatch →
+  ConfigValidationError, shallow merge fills missing top-level keys while entity wins overlaps,
+  preset_name_override arg takes precedence over settings["connector_preset"]), TestEnvVarNames (1:
+  two env vars present in EnvVarNames dataclass with correct string values
+  ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST / ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT — alphabetical
+  between quality_* and java_home), TestPackageExports (2: ingest/__init__.py exports all 12 public
+  registry names, connectors/__init__.py exports all 12 registry names + individual connector
+  classes still present).
+  **(i) Docs:** Capability Maturity Matrix §13 2 rows updated (257 4-families row Notes expanded with
+  registry-factory dispatch mention + M-1 cross-ref; 258 plugin-registry row flipped ⏳→🟢 Production
+  with full 9-clause contract inventory + 2026-08-25 M-1 date stamp); CMM Status Updated line
+  re-stamped 2026-08-25 M-1; §"How to read this for publication" updated (Production list gains
+  No-code connector plugin registry (M-1) phrase with bullet inventory, Roadmap list DROPS "a
+  connector plugin registry" phrase — no longer a roadmap item); README Honest Boundary ingest
+  section expanded (family-level dispatch now registry-factory backed; honest ceiling updated from
+  "source type needs code" → "no-code preset WITHIN families via manifest + connector_preset; new
+  families need one register_connector_factory() call — zero CLI if/elif edits"); README Ingest
+  roadmap section gains 3rd bullet on new families (SFTP/CDC/webhook additive-only contract); README
+  Operational/platinum-hardening section gains full Connector Registry Production paragraph with
+  public API + 2 env vars + CMM §13 cross-ref; examples/README.md gains "Connector Registry &
+  Preset Manifest (M-1)" section immediately following G-8 DQ, with: GitHub REST v3 YAML manifest
+  example, env wire-up commands (MANIFEST path + STRICT mode), Python plugin-extension surface
+  example (SFTP factory), and additive backward-compat note.
+  **Verification:** gate 612 passed / 0 failed / 28 emulator tests correctly skipped (baseline 568 G-8 + 44 new M-1 tests = 612); `uv run ruff check src tests examples` clean; Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Fifteenth TRANCHE 2 on-demand pull closed. TRANCHE 2 operational platform capabilities are now effectively complete. Next ordered candidate after M-1 = B-0 (catalog preflight) 🔴 HIGH (catalog/serving catalog-type preflight validator preventing hard Spark/JDBC failures at stage-start time; additive-only behind the existing config/catalog_validation seams). TRANCHE 2 remaining M-* / B-0 items are all additive platform polish — ordered by real consumer demand via `from BACKLOG.md, continue`.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - (all other M-1/B-0 tranche-2 items)
+  - B-0 (catalog preflight) / M-* (remaining)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -588,11 +718,11 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (568 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (612 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-25 (re-stamped after G-8 closure). Origin: a portability +
+- **Captured:** 2026-08-25 (re-stamped after M-1 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` + `gs://` + `abfss://`
   (B-1/B-2 closed via B-6 StorageBackend facade + B-4 Spark Hadoop FS config)**, Unity
   Catalog-as-REST-catalog via B-3, 28 opt-in real emulator integration tests via B-5. Ingest

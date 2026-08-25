@@ -34,7 +34,7 @@ This section states what the code actually ships, so no reader infers more than 
 
 **Ingest mechanisms — honest v1 surface (framework abstractions vs. concrete implementations):**
 
-The platform defines four first-class connector *families* (`rest`, `sql`, `kafka`, `object_storage`) as shared abstractions — each with a validated lifecycle (config → secrets → client → extract → persist → audit → checkpoint). Their concrete v1 implementations vary by readiness:
+The platform defines four first-class connector *families* (`rest`, `sql`, `kafka`, `object_storage`) as shared abstractions — each with a validated lifecycle (config → secrets → client → extract → persist → audit → checkpoint). Family-level dispatch is now **registry-factory backed** (M-1): a public `ConnectorFactory` Protocol + `register_connector_factory` / `get_connector_factory` API with lazy init, 4 built-in factories that delegate to the existing concretes with zero behavior drift, and **no-code preset authoring WITHIN families** via YAML/JSON `ConnectorManifest` loaded from `ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST` (strict mode via `ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT=1`). Adding a *new family* still needs Python code (one `register_connector_factory()` call — no CLI `if/elif` edits required thanks to registry lookup). Their concrete v1 implementations vary by readiness:
 
 - **REST — Production-usable.** Real `urllib.request`-based connector with authentication (basic, API key, static bearer, client-credential token flows), request templating, date-window tokenization, page/offset pagination, envelope+inner-payload extraction, retry/backoff/timeout controls.
 - **Object storage — Production-usable (local + S3 + GCS + ADLS).** Source discovery and read via `path_utils` scheme dispatch across local POSIX dirs, `s3://` buckets, `gs://` buckets, and `abfss://` containers. All four schemes share the same `_BACKEND_REGISTRY` dispatch path with full parity.
@@ -44,6 +44,7 @@ The platform defines four first-class connector *families* (`rest`, `sql`, `kafk
 **Ingest roadmap (not in v1, tracked for later tranches):**
 - Multi-DB SQL ingest via JDBC or a Python driver matrix (Postgres, MySQL, MSSQL, Oracle, …)
 - Real Kafka broker consumer (basic offset-based streaming)
+- New connector *families* beyond the current 4 (generic HTTP webhook, CDC log tail, SFTP) — each is additive: one `ConnectorFactory` Protocol impl + one `register_connector_factory()` call; no CLI dispatch edits.
 
 **Serving / catalogs — implemented:**
 - Iceberg L3/L4 tables with a 6-way catalog enum: `hadoop`, `jdbc`, `rest`, `nessie`, `hive_metastore`, `glue`.
@@ -57,6 +58,7 @@ Secrets resolution (env vars + files + cloud SMs/Vault roadmap) is **Production*
 Governance — classification tags (4 tiers: public/internal/confidential/restricted_pii), column-level Trino masking (7 strategies, role-based), retention sweeps, and right-to-erasure runbook + SQL helpers is **Production** via the G-6 subsystem; see [Capability Maturity Matrix §10](docs/CAPABILITY_MATURITY_MATRIX.md#L217-L227).
 Lineage — **OpenLineage 2.0.2 wire-compatible export is Production** via env-driven `openlineage_http` backend behind the existing adapter seam; native bespoke JSONL sink remains authoritative (always written, demo-scoped). Auto-injects standard `EnvironmentRunFacet`. Targets Marquez, DataHub, OpenMetadata, Apache Atlas out of the box. See [Capability Maturity Matrix §12](docs/CAPABILITY_MATURITY_MATRIX.md#L242-L249).
 Data Quality — **Built-in 6-check library + scheme-agnostic quarantine/DLQ is Production** behind the existing adapter seam. Ships `BuiltinQualityHook` (not-null, uniqueness, range, referential integrity, freshness, format regex checks) loaded from JSON/YAML env, plus the original `RowCountQualityHook`. Failed rows are written to a quarantine JSONL layout via the same B-6 pluggable storage backend (local/S3/GCS/ADLS) as logs/errors/lineage, with a `quality_quarantine_written` audit log event listing every path. Blocking and non-blocking policies supported; quarantine is always written first. See [Capability Maturity Matrix §11](docs/CAPABILITY_MATURITY_MATRIX.md#L230-L238).
+Connector Registry — **No-code preset authoring within families is Production** behind the M-1 plugin registry. Public registry API (`register_connector_factory` / `get_connector_factory` / `is_connector_factory_registered`), explicit `ConnectorFamily` enum boundary, `ConnectorFactory` Protocol (2 methods) with 4 built-in factories, and YAML/JSON `ConnectorManifest` preset system (shallow merge UNDER entity config via `ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST` + strict-mode env var). CLI ingest dispatch for ALL 4 families routes through the registry. Adding new families is one `register_connector_factory()` call with zero CLI edits. See [Capability Maturity Matrix §13](docs/CAPABILITY_MATURITY_MATRIX.md#L253-L260).
 
 ## Source Code references
 

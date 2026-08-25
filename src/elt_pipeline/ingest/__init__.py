@@ -1,6 +1,12 @@
 """Ingestion stage package."""
 
 from elt_pipeline.ingest.connectors import (
+    ConnectorFamily,
+    ConnectorFactory,
+    ConnectorManifest,
+    ConnectorPreset,
+    ConnectorRegistryError,
+    ConnectorFamilyUnsupportedError,
     KafkaConnectorBase,
     KafkaConnectorConfig,
     KafkaMessage,
@@ -38,6 +44,12 @@ from elt_pipeline.ingest.connectors import (
     SqlRunResult,
     SqlWatermarkConfig,
     SqlWatermarkSource,
+    apply_connector_preset_defaults,
+    get_connector_factory,
+    is_connector_factory_registered,
+    load_connector_manifest_from_json,
+    load_connector_manifest_from_yaml,
+    register_connector_factory,
 )
 from elt_pipeline.ingest.models import (
     CheckpointHistoryEntry,
@@ -91,4 +103,16 @@ __all__ = [
     "SqlRunResult",
     "SqlWatermarkConfig",
     "SqlWatermarkSource",
+    "ConnectorFamily",
+    "ConnectorFactory",
+    "ConnectorManifest",
+    "ConnectorPreset",
+    "ConnectorRegistryError",
+    "ConnectorFamilyUnsupportedError",
+    "apply_connector_preset_defaults",
+    "get_connector_factory",
+    "is_connector_factory_registered",
+    "load_connector_manifest_from_json",
+    "load_connector_manifest_from_yaml",
+    "register_connector_factory",
 ]

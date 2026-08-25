@@ -281,6 +281,125 @@ are all additive with default factories; existing BYO backends that never
 populated them continue to behave identically (zero quarantine writes for
 BYO backends that don't surface `violated_records`).
 
+## Connector Registry & Preset Manifest (M-1)
+
+The M-1 connector registry enables two things: (1) **no-code preset authoring
+WITHIN the four built-in families** (rest / sql / kafka / object_storage) via
+a declarative YAML/JSON manifest — extraction/auth/settings/persistence
+defaults layered under your entity config; (2) **plugin-style Python extension
+with zero CLI edits** — a new connector family needs just one
+`register_connector_factory()` call (no `if/elif` dispatch changes).
+
+### Example: GitHub REST v3 preset via YAML manifest
+
+Create `./config/connector_registry_presets.yaml` (one manifest can carry
+many presets; preset names are free strings scoped to the manifest):
+
+```yaml
+schema_version: "1.0"
+presets:
+  - name: github_rest_v3
+    family: rest
+    description: >
+      Sensible defaults for GitHub public REST API v3: json envelope,
+      page-based pagination, Accept + User-Agent headers, 30s timeout,
+      static bearer token auth via GITHUB_TOKEN env passthrough.
+    extraction_defaults:
+      base_url: "https://api.github.com"
+      headers:
+        Accept: "application/vnd.github+json"
+        X-GitHub-Api-Version: "2022-11-28"
+        User-Agent: "elt-pipeline-m1"
+      timeout_seconds: 30
+      retry:
+        max_attempts: 5
+        backoff_base_seconds: 1.5
+      pagination:
+        strategy: page_offset
+        page_param: page
+        per_page_param: per_page
+        per_page: 100
+      envelope:
+        payload_path: "$"
+    auth_defaults:
+      strategy: api_key_header
+      header_name: Authorization
+      # Entity config still supplies the real value via secret_refs / env.
+      # Presets only carry *shapes* and defaults, never plaintext secrets.
+      value_template: "Bearer ${GITHUB_TOKEN}"
+    settings_defaults:
+      connector_preset: github_rest_v3
+    persistence_defaults:
+      landing_format: json
+```
+
+In your entity config, set `settings.connector_preset: github_rest_v3` to
+opt in. The preset's extraction/auth/settings/persistence keys are
+**shallowly merged UNDER** your entity's top-level values (entity wins on
+any overlap — no deep key-level dict merge; use presets for *base configs*,
+entities for per-pipeline overrides).
+
+Wire it up and run:
+
+```bash
+# Path to the manifest (YAML or JSON; .yaml/.yml/.json auto-detected with
+# fallback try-ordering on unknown extensions).
+export ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST=./config/connector_registry_presets.yaml
+
+# Strict mode (1): raise ConfigValidationError if the manifest can't be
+# loaded / parsed / validated — safe for CI.  Non-strict (0, default):
+# silently skip the manifest and run the entity config as-is.
+export ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT=1
+
+uv run elt-pipeline ingest run \
+  examples/configs/local_rest_orders.yaml \
+  --root-path .ignore/runtime-rest-preset
+```
+
+### Python plugin-extension surface (new families without CLI edits)
+
+To add a *new* family (e.g. a generic SFTP source), implement the
+`ConnectorFactory` Protocol (2 methods + one attribute) and register it —
+the CLI ingest dispatch already routes through `get_connector_factory()`,
+so no `if/elif` source edits are required:
+
+```python
+from elt_pipeline.ingest import (
+    ConnectorFamily,         # explicit boundary enum; rest/sql/kafka/object_storage built in
+    ConnectorFactory,        # @runtime_checkable Protocol
+    ConnectorManifest, ConnectorPreset,
+    ConnectorRegistryError, ConnectorFamilyUnsupportedError,
+    register_connector_factory, get_connector_factory, is_connector_factory_registered,
+    load_connector_manifest_from_yaml, load_connector_manifest_from_json,
+    apply_connector_preset_defaults,
+)
+from pydantic import BaseModel
+
+class SftpConnectorConfig(BaseModel): ...        # your validated config
+class LocalSftpConnector: ...                     # your runnable concrete
+
+class _SftpConnectorFactory:
+    family_type: str = "sftp"
+    def build_config_from_resolved(self, *, resolved_config) -> BaseModel:
+        return SftpConnectorConfig.from_resolved_entity_config(resolved_config)
+    def build_connector(self, *, config, run_context, root_path, **kwargs):
+        return LocalSftpConnector(config=config, run_context=run_context, root_path=root_path)
+
+# Register BEFORE ingest dispatch (e.g. in a sitecustomize.py or your own
+# CLI wrapper that invokes elt-pipeline ingest … as a subprocess import).
+register_connector_factory("sftp", _SftpConnectorFactory())
+assert is_connector_factory_registered("sftp")
+factory = get_connector_factory("sftp")
+```
+
+Backward compatibility note: `ConnectorFamily`, `ConnectorFactory`, the
+registry singleton, the manifest/preset loaders, and the 2 env vars are
+all 100% additive. Existing pipelines that never set
+`ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST` or `settings.connector_preset`
+run identically to pre-M-1 (the manifest loader returns `None` on unset
+path in non-strict mode, and `apply_connector_preset_defaults` is a no-op
+when `connector_preset` is absent).
+
 ## Object Storage JSON
 
 ```bash

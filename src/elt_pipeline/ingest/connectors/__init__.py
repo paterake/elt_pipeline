@@ -18,6 +18,20 @@ from elt_pipeline.ingest.connectors.object_storage import (
     ObjectStorageRunResult,
     ObjectStorageSyncMode,
 )
+from elt_pipeline.ingest.connectors.registry import (
+    ConnectorFamily,
+    ConnectorFactory,
+    ConnectorManifest,
+    ConnectorPreset,
+    ConnectorRegistryError,
+    ConnectorFamilyUnsupportedError,
+    apply_connector_preset_defaults,
+    get_connector_factory,
+    is_connector_factory_registered,
+    load_connector_manifest_from_json,
+    load_connector_manifest_from_yaml,
+    register_connector_factory,
+)
 from elt_pipeline.ingest.connectors.rest import (
     RestAuthConfig,
     RestAuthStrategy,
@@ -86,4 +100,16 @@ __all__ = [
     "SqlRunResult",
     "SqlWatermarkConfig",
     "SqlWatermarkSource",
+    "ConnectorFamily",
+    "ConnectorFactory",
+    "ConnectorManifest",
+    "ConnectorPreset",
+    "ConnectorRegistryError",
+    "ConnectorFamilyUnsupportedError",
+    "apply_connector_preset_defaults",
+    "get_connector_factory",
+    "is_connector_factory_registered",
+    "load_connector_manifest_from_json",
+    "load_connector_manifest_from_yaml",
+    "register_connector_factory",
 ]

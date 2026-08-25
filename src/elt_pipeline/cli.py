@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,9 @@ from elt_pipeline.config.loader import (
 from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntityConfig
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.ingest import (
+    ConnectorFamily,
+    ConnectorFamilyUnsupportedError,
+    ConnectorRegistryError,
     KafkaConnectorConfig,
     LocalArtifactStore,
     LocalKafkaConnector,
@@ -30,6 +34,11 @@ from elt_pipeline.ingest import (
     RestConnectorConfig,
     RestRequestWindow,
     SqlConnectorConfig,
+    apply_connector_preset_defaults,
+    get_connector_factory,
+    is_connector_factory_registered,
+    load_connector_manifest_from_json,
+    load_connector_manifest_from_yaml,
 )
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
@@ -3039,34 +3048,46 @@ def _run_ingest_entity(
     failure: PipelineError | None = None
     result = None
 
+    connector_manifest = _load_connector_manifest_from_env()
+    if connector_manifest is not None:
+        resolved_config = apply_connector_preset_defaults(resolved_config, connector_manifest)
+
     try:
         if connector_type == "rest":
+            factory = get_connector_factory("rest")
+            validated_config = factory.build_config_from_resolved(resolved_config=resolved_config)
             result = _CliLocalRestConnector(
-                config=RestConnectorConfig.from_resolved_entity_config(resolved_config),
+                config=validated_config,
                 run_context=run_context,
                 root_path=root_path,
                 checkpoint_override=checkpoint_override,
                 window=cli_window,
             ).run()
         elif connector_type == "sql":
+            factory = get_connector_factory("sql")
+            validated_config = factory.build_config_from_resolved(resolved_config=resolved_config)
             result = _CliLocalSqlConnector(
-                config=SqlConnectorConfig.from_resolved_entity_config(resolved_config),
+                config=validated_config,
                 run_context=run_context,
                 root_path=root_path,
                 checkpoint_override=checkpoint_override,
                 window=cli_window,
             ).run()
         elif connector_type == "object_storage":
+            factory = get_connector_factory("object_storage")
+            validated_config = factory.build_config_from_resolved(resolved_config=resolved_config)
             result = _CliLocalObjectStorageConnector(
-                config=ObjectStorageConnectorConfig.from_resolved_entity_config(resolved_config),
+                config=validated_config,
                 run_context=run_context,
                 root_path=root_path,
                 checkpoint_override=checkpoint_override,
                 window=cli_window,
             ).run()
         elif connector_type == "kafka":
+            factory = get_connector_factory("kafka")
+            validated_config = factory.build_config_from_resolved(resolved_config=resolved_config)
             result = _CliLocalKafkaConnector(
-                config=KafkaConnectorConfig.from_resolved_entity_config(resolved_config),
+                config=validated_config,
                 run_context=run_context,
                 root_path=root_path,
                 log_path=_resolve_kafka_log_path(
@@ -3078,11 +3099,17 @@ def _run_ingest_entity(
             ).run()
         else:
             raise ConfigValidationError(
-                message="Unsupported connector type for local ingest CLI",
+                message=(
+                    "Unsupported connector type for local ingest CLI. "
+                    "Use one of the built-in families (rest/sql/kafka/object_storage) "
+                    "or register a ConnectorFactory for a new family via "
+                    "ingest.connectors.register_connector_factory()."
+                ),
                 context={
                     "source_name": resolved_config.source_name,
                     "entity_name": resolved_config.entity_name,
                     "connector_type": connector_type,
+                    "builtin_families": sorted({f.value for f in ConnectorFamily}),
                 },
             )
         completed_at = datetime.now(tz=UTC)
@@ -3826,6 +3853,43 @@ def _manifest_matches_window(
     if window_end is not None and manifest_start > window_end:
         return False
     return True
+
+
+def _load_connector_manifest_from_env() -> object | None:
+    """Load ConnectorManifest from env vars via centralized EnvVarNames.
+
+    Pattern matches quality module: os.getenv(EnvVarNames.connector_registry_*).
+    Supports .yaml/.yml (preferred) or .json (stdlib). Returns None if
+    ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST is unset (default = no-op).
+    """
+    env_ref = runtime_manifest.env
+    manifest_path = os.getenv(env_ref.connector_registry_manifest)
+    strict_raw = os.getenv(env_ref.connector_registry_strict, "").strip().lower()
+    strict = strict_raw in {"1", "true", "yes", "on"}
+    if manifest_path is None or not manifest_path.strip():
+        return None
+    manifest_path = manifest_path.strip()
+    path_lower = manifest_path.lower()
+    try:
+        if path_lower.endswith((".yaml", ".yml")):
+            return load_connector_manifest_from_yaml(manifest_path, cache=True)
+        if path_lower.endswith(".json"):
+            return load_connector_manifest_from_json(manifest_path, cache=True)
+        try:
+            return load_connector_manifest_from_yaml(manifest_path, cache=True)
+        except Exception:
+            return load_connector_manifest_from_json(manifest_path, cache=True)
+    except ConnectorRegistryError:
+        if strict:
+            raise
+        return None
+    except Exception as exc:
+        if strict:
+            raise ConfigValidationError(
+                message=f"Failed to load connector registry manifest from {manifest_path}: {exc}",
+                context={"manifest_path": manifest_path, "strict": str(strict)},
+            ) from exc
+        return None
 
 
 def _resolve_checkpoint_override(

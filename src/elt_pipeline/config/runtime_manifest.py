@@ -137,6 +137,16 @@ class EnvVarNames:
     quality_checks_json: str = "ELT_PIPELINE_QUALITY_CHECKS_JSON"
     quality_checks_yaml: str = "ELT_PIPELINE_QUALITY_CHECKS_YAML"
 
+    # Connector registry — no-code plugin presets (BACKLOG item M-1)
+    #   MANIFEST: YAML/JSON path to ConnectorManifest with named family presets;
+    #     loaded at factory-init, applies extraction/auth/settings/persistence
+    #     defaults before entity-level config (entity overrides win).  Empty = off.
+    #   STRICT: if "1", unknown connector_preset= references are ConfigValidationError
+    #     with a clear list of available presets; if "0"/empty, unknown preset skips
+    #     silently and uses raw entity config.  Default: empty (non-strict).
+    connector_registry_manifest: str = "ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST"
+    connector_registry_strict: str = "ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT"
+
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
 
