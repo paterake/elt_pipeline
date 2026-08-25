@@ -55,6 +55,7 @@ Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup / manif
 Observability (Prometheus metrics, OTLP tracing, webhook alerting) is **Production** via env-driven backends behind the `ObservabilityAdapter` seam; see [Capability Maturity Matrix §6](docs/CAPABILITY_MATURITY_MATRIX.md#L147-L167).
 Secrets resolution (env vars + files + cloud SMs/Vault roadmap) is **Production** via the G-5 subsystem: `secret_ref` URIs, `SecretValue` redaction, and the pluggable `SecretsProvider` Protocol/registry; see [Capability Maturity Matrix §9](docs/CAPABILITY_MATURITY_MATRIX.md#L184-L213).
 Governance — classification tags (4 tiers: public/internal/confidential/restricted_pii), column-level Trino masking (7 strategies, role-based), retention sweeps, and right-to-erasure runbook + SQL helpers is **Production** via the G-6 subsystem; see [Capability Maturity Matrix §10](docs/CAPABILITY_MATURITY_MATRIX.md#L217-L227).
+Lineage — **OpenLineage 2.0.2 wire-compatible export is Production** via env-driven `openlineage_http` backend behind the existing adapter seam; native bespoke JSONL sink remains authoritative (always written, demo-scoped). Auto-injects standard `EnvironmentRunFacet`. Targets Marquez, DataHub, OpenMetadata, Apache Atlas out of the box. See [Capability Maturity Matrix §12](docs/CAPABILITY_MATURITY_MATRIX.md#L242-L249).
 
 ## Source Code references
 
@@ -235,14 +236,16 @@ When omitted, `--root-path` defaults to `.ignore/runtime` and `--warehouse-root`
 
 ## Optional Lineage Backend
 
-The runtime now supports one optional reference lineage backend integration through the existing internal adapter boundary.
+The runtime ships with **true OpenLineage 2.0.2 wire-compatible lineage export** behind the existing lineage adapter seam.
 
-- Local `runs/.../lineage.jsonl` artifacts remain authoritative and are always written first.
-- Remote emission is optional and is configured entirely through environment variables.
-- The current reference backend is `openlineage_http`, which can target Marquez or another OpenLineage-compatible HTTP endpoint.
+- Local `runs/.../lineage.jsonl` artifacts remain authoritative and are always written first (bespoke schema, always-on regardless of remote backend).
+- Remote emission is optional and configured entirely through environment variables (same 5-env-var pattern as observability subsystems).
+- The remote backend `openlineage_http` emits **standard OpenLineage `RunEvent`** payloads (not bespoke-shaped): `eventType`, `eventTime`, `run.runId` + `run.facets`, `job.namespace` + `job.name` + `job.facets`, `inputs[]`/`outputs[]` with full `namespace|name|facets|inputFacets/outputFacets`, a `producer` URI, and an OpenLineage 2.0.2 `schemaURL`.
+- The framework automatically injects the standard `EnvironmentRunFacet` (with OL-spec facet-URI `_producer`/`_schemaURL` fields) when a run's `environment` is set.
+- Compatible out of the box with Marquez, DataHub, OpenMetadata, Apache Atlas, and any other consumer that accepts OpenLineage 1.x/2.x HTTP events.
 - Remote emission failures are recorded in local `logs.jsonl` and `errors.jsonl`; use `ELT_PIPELINE_LINEAGE_POLICY=blocking` only when a remote backend must fail the stage.
 
-Example enablement:
+Example enablement (local Marquez default endpoint):
 
 ```bash
 export ELT_PIPELINE_LINEAGE_BACKEND=openlineage_http
@@ -253,13 +256,13 @@ export ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS=10
 export ELT_PIPELINE_LINEAGE_AUTH_HEADER="Bearer <token>"
 ```
 
-Supported variables:
+Supported variables (all centralized in `EnvVarNames` in `config/runtime_manifest.py`):
 
 - `ELT_PIPELINE_LINEAGE_BACKEND`: set to `openlineage_http` to enable remote emission
 - `ELT_PIPELINE_LINEAGE_URL`: full `http` or `https` endpoint URL for OpenLineage event submission
-- `ELT_PIPELINE_LINEAGE_POLICY`: `best_effort` or `blocking`
-- `ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS`: positive request timeout in seconds
-- `ELT_PIPELINE_LINEAGE_AUTH_HEADER`: optional `Authorization` header value sent with requests
+- `ELT_PIPELINE_LINEAGE_POLICY`: `best_effort` (default, warn + record; non-blocking) or `blocking` (fail the run)
+- `ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS`: positive request timeout in seconds; default 10
+- `ELT_PIPELINE_LINEAGE_AUTH_HEADER`: optional `Authorization` header value sent with requests (e.g. `Bearer <token>` / `Basic <base64>`)
 
 All `ELT_PIPELINE_LINEAGE_*` values are trimmed before validation.
 `ELT_PIPELINE_LINEAGE_BACKEND` and `ELT_PIPELINE_LINEAGE_POLICY` are accepted

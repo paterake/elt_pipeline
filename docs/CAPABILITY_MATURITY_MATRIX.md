@@ -3,7 +3,7 @@
 ## Document Status
 
 - Status: Canonical reference
-- Updated: 2026-08-24 (G-6 Governance closed: classification/masking enums + manifest Pydantic model, Iceberg TBLPROPERTIES injection across all 3 write modes, Trino SECURITY-DEFINER role-based masking view generator, retention DELETE builder, right-to-erasure SQL helpers + operator runbook)
+- Updated: 2026-08-25 (G-7 OpenLineage closed: wire-compatible RunEvent model + EnvironmentRunFacet + converter, centralized 5-env-var manifest registration, HTTP emitter now emits OpenLineage spec format vs bespoke, 7 new schema-validated tests.)
 - Owner: maintainer
 
 ## Purpose
@@ -243,8 +243,8 @@ See BACKLOG item **G-8**.
 
 | Capability | Maturity | Notes |
 |---|---|---|
-| Bespoke lineage emitter (`producer = "elt_pipeline"`) | 🟠 Demo | OpenLineage-*shaped* (namespace, run ID, `DatasetRef` inputs/outputs) but **not wire-compatible** with OpenLineage consumers (Marquez, DataHub, OpenMetadata, Atlas). Writes to the same audit/log channel as §6. |
-| OpenLineage wire-compatible export | ⏳ Roadmap | Add an OpenLineage emitter *behind the existing lineage adapter seam* (`integrations/lineage.py`). Map runs / datasets / facets to the OL spec; emit to OTLP/HTTP. Keep the native emitter as a fallback. |
+| Bespoke lineage emitter (`producer = "elt_pipeline"`) | 🟠 Demo | OpenLineage-*shaped* (namespace, run ID, `DatasetRef` inputs/outputs) but native JSONL schema only; always written locally to `runs/.../lineage.jsonl` as the authoritative sink. Used for on-disk audit + replay debugging. |
+| OpenLineage wire-compatible export | 🟢 Production | Emitter sits behind the existing lineage adapter seam — enable via `ELT_PIPELINE_LINEAGE_BACKEND=openlineage_http`. Maps native `LineageEvent` → OpenLineage 2.0.2 `RunEvent` model (`eventType`, `eventTime`, `run.runId`/`run.facets`, `job.namespace`/`job.name`/`job.facets`, `inputs[].namespace|name|facets|inputFacets`, `outputs[].namespace|name|facets|outputFacets`, `producer` URI, `schemaURL`). Auto-injects the standard `EnvironmentRunFacet` (with `_producer`/`_schemaURL` OL facet-URI fields) when the run's environment is set. Target endpoint is any OpenLineage-compatible HTTP consumer (Marquez, DataHub, OpenMetadata, Apache Atlas). Same 5-env-var config pattern as §6 observability subsystems: BACKEND / URL / POLICY (best_effort default / blocking) / TIMEOUT / AUTH_HEADER. Closed 2026-08-25 G-7. |
 
 See BACKLOG item **G-7**.
 
@@ -265,9 +265,9 @@ See BACKLOG item **M-1**.
 
 For a public consumer walking in cold:
 
-1. **What works today (🟢 Production):** local + AWS S3 + GCS + ADLS storage (four fully-supported schemes via B-6 pluggable StorageBackend facade), REST + object-storage ingest, all 6+6 Iceberg catalog bindings, Trino JDBC serving, the 4-tier SQL validity chain, replayable idempotent writes, the 4-tier config cascade, clean seams for DQ/lineage/audit, Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup via `elt maintain run …`), observability (Prometheus metrics / OTLP tracing / generic webhook alerting via `ObservabilityAdapter`), strict `secret_refs` resolution + log redaction (env/file/plugin-registry stubs for cloud providers + HashiCorp Vault), Spark Hadoop FS cloud credential wiring for S3/GCS/ADLS (13 env vars, ambient-identity default, strict secret_ref fail-fast). This is a usable multi-cloud platform — it runs the full end-to-end loop on a laptop, AWS, GCP, or Azure.
-2. **What ships but is demo-only (🟠 Demo):** SQLite SQL source, JSONL Kafka source, the basic schedule runner, the row-count DQ adapter, the bespoke lineage emitter, the stub/plugin-registered secrets resolvers (Vault / AWS SM / Azure KV / GCP SM all have scheme-registered stubs with additive-only closure paths). All of these *work* for a zero-dependency bundled demo; none are intended as-is for production deployments without the corresponding real-backend add-in.
-3. **What is not built yet (⏳ Roadmap):** DBFS / HDFS storage, real JDBC DB sources, real Kafka broker, real secrets backends (Vault / AWS SM / Azure KV / GCP SM — additive-only Protocol registrations each), PII masking/retention/erasure, DQ quarantine + built-in check library, OpenLineage wire compatibility, container deployment artifacts, a connector plugin registry. All are well-scoped adds behind existing seams (or explicit roadmap items) and tracked when pulled forward.
+1. **What works today (🟢 Production):** local + AWS S3 + GCS + ADLS storage (four fully-supported schemes via B-6 pluggable StorageBackend facade), REST + object-storage ingest, all 6+6 Iceberg catalog bindings, Trino JDBC serving, the 4-tier SQL validity chain, replayable idempotent writes, the 4-tier config cascade, clean seams for DQ/lineage/audit, Iceberg table maintenance (compaction / snapshot expiry / orphan cleanup via `elt maintain run …`), observability (Prometheus metrics / OTLP tracing / generic webhook alerting via `ObservabilityAdapter`), strict `secret_refs` resolution + log redaction (env/file/plugin-registry stubs for cloud providers + HashiCorp Vault), Spark Hadoop FS cloud credential wiring for S3/GCS/ADLS (13 env vars, ambient-identity default, strict secret_ref fail-fast), **OpenLineage wire-compatible export (2.0.2 RunEvent spec, EnvironmentRunFacet auto-injection, Marquez/DataHub-compatible)**. This is a usable multi-cloud platform — it runs the full end-to-end loop on a laptop, AWS, GCP, or Azure.
+2. **What ships but is demo-only (🟠 Demo):** SQLite SQL source, JSONL Kafka source, the basic schedule runner, the row-count DQ adapter, the bespoke lineage emitter (native JSONL only), the stub/plugin-registered secrets resolvers (Vault / AWS SM / Azure KV / GCP SM all have scheme-registered stubs with additive-only closure paths). All of these *work* for a zero-dependency bundled demo; none are intended as-is for production deployments without the corresponding real-backend add-in.
+3. **What is not built yet (⏳ Roadmap):** DBFS / HDFS storage, real JDBC DB sources, real Kafka broker, real secrets backends (Vault / AWS SM / Azure KV / GCP SM — additive-only Protocol registrations each), PII masking/retention/erasure, DQ quarantine + built-in check library, container deployment artifacts, a connector plugin registry. All are well-scoped adds behind existing seams (or explicit roadmap items) and tracked when pulled forward.
 
 To update this matrix as a capability closes: move its row to the correct 🟢/🟠/⏳ column,
 stamp the date, and cross-reference the closed BACKLOG item in the "Notes" column.

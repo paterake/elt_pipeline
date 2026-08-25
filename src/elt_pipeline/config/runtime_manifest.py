@@ -107,6 +107,19 @@ class EnvVarNames:
     alerts_timeout_seconds: str = "ELT_PIPELINE_ALERTS_TIMEOUT_SECONDS"
     alerts_auth_header: str = "ELT_PIPELINE_ALERTS_AUTH_HEADER"
 
+    # Lineage — OpenLineage-compatible remote emission (BACKLOG item G-7)
+    #   Same 5-env-var pattern as observability subsystems:
+    #     BACKEND  → "openlineage_http" (empty = disabled, local JSONL only)
+    #     URL      → OpenLineage HTTP endpoint (e.g. Marquez: http://host:5000/api/v1/lineage)
+    #     POLICY   → "best_effort" (default, warn on failure) or "blocking" (fail run)
+    #     TIMEOUT  → HTTP timeout seconds, default 10
+    #     AUTH_HEADER → optional "Bearer <token>" / "Basic …" etc.
+    lineage_backend: str = "ELT_PIPELINE_LINEAGE_BACKEND"
+    lineage_url: str = "ELT_PIPELINE_LINEAGE_URL"
+    lineage_policy: str = "ELT_PIPELINE_LINEAGE_POLICY"
+    lineage_timeout_seconds: str = "ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS"
+    lineage_auth_header: str = "ELT_PIPELINE_LINEAGE_AUTH_HEADER"
+
     # Toolchain (documented only; user manages via mise/uv)
     java_home: str = "JAVA_HOME"
 

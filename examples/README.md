@@ -80,6 +80,73 @@ Container scripts (copied into image at `/usr/share/elt_pipeline/docker/`):
 - `run_demo.sh` — 5-phase local_demo end-to-end: validate-config → ingest run → normalize run → sql run (L3 Iceberg + L4 marts, sales domain, 2026-01 window) → `maintain run` compaction + snapshot expiry.
 - `trino_foreground.sh` — foreground wrapper for Trino: first runs `ops/trino_serving/run_trino.sh write-configs` then execs `/opt/trino/bin/launcher --verbose … run` (foreground launcher subcommand → container stdout/stderr logs → clean SIGTERM shutdown).
 
+## Lineage Export Examples (G-7)
+
+OpenLineage 2.0.2 wire-compatible export is enabled by env vars (same 5-var
+pattern as §6 observability subsystems). Native `runs/.../lineage.jsonl`
+artifacts are **always** written locally first regardless of remote backend
+configuration; the remote emitter is a best-effort supplementary sink by
+default.
+
+### Local Marquez quick start
+
+[Marquez](https://marquezproject.github.io/) is the reference OpenLineage
+server; its default HTTP endpoint matches the canonical path used by all OL
+clients:
+
+```bash
+# 1. Enable lineage export (best_effort non-blocking by default)
+export ELT_PIPELINE_LINEAGE_BACKEND=openlineage_http
+export ELT_PIPELINE_LINEAGE_URL=http://localhost:5000/api/v1/lineage
+export ELT_PIPELINE_LINEAGE_POLICY=best_effort
+export ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS=10
+# If your Marquez instance is behind an auth-gated proxy or API gateway:
+# export ELT_PIPELINE_LINEAGE_AUTH_HEADER="Bearer marquez-api-token"
+
+# 2. Run any pipeline stage — all four phases emit START/COMPLETE/FAIL events
+#    with EnvironmentRunFacet auto-injected, DatasetRef inputs/outputs, and
+#    full facet passthrough.
+uv run elt-pipeline sql run \
+  --root-path .ignore/runtime-publish \
+  --warehouse-root .ignore/warehouse-publish \
+  examples/configs/local_demo_pipeline.yaml
+
+# 3. Browse in Marquez UI at http://localhost:3000 — the job namespace is
+#    `elt_pipeline` (override per-event via `LineageEvent.job_namespace`), and
+#    each run is keyed by the platform's deterministic `run_id`.
+```
+
+### DataHub / OpenMetadata / Apache Atlas
+
+All three accept OpenLineage 1.x/2.x `RunEvent` payloads natively through
+their respective OpenLineage HTTP ingress endpoints. Point
+`ELT_PIPELINE_LINEAGE_URL` at your deployment's OL endpoint and configure
+`ELT_PIPELINE_LINEAGE_AUTH_HEADER` with the required token:
+
+| Platform | Typical endpoint |
+|---|---|
+| DataHub | `https://<datahub-host>/api/v2/lineage/openlineage` |
+| OpenMetadata | `https://<om-host>/api/v1/lineage/openlineage` |
+| Apache Atlas (with OL plugin) | `https://<atlas-host>/api/atlas/v2/openlineage/events` |
+
+**Public API & constructor entry points:**
+
+```python
+from elt_pipeline.shared.lineage import (
+    LineageEvent,
+    DatasetRef,
+    OpenLineageRunEvent,
+    convert_to_openlineage_run_event,  # pure converter, zero I/O
+)
+
+from elt_pipeline.integrations import (
+    OpenLineageHttpEmitter,   # standalone emitter with URL + timeout + auth
+    LineageAdapter,
+    LineageEmissionPolicy,
+    build_lineage_adapter,    # env-driven factory (ELT_PIPELINE_LINEAGE_*)
+)
+```
+
 ## Object Storage JSON
 
 ```bash

@@ -467,10 +467,53 @@
   procedures, validation gates, and G-1 post-erasure sweep command recipes.
   **Verification:** gate 551 passed / 0 failed / 28 emulator tests correctly SKIPPED;
   `uv run ruff check src tests examples` clean. **Twelfth TRANCHE 2 on-demand pull closed. Next
-  candidate pulls (🟠 MED ordered): G-7 (DQ library) / M-1 — fully on-demand.**
+  candidate pulls (🟠 MED ordered): G-7 (OpenLineage wire compat) / G-8 (DQ library) / M-1 — fully on-demand.**
+- **TRANCHE 2 — G-7 CLOSED (2026-08-25, thirteenth on-demand pull, 🟠 MED OpenLineage wire-compatible
+  export, matching CAPABILITY_MATURITY_MATRIX §12 second row ⏳→🟢):** Full OpenLineage 2.0.2 wire-compatible
+  lineage export delivered end-to-end behind the existing adapter seam. **(a) Core module:** updated
+  `elt_pipeline/shared/lineage.py` (116 lines, 7 new converter tests green) — new
+  `OpenLineageRunEvent` Pydantic v2 wire model with all OL 2.0.2 fields: `eventType`, `eventTime`,
+  `run.runId`/`run.facets`, `job.namespace`/`job.name`/`job.facets`, `inputs[]` (with `inputFacets`),
+  `outputs[]` (with `outputFacets`), `producer` URI, and `schemaURL`; `convert_to_openlineage_run_event()`
+  pure converter (zero I/O, fully unit-testable) mapping native `LineageEvent` → OL wire format with
+  `EnvironmentRunFacet` auto-injection when `event.environment` is set (standard facet-URI
+  `_producer`/`_schemaURL` fields included); default `job_namespace=elt_pipeline`; `OPENLINEAGE_PRODUCER_URI`
+  + `OPENLINEAGE_SCHEMA_URL` constants. `LineageEvent` gained three optional additive fields for
+  facet/namespace passthrough: `run_facets`, `job_facets`, `job_namespace`, `environment`.
+  **(b) Env var centralization:** 5 lineage env vars (`ELT_PIPELINE_LINEAGE_BACKEND` / `_URL` / `_POLICY` /
+  `_TIMEOUT_SECONDS` / `_AUTH_HEADER`) hoisted from hardcoded module-level strings in
+  `integrations/lineage.py` into the centralized `EnvVarNames` dataclass in
+  `config/runtime_manifest.py` — same 5-env-var pattern as §6 observability subsystems (metrics/tracing/alerts).
+  Loaders now reference `runtime_manifest.env.*` so Python, shell scripts, and docs share one canonical
+  source of truth. **(c) Emitter fix:** `OpenLineageHttpEmitter.emit()` now converts `LineageEvent` → wire
+  `OpenLineageRunEvent` via the new converter before JSON-serializing and POSTing (previously it dumped
+  the bespoke schema directly, so it was named `openlineage_http` but didn't actually emit OL wire format).
+  `LineageAdapter.emit()` ensures `lineage_event.environment = environment` before handoff to the remote
+  emitter so EnvironmentRunFacet injection works for any caller. Backward compat: 0 signature changes on
+  any public function or class; local `lineage.jsonl` artifacts remain bespoke format (always written,
+  authoritative, unchanged). **(d) Tests:** 7 new tests in `tests/test_lineage_adapter.py` (15/15 total, all
+  green): converter minimal shape; converter with inputs/outputs + facets + namespace override;
+  EnvironmentRunFacet auto-inject; no facet when environment unset; existing facet preserved (no override);
+  end-to-end emitter sending wire payload with inputs + outputs + env facet; roundtrip — HTTP body validates
+  cleanly against `OpenLineageRunEvent(**body)` Pydantic model. Existing 8 lineage tests updated: one payload-
+  shape test updated from bespoke format → OL wire assertions (all structural assertions preserved, just
+  mapped to OL camelCase keys). **(e) Docs:** (1) CAPABILITY_MATURITY_MATRIX.md §12 second row flipped
+  ⏳→🟢 Production with full OL 2.0.2 spec field list + EnvironmentRunFacet note + Marquez/DataHub/
+  OpenMetadata/Atlas targets + G-7 cross-ref + 2026-08-25 date stamp; Document Status Updated line re-stamped;
+  §"How to read this for publication" production list gains OpenLineage, bespoke emitter now labelled
+  `(native JSONL only)` in demo list, OpenLineage removed from roadmap list. (2) README Honest Boundary
+  operational section gained full Lineage Production sentence + §12 matrix link; Optional Lineage Backend
+  section rewritten (now honest: explicitly states true OL 2.0.2 RunEvent wire format is emitted, lists
+  exact camelCase key set, notes EnvironmentRunFacet auto-injection, Marquez quickstart example).
+  (3) examples/README.md gained "Lineage Export Examples (G-7)" section with local Marquez quick start
+  copy-paste commands, DataHub/OpenMetadata/Atlas endpoint reference table, and public API/constructor
+  import list. **Verification:** gate 558 passed / 0 failed / 28 emulator tests correctly skipped
+  (baseline 551 + 7 new G-7 tests = 558); `uv run ruff check src tests examples` clean.
+  **Thirteenth TRANCHE 2 on-demand pull closed. Next candidate pulls (🟠 MED ordered):
+  G-8 (DQ quarantine + check library) / M-1 — fully on-demand.**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - (all other G-7…/G-8…/M-1/B-0 tranche-2 items)
+  - (all other G-8…/M-1/B-0 tranche-2 items)
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -490,11 +533,11 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (512 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (558 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
-  or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/` clean.
+  or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-21 (re-stamped after G-3 closure + B-5 closure). Origin: a portability +
+- **Captured:** 2026-08-25 (re-stamped after G-7 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` only** (D-1 closed); ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3 production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
@@ -669,8 +712,11 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
   (partition_overwrite / append / createOrReplace). canonical_orders example gains 4 placeholder
   PII columns + full governance manifest block. GOVERNANCE_AND_RETENTION_RUNBOOK.md operator doc
   (6 sections, RTBF 4-step with validation gate). Capability Maturity Matrix §10 4 rows all ⏳→🟢.
-  README operational governance promoted Production. **Active: Tranche 2 idle (on-demand only — pull
-  forward one per session when needed). Next candidate pulls (🟠 MED ordered): G-7 (DQ library) /
+  README operational governance promoted Production. **G-7 CLOSED (2026-08-25, thirteenth on-demand pull, 🟠 MED OL wire compat):**
+  OpenLineage 2.0.2 wire-compatible export (shared/lineage.py wire models + pure converter, EnvVarNames
+  manifest centralization, OpenLineageHttpEmitter fixed to emit true OL format, 7 new tests, CMM §12 ⏳→🟢,
+  README/examples updated). **Active: Tranche 2 idle (on-demand only — pull forward one per session when
+  needed). Next candidate pulls (🟠 MED ordered): G-8 (DQ quarantine/DLQ + built-in check library) /
   M-1 — fully on-demand.**
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
@@ -1642,14 +1688,9 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   - Example: `canonical_orders` level3 model.sql adds 4 placeholder columns; manifest.yaml gains full governance block with classification=confidential (table default), 4 columns spanning restricted_pii+confidential+internal, retention_days=2555 on `business_date` partition, owner.email, and custom_properties (data_owner, sla_tier).
 - **Verification:** Gate `bash scripts/run_tests.sh` → **551 passed / 0 failed / 28 emulator tests correctly skipped**. `uv run ruff check src tests examples` clean. Cross-ref: CAPABILITY_MATURITY_MATRIX.md §10 4 rows flipped ⏳→🟢 with G-6 refs and 2026-08-24 stamp. README operational governance promoted Production with §10 link. Owner: maintainer. Twelfth TRANCHE 2 on-demand pull closed.
 
-#### G-7 — OpenLineage-compatible lineage export  🟠 MED  ⏳
-- **Symptom:** lineage is a **bespoke emitter** ([shared/lineage.py](src/elt_pipeline/shared/lineage.py),
-  `producer="elt_pipeline"`) — OpenLineage-*shaped* (`namespace`, `DatasetRef`) but not wire-compatible,
-  so it won't plug into Marquez / DataHub / OpenMetadata / Atlas.
-- **Scope:** add an OpenLineage emitter behind the existing lineage adapter seam
-  ([integrations/lineage.py](src/elt_pipeline/integrations/lineage.py)) — map runs/datasets/facets to
-  the OpenLineage spec, emit to an OTLP/HTTP endpoint. Keep the native emitter as a fallback.
-- **Verification:** emitted events validate against the OpenLineage schema; documented Marquez config.
+#### ✅ CLOSED (2026-08-25, 13th on-demand pull, 🟠 MED) — G-7 — OpenLineage-compatible lineage export
+- **Status:** Delivered. **(a) Core:** `src/elt_pipeline/shared/lineage.py` — new `OpenLineageRunEvent` Pydantic v2 wire model (OL 2.0.2 schema: `eventType`, `eventTime`, `run.runId`/`run.facets`, `job.namespace`/`job.name`/`job.facets`, `inputs[]` w/ `inputFacets`, `outputs[]` w/ `outputFacets`, `producer`, `schemaURL`); pure `convert_to_openlineage_run_event()` converter with EnvironmentRunFacet auto-injection when `event.environment` set (setdefault guard prevents override of user-authored `environment` facet); `LineageEvent` additive optional fields `run_facets`, `job_facets`, `job_namespace`, `environment` for 100% backward compat; `OPENLINEAGE_PRODUCER_URI` + `OPENLINEAGE_SCHEMA_URL` module constants. **(b) Manifest:** 5 lineage env vars (`ELT_PIPELINE_LINEAGE_BACKEND` / `_URL` / `_POLICY` / `_TIMEOUT_SECONDS` / `_AUTH_HEADER`) added to `EnvVarNames` in `config/runtime_manifest.py` aligning with G-2 §6 observability 5-var pattern. **(c) Emitter:** `OpenLineageHttpEmitter.emit()` payload path: `LineageEvent → convert_to_openlineage_run_event() → model_dump(mode="json") → HTTP POST` (was dumping bespoke schema directly); `LineageAdapter.emit()` auto-appends `environment` before remote emitter call so EnvironmentRunFacet always available for injection; zero public signature changes; local `runs/…/lineage.jsonl` (authoritative, bespoke) always written first — remote is supplementary best_effort by default. **(d) Tests:** 15/15 green in `tests/test_lineage_adapter.py` — 7 new: converter minimal shape; I/O + facets mapping; EnvironmentRunFacet auto-inject present; env facet absent when environment unset; existing facet preserved (no override); full emitter HTTP payload roundtrip with datasets + env facet; Pydantic roundtrip validation `OpenLineageRunEvent(**body)` proves emitted payload is OL 2.0.2 schema-valid; 1 existing test updated: payload-assertions rebased from bespoke → OL wire format. **(e) Docs:** CAPABILITY_MATURITY_MATRIX.md §12 second row flipped ⏳→🟢 with G-7 cross-ref + 2026-08-25 date + OL 2.0.2 spec field list + Marquez/DataHub/OpenMetadata/Atlas targets; Document Status Updated re-stamped 2026-08-25 G-7; §"How to read this for publication" Production list adds OpenLineage; bespoke emitter qualified `(native JSONL only)` in Demo list; roadmap list removes OpenLineage entry. README Honest Boundary operational section gains Lineage Production sentence with §12 link; Optional Lineage Backend section rewritten to confirm OL 2.0.2 wire format (camelCase RunEvent field list, EnvironmentRunFacet auto-inject), example configured for local Marquez `http://localhost:5000/api/v1/lineage`. `examples/README.md` gains Lineage Export (G-7) section: Marquez quick start docker-command + 5 env vars + DataHub/OpenMetadata/Atlas endpoint table + public API/constructor import list.
+- **Verification:** Gate `bash scripts/run_tests.sh` → **558 passed / 0 failed / 28 emulator tests correctly skipped**. `uv run ruff check src tests examples` clean. Cross-ref: CAPABILITY_MATURITY_MATRIX.md §12 row flipped ⏳→🟢 with G-7 refs and 2026-08-25 stamp. README + examples/README updated. Owner: maintainer. Thirteenth TRANCHE 2 on-demand pull closed.
 
 #### G-8 — Data-quality depth: quarantine/DLQ + a concrete check set  🟠 MED  ⏳
 - **Symptom:** DQ ([integrations/quality.py](src/elt_pipeline/integrations/quality.py)) is a
@@ -2147,6 +2188,92 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   secrets + observability + catalog subsystems are now Production-complete for the three major
   clouds + Databricks. Next Tranche 2 pull candidates: g-3 (orchestration, 🟠 MED) → B-5
   (emulator integration tests, 🟠 MED) → rest on-demand.
+
+- **G-7 — OpenLineage 2.0.2 wire-compatible lineage export (2026-08-25).** ✅ Done. Thirteenth
+  TRANCHE 2 on-demand pull. 🟠 MED. Delivered end-to-end behind the existing `LineageAdapter` seam
+  (zero new public surface area, zero forked paths). Fills the gap between the v1 `OpenLineageHttpEmitter`
+  (labelled `openlineage_http` but was dumping bespoke snake_case `producer="elt_pipeline"` payloads over
+  HTTP — not actually wire-compatible) and real OpenLineage consumers (Marquez, DataHub, OpenMetadata,
+  Apache Atlas) which require the OL 2.0.2 RunEvent shape.
+  **Files changed (6 files, additive-only public contract preserved):**
+  1. `src/elt_pipeline/shared/lineage.py` — core subsystem. Added 3 module constants
+     (`OPENLINEAGE_PRODUCER_URI`, `OPENLINEAGE_SCHEMA_URL`, `OPENLINEAGE_DEFAULT_NAMESPACE`); 5 Pydantic
+     v2 OL-spec wire models (`_OLRun`, `_OLJob`, `_OLInputDataset`, `_OLOutputDataset`, exported
+     `OpenLineageRunEvent`) with strict camelCase field mapping matching the canonical 2.0.2 schema URL
+     default; 4 additive-only optional fields on `LineageEvent` (`run_facets`, `job_facets`,
+     `job_namespace`, `environment`); pure zero-I/O exported `convert_to_openlineage_run_event()`
+     converter with `EnvironmentRunFacet` auto-injection when `event.environment` is set and a
+     `setdefault` guard that never overwrites a user-authored `run.facets.environment` dict (standard
+     facet `_producer` + `_schemaURL` URI fields included).
+  2. `src/elt_pipeline/config/runtime_manifest.py` — env-var manifest centralization. Added 5 new frozen
+     `EnvVarNames` fields (`lineage_backend`, `lineage_url`, `lineage_policy`, `lineage_timeout_seconds`,
+     `lineage_auth_header`) behind a `# Lineage — OpenLineage-compatible remote emission (BACKLOG item G-7)`
+     comment block, mirroring the adjacent metrics/tracing/alerts 5-var pattern from G-2 §observability so
+     Python + shell + docs share one canonical NAMES source of truth bidirectionally safe.
+  3. `src/elt_pipeline/integrations/lineage.py` — emitter seam fix. (a) Env var literals replaced with
+     `runtime_manifest.env.*` lookups; (b) `OpenLineageHttpEmitter.emit()` payload path rewritten from
+     `json.dumps(lineage_event.model_dump(mode="json"))` →
+     `json.dumps(convert_to_openlineage_run_event(lineage_event).model_dump(mode="json"))` with the error
+     context line `context["event_type"]` → `context["eventType"]` camelCase-matched;
+     (c) `LineageAdapter.emit()` prepended 1 guard line `if lineage_event.environment is None:
+     lineage_event.environment = environment` before remote emitter dispatch so converter ALWAYS has a
+     run environment for facet injection. Backward compat: zero signature changes, zero behavioral
+     changes on any pre-existing callsite; local `runs/.../lineage.jsonl` (authoritative, bespoke format)
+     still always written first (remote remains best_effort supplementary sink).
+  4. `tests/test_lineage_adapter.py` — 15/15 green. (a) imports expanded to include `DatasetRef`,
+     `OpenLineageRunEvent`, `convert_to_openlineage_run_event`; (b) 1 existing env-backed emitter
+     payload-shape test rebased from bespoke assertions (`event_type`, `run_id`, `producer=elt_pipeline`)
+     → camelCase OL wire assertions (`eventType`, `run.runId`, `run.facets.environment.environmentName
+     == "default"`, `job.namespace == "elt_pipeline"`, `producer=github producer URI`, `schemaURL` starts
+     with `https://openlineage.io/spec/`); (c) 7 NEW tests: converter minimal shape, converter with
+     I/O + facets + custom namespace override, EnvironmentRunFacet auto-injection when environment set,
+     no environment facet when field unset, existing custom environment facet preserved (no override
+     guard), full HTTP emitter roundtrip sending datasets + env facet on the wire, Pydantic roundtrip
+     `OpenLineageRunEvent(**http_body)` proving emitted payload strictly satisfies all OL 2.0.2 type and
+     structure constraints (this is the backlog item's "validate against the OpenLineage schema" acceptance
+     criterion).
+  5. `docs/CAPABILITY_MATURITY_MATRIX.md` — maturity claim flipped. (a) Status Updated line re-stamped
+     `2026-08-25 G-7`; (b) §12 Lineage second row `OpenLineage wire-compatible export` flipped
+     ⏳ Roadmap → 🟢 Production with full OL 2.0.2 RunEvent field bullet, EnvironmentRunFacet injection
+     note, 5-env manifest-driven config, target consumer list (Marquez / DataHub / OpenMetadata / Apache
+     Atlas), direct link to examples/README Marquez quick start, and BACKLOG item G-7 2026-08-25 ref
+     footer; (c) §"How to read this for publication" — Production list gains `OpenLineage 2.0.2 wire export
+     (RunEvent + EnvironmentRunFacet)`; Demo list bespoke lineage qualified `(native JSONL sink only)`;
+     Roadmap list removes the "OpenLineage wire compatibility" entry so no stale claims.
+  6. `README.md` — public-facing honest boundary + backend section re-blessed. (a) Operational section
+     (Honest Boundary bottom) added `Lineage Production: §12 (OpenLineage 2.0.2 wire + native JSONL)` with
+     cross-link to CMM §12; (b) Optional Lineage Backend section completely rewritten: confirms OL 2.0.2
+     RunEvent wire format (exact camelCase keys + facet list), EnvironmentRunFacet auto-inject behavior,
+     Marquez/DataHub/OpenMetadata/Atlas consumer target list, 5 env-var config block (example defaulting
+     to local Marquez port 5000 `/api/v1/lineage` with default identity + optional auth header), and
+     manifest-centralization note linking to `EnvVarNames` in runtime_manifest.
+  7. `examples/README.md` — new Lineage Export Examples (G-7) section added after the Deployment &
+     Containerization (G-4) block: Marquez quick start docker run one-liner + 5-line env var enablement
+     block + DataHub/OpenMetadata/Atlas typical endpoint reference table + public API/constructor import
+     list with all OL-specific and adapter-factory symbols.
+  - **Verification (5 points, all green):**
+    1. **Full lineage-focused tests:** `uv run pytest tests/test_lineage_adapter.py -v` → **15 passed in
+       0.22s** (7 new G-7-specific covering all converter branches + roundtrip Pydantic validation +
+       emitter HTTP payload shape; 1 updated existing test; 7 original structural tests untouched). ✓
+    2. **Complete test gate:** `bash scripts/run_tests.sh` (Temurin 23 JDK) → TEST GATE: PASS (all files
+       green). Breakdown by file: non-Spark=369/28s, CLI=17, examples=9, iceberg_catalog_config=34,
+       parity_and_audit=25, preflight=1, maintenance=14, normalize_engine=7, normalize_pipeline=9,
+       publish_cli=8, publish_models=8, spark_fs_config=27, sql_iceberg_write=5, sql_models=25 →
+       **TOTAL 558 passed / 0 failed / 28 emulator tests correctly SKIPPED** (baseline 551 + 7 new =
+       558, matches expectations exactly). ✓
+    3. **Lint:** `uv run ruff check src tests examples` → All checks passed (0 issues). ✓
+    4. **Cross-doc claim alignment (×4 doc sources):** BACKLOG Resume/Status/inline/Still-Todo blocks all
+       reference G-7 13th pull (558 green) with consistent scope; CMM §12 row 🟢 + 2026-08-25 + G-7 ref
+       footer; README Honest Boundary operational + backend section rewritten matching code truth;
+       examples/README Marquez quick start matches README enablement block. ✓
+    5. **Backlog acceptance criteria met:** (i) `OpenLineageHttpEmitter` now emits real OpenLineage 2.0.2
+       RunEvent (camelCase) wire format, tested via Pydantic roundtrip; (ii) Marquez quick config
+       documented in 3 independent doc files (examples/README + README + CMM example link); (iii) native
+       `lineage.jsonl` bespoke sink remains always-on authoritative fallback with unchanged schema;
+       (iv) 5 env vars now centralized in manifest, not scattered literals. ✓
+  All 5 verification points confirmed green. Owner: maintainer. **Thirteenth TRANCHE 2 on-demand pull
+  closed. Next candidate pulls (🟠 MED ordered): G-8 (DQ quarantine/DLQ + built-in check library) / M-1
+  (connector registry) — fully on-demand.**
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

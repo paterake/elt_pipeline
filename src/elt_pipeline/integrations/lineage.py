@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.ingest.storage import LocalArtifactStore
 from elt_pipeline.shared.errors import (
     ConfigValidationError,
@@ -16,15 +17,19 @@ from elt_pipeline.shared.errors import (
     PipelineError,
     build_error_record,
 )
-from elt_pipeline.shared.lineage import LineageEvent
+from elt_pipeline.shared.lineage import (
+    LineageEvent,
+    convert_to_openlineage_run_event,
+)
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.runtime import RunContext
 
-_LINEAGE_BACKEND_ENV = "ELT_PIPELINE_LINEAGE_BACKEND"
-_LINEAGE_URL_ENV = "ELT_PIPELINE_LINEAGE_URL"
-_LINEAGE_POLICY_ENV = "ELT_PIPELINE_LINEAGE_POLICY"
-_LINEAGE_TIMEOUT_ENV = "ELT_PIPELINE_LINEAGE_TIMEOUT_SECONDS"
-_LINEAGE_AUTH_HEADER_ENV = "ELT_PIPELINE_LINEAGE_AUTH_HEADER"
+_env = runtime_manifest.env
+_LINEAGE_BACKEND_ENV = _env.lineage_backend
+_LINEAGE_URL_ENV = _env.lineage_url
+_LINEAGE_POLICY_ENV = _env.lineage_policy
+_LINEAGE_TIMEOUT_ENV = _env.lineage_timeout_seconds
+_LINEAGE_AUTH_HEADER_ENV = _env.lineage_auth_header
 
 
 class LineageEmissionPolicy(str, Enum):
@@ -90,7 +95,8 @@ class OpenLineageHttpEmitter:
         if self._auth_header is not None:
             headers["Authorization"] = self._auth_header
 
-        payload = json.dumps(lineage_event.model_dump(mode="json")).encode("utf-8")
+        ol_event = convert_to_openlineage_run_event(lineage_event)
+        payload = json.dumps(ol_event.model_dump(mode="json")).encode("utf-8")
         request = Request(
             self._endpoint_url,
             data=payload,
@@ -110,7 +116,7 @@ class OpenLineageHttpEmitter:
                     "backend_type": self.backend_type,
                     "endpoint_url": self._endpoint_url,
                     "status_code": exc.code,
-                    "event_type": lineage_event.event_type,
+                    "event_type": ol_event.eventType,
                     "job_name": run_context.job_name,
                     "environment": environment,
                 },
@@ -126,7 +132,7 @@ class OpenLineageHttpEmitter:
                     "backend_type": self.backend_type,
                     "endpoint_url": self._endpoint_url,
                     "reason": str(reason),
-                    "event_type": lineage_event.event_type,
+                    "event_type": ol_event.eventType,
                     "job_name": run_context.job_name,
                     "environment": environment,
                 },
@@ -160,6 +166,8 @@ class LineageAdapter:
         if self._remote_emitter is None:
             return local_path
 
+        if lineage_event.environment is None:
+            lineage_event.environment = environment
         try:
             self._remote_emitter.emit(
                 run_context=run_context,
