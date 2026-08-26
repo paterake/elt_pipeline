@@ -442,6 +442,341 @@ def test_schedule_run_command_stops_on_first_failure(tmp_path: Path) -> None:
     assert payload["jobs"][1]["error"]["error_code"] == "CONFIG_VALIDATION_FAILED"
 
 
+def test_schedule_plan_topological_order_respects_depends_on(tmp_path: Path) -> None:
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: z-last
+            argv:
+              - show-run-context
+              - --stage
+              - ingest
+              - --job-name
+              - z
+            depends_on:
+              - a-first
+              - m-middle
+          - name: m-middle
+            argv:
+              - show-run-context
+              - --stage
+              - ingest
+              - --job-name
+              - m
+            depends_on:
+              - a-first
+          - name: a-first
+            argv:
+              - show-run-context
+              - --stage
+              - ingest
+              - --job-name
+              - a
+        continue_on_error: false
+        """,
+        replacements={},
+    )
+
+    result = _run_cli(["schedule", "run", str(schedule_path)])
+    payload = json.loads(result.stdout)
+    assert payload["success"] is True
+    assert payload["execution_order"] == ["a-first", "m-middle", "z-last"]
+    assert [job["name"] for job in payload["jobs"]] == [
+        "a-first",
+        "m-middle",
+        "z-last",
+    ]
+
+
+def test_schedule_plan_rejects_unknown_dependency(tmp_path: Path) -> None:
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: lone
+            argv:
+              - show-run-context
+              - --stage
+              - ingest
+              - --job-name
+              - lone
+            depends_on:
+              - does-not-exist
+        """,
+        replacements={},
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "elt_pipeline", "schedule", "run", str(schedule_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    error_record = json.loads(result.stderr)
+    assert error_record["error_code"] == "CONFIG_VALIDATION_FAILED"
+
+
+def test_schedule_plan_rejects_cycle(tmp_path: Path) -> None:
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: job-a
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "a"]
+            depends_on: ["job-c"]
+          - name: job-b
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "b"]
+            depends_on: ["job-a"]
+          - name: job-c
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "c"]
+            depends_on: ["job-b"]
+        """,
+        replacements={},
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "elt_pipeline", "schedule", "run", str(schedule_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    error_record = json.loads(result.stderr)
+    assert error_record["error_code"] == "CONFIG_VALIDATION_FAILED"
+
+
+def test_schedule_run_writes_audit_json(tmp_path: Path) -> None:
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: show-ctx
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "audit-check"]
+        continue_on_error: false
+        """,
+        replacements={},
+    )
+    audit_root = tmp_path / "audit_out"
+    result = _run_cli(["schedule", "run", str(schedule_path), "--audit-root", str(audit_root)])
+    payload = json.loads(result.stdout)
+    assert payload["success"] is True
+    audit_path = Path(payload["audit_path"])
+    assert audit_path.exists()
+    assert audit_path.name == "schedule_execution_audit.json"
+    audit_payload = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert audit_payload["command"] == "schedule.run"
+    assert audit_payload["run_id"] == payload["run_id"]
+    assert audit_payload["job_count"] == 1
+    assert "started_at_iso" in audit_payload
+    assert "finished_at_iso" in audit_payload
+
+
+def test_schedule_run_default_audit_root_uses_plan_directory(tmp_path: Path) -> None:
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: show-ctx
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "dflt-audit"]
+        continue_on_error: false
+        """,
+        replacements={},
+    )
+    result = _run_cli(["schedule", "run", str(schedule_path)])
+    payload = json.loads(result.stdout)
+    audit_path = Path(payload["audit_path"])
+    assert audit_path.exists()
+    assert schedule_path.resolve().parent in audit_path.resolve().parents
+
+
+def test_schedule_run_skips_downstream_on_upstream_failure(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path)
+    schedule_path = write_schedule_plan(
+        tmp_path,
+        """
+        jobs:
+          - name: ok-job
+            argv:
+              - validate-config
+              - __CONFIG_PATH__
+          - name: fail-job
+            argv:
+              - validate-config
+              - __MISSING_CONFIG__
+            depends_on:
+              - ok-job
+          - name: downstream-of-fail
+            argv:
+              - show-run-context
+              - --stage
+              - ingest
+              - --job-name
+              - skipped
+            depends_on:
+              - fail-job
+        """,
+        replacements={
+            "__CONFIG_PATH__": str(config_path),
+            "__MISSING_CONFIG__": str(tmp_path / "missing.yaml"),
+        },
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "elt_pipeline", "schedule", "run", str(schedule_path)],
+        cwd=Path(__file__).resolve().parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 2
+    assert payload["executed_count"] == 2
+    assert payload["skipped_count"] == 1
+    assert [j["name"] for j in payload["jobs"]] == ["ok-job", "fail-job"]
+    assert payload["skipped_jobs"][0]["name"] == "downstream-of-fail"
+    assert (
+        payload["skipped_jobs"][0]["status"]
+        in {"skipped_upstream_failure", "skipped_stop_on_error"}
+    )
+
+
+def test_schedule_run_retries_per_job_and_records_attempts(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    call_count: dict[str, int] = {"n": 0}
+
+    def _fake_invoke(_argv):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            return (99, "", "transient-failure")
+        return (0, json.dumps({"command": "fake", "ok": True}), "")
+
+    monkeypatch.setattr(
+        "elt_pipeline.cli._invoke_cli_job",
+        _fake_invoke,
+    )
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "retry-job",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "r"],
+                    "retries": 3,
+                    "retry_delay_seconds": 0.0,
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_retries",
+        started_at_iso="2026-08-26T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    assert payload["success"] is True
+    assert payload["jobs"][0]["attempt_count"] == 3
+    assert payload["jobs"][0]["attempts"][0]["exit_code"] == 99
+    assert payload["jobs"][0]["attempts"][1]["exit_code"] == 99
+    assert payload["jobs"][0]["attempts"][2]["exit_code"] == 0
+
+
+def test_schedule_run_retries_exhausted_marks_failed(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    call_count: dict[str, int] = {"n": 0}
+    job_order_seen: list[str] = []
+
+    def _fake_invoke(argv: list[str]) -> tuple[int, str, str]:
+        call_count["n"] += 1
+        if "--job-name" in argv:
+            job_order_seen.append(argv[argv.index("--job-name") + 1])
+        if "independent-runner" in " ".join(argv) or "i" in argv:
+            return (
+                0,
+                json.dumps({"command": "ok", "runner": "independent"}),
+                "",
+            )
+        return (77, "", f"persistent-failure-{call_count['n']}")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "always-fail",
+                    "argv": [
+                        "show-run-context",
+                        "--stage",
+                        "ingest",
+                        "--job-name",
+                        "always-fail",
+                    ],
+                    "retries": 2,
+                    "retry_delay_seconds": 0.0,
+                },
+                {
+                    "name": "independent-runner",
+                    "argv": [
+                        "show-run-context",
+                        "--stage",
+                        "ingest",
+                        "--job-name",
+                        "independent-runner",
+                    ],
+                    "retries": 0,
+                },
+            ],
+            "continue_on_error": True,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "p.yaml"),
+        continue_on_error=True,
+        run_id="schedule_run_UT_retries_exh",
+        started_at_iso="2026-08-26T00:00:00+00:00",
+    )
+    assert exit_code == 77
+    assert payload["success"] is False
+    assert payload["success_count"] == 1
+    assert payload["failed_count"] == 1
+    assert payload["jobs"][0]["attempt_count"] == 3
+    assert payload["jobs"][1]["attempt_count"] == 1
+    assert call_count["n"] == 4
+
+
+def test_schedule_plan_bounds_retries_and_delay(tmp_path: Path) -> None:
+    from elt_pipeline.shared.errors import ConfigValidationError
+    from elt_pipeline.shared.scheduler import load_schedule_plan
+
+    bad_retries = tmp_path / "bad_retries.yaml"
+    bad_retries.write_text(
+        dedent(
+            """
+        jobs:
+          - name: huge-retries
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "h"]
+            retries: 500
+          - name: huge-delay
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "d"]
+            retry_delay_seconds: 9000
+        """
+        ).strip(),
+        encoding="utf-8",
+    )
+    try:
+        load_schedule_plan(bad_retries)
+        raise AssertionError("expected ConfigValidationError to be raised")
+    except ConfigValidationError as exc:
+        assert "validation failed" in exc.message.lower() or exc.context
+
+
 def test_sql_compile_command(tmp_path: Path) -> None:
     package_root = write_sql_package(tmp_path)
     result = subprocess.run(

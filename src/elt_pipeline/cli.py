@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -78,9 +80,11 @@ from elt_pipeline.shared.path_utils import (
     detect_scheme,
     join_paths,
     path_exists,
+    path_mkdir,
     path_normalize,
     path_read_text,
     path_rglob,
+    path_write_bytes,
 )
 from elt_pipeline.shared.runtime import (
     ExecutionWindow,
@@ -88,7 +92,12 @@ from elt_pipeline.shared.runtime import (
     build_job_runtime,
     new_run_context,
 )
-from elt_pipeline.shared.scheduler import SchedulePlan, load_schedule_plan, parse_schedule_payload
+from elt_pipeline.shared.scheduler import (
+    SchedulePlan,
+    load_schedule_plan,
+    parse_schedule_payload,
+    topological_sort_schedule_jobs,
+)
 from elt_pipeline.spark.session import build_spark_session
 from elt_pipeline.sql import (
     SparkSqlModelExecutor,
@@ -1757,6 +1766,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Continue running remaining jobs after a job failure.",
     )
+    schedule_run_parser.add_argument(
+        "--audit-root",
+        type=Path,
+        default=None,
+        help=(
+            "Directory root where schedule_execution_audit.json is written. "
+            "Defaults to <plan-file-dir>/runs/schedule_<sha>/ for workstation use."
+        ),
+    )
 
     return parser
 
@@ -2702,11 +2720,33 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "schedule":
             plan = load_schedule_plan(args.plan_path)
             continue_on_error = args.continue_on_error or plan.continue_on_error
+            if args.audit_root is not None:
+                audit_root = path_normalize(str(args.audit_root))
+            else:
+                plan_hash = hashlib.sha1(
+                    str(args.plan_path.resolve()).encode("utf-8")
+                ).hexdigest()[:12]
+                audit_root = join_paths(
+                    path_normalize(str(args.plan_path.resolve().parent)),
+                    "runs",
+                    f"schedule_{plan_hash}",
+                )
+            path_mkdir(audit_root, exist_ok=True)
+            run_id, start_iso = _new_schedule_run_id_and_start()
             payload, exit_code = _run_schedule_plan(
                 plan=plan,
                 plan_path=path_normalize(str(args.plan_path)),
                 continue_on_error=continue_on_error,
+                run_id=run_id,
+                started_at_iso=start_iso,
             )
+            audit_path = join_paths(audit_root, "schedule_execution_audit.json")
+            audit_bytes = (
+                json.dumps(payload, indent=2, default=str, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            path_write_bytes(audit_path, audit_bytes)
+            payload["audit_path"] = audit_path
+            payload["run_id"] = run_id
             print(json.dumps(payload, indent=2))
             return exit_code
     except (ConfigValidationError, ValidationError) as exc:
@@ -2762,42 +2802,147 @@ def _add_publish_selection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--environment", default="default")
 
 
+def _new_schedule_run_id_and_start() -> tuple[str, str]:
+    now = datetime.now(UTC)
+    stamp = now.strftime("%Y%m%dT%H%M%S.%fZ")
+    salt = hashlib.sha1(os.urandom(16)).hexdigest()[:8]
+    return (f"schedule_run_{stamp}_{salt}", now.isoformat())
+
+
 def _run_schedule_plan(
     *,
     plan: SchedulePlan,
     plan_path: str,
     continue_on_error: bool,
+    run_id: str,
+    started_at_iso: str,
 ) -> tuple[dict[str, Any], int]:
-    job_results: list[dict[str, Any]] = []
-    overall_exit_code = 0
+    ordered_names = topological_sort_schedule_jobs(plan.jobs)
+    by_name = {job.name: job for job in plan.jobs}
+    completed: set[str] = set()
+    failed: set[str] = set()
+    position_by_name = {job.name: i for i, job in enumerate(plan.jobs, start=1)}
 
-    for position, job in enumerate(plan.jobs, start=1):
-        exit_code, stdout_text, stderr_text = _invoke_cli_job(job.argv)
+    job_results: list[dict[str, Any]] = []
+    skipped_jobs: list[dict[str, Any]] = []
+    overall_exit_code = 0
+    stop_after_this_job: str | None = None
+
+    for name in ordered_names:
+        job = by_name[name]
+        position = position_by_name[name]
+        unmet_deps = [dep for dep in job.depends_on if dep not in completed]
+        failed_deps = [dep for dep in job.depends_on if dep in failed]
+        if stop_after_this_job is not None:
+            skipped_jobs.append(
+                {
+                    "name": job.name,
+                    "position": position,
+                    "argv": job.argv,
+                    "status": "skipped_stop_on_error",
+                    "depends_on": list(job.depends_on),
+                    "stopped_after_job_failed": stop_after_this_job,
+                }
+            )
+            continue
+        if failed_deps and not continue_on_error:
+            skipped_jobs.append(
+                {
+                    "name": job.name,
+                    "position": position,
+                    "argv": job.argv,
+                    "status": "skipped_upstream_failure",
+                    "depends_on": list(job.depends_on),
+                    "skipped_because_failed_dependencies": failed_deps,
+                }
+            )
+            continue
+        if unmet_deps:
+            skipped_jobs.append(
+                {
+                    "name": job.name,
+                    "position": position,
+                    "argv": job.argv,
+                    "status": "skipped_unmet_dependencies",
+                    "depends_on": list(job.depends_on),
+                    "skipped_because_missing_dependencies": unmet_deps,
+                }
+            )
+            continue
+
+        attempts: list[dict[str, Any]] = []
+        final_exit_code: int = 1
+        final_stdout_text = ""
+        final_stderr_text = ""
+        max_attempts = 1 + max(0, job.retries)
+
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1 and job.retry_delay_seconds > 0:
+                time.sleep(job.retry_delay_seconds)
+            exit_code, stdout_text, stderr_text = _invoke_cli_job(job.argv)
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "exit_code": exit_code,
+                    "output": parse_schedule_payload(stdout_text),
+                    "error": parse_schedule_payload(stderr_text),
+                }
+            )
+            final_exit_code = exit_code
+            final_stdout_text = stdout_text
+            final_stderr_text = stderr_text
+            if exit_code == 0:
+                break
+
+        if final_exit_code == 0:
+            completed.add(job.name)
+            status = "success"
+        else:
+            failed.add(job.name)
+            status = "failed"
+            if overall_exit_code == 0:
+                overall_exit_code = final_exit_code
+            if not continue_on_error:
+                stop_after_this_job = job.name
+
         job_results.append(
             {
                 "name": job.name,
                 "position": position,
                 "argv": job.argv,
-                "status": "success" if exit_code == 0 else "failed",
-                "exit_code": exit_code,
-                "output": parse_schedule_payload(stdout_text),
-                "error": parse_schedule_payload(stderr_text),
+                "status": status,
+                "exit_code": final_exit_code,
+                "attempts": attempts,
+                "attempt_count": len(attempts),
+                "retries_requested": job.retries,
+                "retry_delay_seconds": job.retry_delay_seconds,
+                "depends_on": list(job.depends_on),
+                "output": parse_schedule_payload(final_stdout_text),
+                "error": parse_schedule_payload(final_stderr_text),
             }
         )
-        if exit_code != 0:
-            overall_exit_code = exit_code
-            if not continue_on_error:
-                break
 
+    finished_at_iso = datetime.now(UTC).isoformat()
+    success_count = sum(1 for jr in job_results if jr["status"] == "success")
+    failed_count = sum(1 for jr in job_results if jr["status"] == "failed")
+    skipped_count = len(skipped_jobs)
     return (
         {
             "command": "schedule.run",
             "plan_path": str(plan_path),
+            "run_id": run_id,
+            "started_at_iso": started_at_iso,
+            "finished_at_iso": finished_at_iso,
+            "execution_order": ordered_names,
             "job_count": len(plan.jobs),
             "executed_count": len(job_results),
+            "skipped_count": skipped_count,
+            "success_count": success_count,
+            "failed_count": failed_count,
             "continue_on_error": continue_on_error,
             "success": overall_exit_code == 0,
             "jobs": job_results,
+            "skipped_jobs": skipped_jobs,
         },
         overall_exit_code,
     )
