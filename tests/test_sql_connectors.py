@@ -712,3 +712,394 @@ def test_local_sql_connector_delta_with_fake_driver_and_checkpoint_update(
         environment="dev", source_name="pg_orders_db", entity_name="orders"
     )
     assert chk.current_checkpoint == {"max_updated_at": "2026-01-06T00:00:00+00:00"}
+
+
+def test_resolved_entity_config_source_defaults_extraction_cascades(tmp_path: Path) -> None:
+    from elt_pipeline.config.loader import load_pipeline_config, resolve_entity_config
+
+    config_file = tmp_path / "pipeline.yaml"
+    config_file.write_text(
+        """
+schema_version: v1
+defaults: {}
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: infor_occm
+    connector_type: sql
+    defaults:
+      extraction:
+        mode: delta
+        connection:
+          driver: mssql
+          database: OCCM_MART
+          options:
+            host: occm-db.local
+        watermark:
+          parameter_name: wm
+          state_source: checkpoint
+    entities:
+      - name: dim_customer
+        extraction:
+          watermark:
+            column_name: updated_at
+            checkpoint_key: max_updated_at
+            default_value: "2020-01-01T00:00:00+00:00"
+      - name: f_winnings
+        extraction:
+          watermark:
+            column_name: win_date
+            checkpoint_key: max_win_date
+            default_value: "2021-01-01T00:00:00+00:00"
+          filters:
+            - "status <> 'VOID'"
+""".strip(),
+        encoding="utf-8",
+    )
+    cfg = load_pipeline_config(config_file)
+    res1 = resolve_entity_config(
+        cfg,
+        environment="default",
+        source_name="infor_occm",
+        entity_name="dim_customer",
+        config_path=config_file,
+    )
+    assert res1.extraction["mode"] == "delta"
+    assert res1.extraction["connection"]["driver"] == "mssql"
+    assert res1.extraction["connection"]["database"] == "OCCM_MART"
+    assert res1.extraction["connection"]["options"]["host"] == "occm-db.local"
+    assert res1.extraction["watermark"]["column_name"] == "updated_at"
+    assert res1.settings["config_file_dir"] == str(tmp_path)
+    assert res1.settings["config_file_path"] == str(config_file)
+
+    res2 = resolve_entity_config(
+        cfg,
+        environment="default",
+        source_name="infor_occm",
+        entity_name="f_winnings",
+        config_path=config_file,
+    )
+    assert res2.extraction["filters"] == ["status <> 'VOID'"]
+    assert res2.extraction["watermark"]["column_name"] == "win_date"
+
+
+def test_sql_connector_auto_select_star_when_no_explicit_sql(tmp_path: Path) -> None:
+    database_path = tmp_path / "shop.db"
+    conn = sqlite3.connect(str(database_path))
+    conn.execute("create table products (id int, sku text, price real)")
+    conn.execute("insert into products values (1, 'SKU-1', 10.0), (2, 'SKU-2', 20.0)")
+    conn.commit()
+    conn.close()
+
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="shop",
+        entity_name="products",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={"database": str(database_path)},
+        settings={"config_file_dir": str(tmp_path)},
+    )
+    cfg = SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    assert cfg.query.sql == "SELECT * FROM products"
+
+    connector = LocalSqlConnector(
+        config=cfg,
+        run_context=new_run_context(
+            stage=StageName.ingest, job_name="auto-select", trigger_type="manual"
+        ),
+        root_path=str(tmp_path),
+    )
+    result = connector.run()
+    assert result.row_count == 2
+
+
+def test_sql_connector_catalog_table_override_for_auto_sql(tmp_path: Path) -> None:
+    database_path = tmp_path / "shop.db"
+    conn = sqlite3.connect(str(database_path))
+    conn.execute('create table "ZSD_GEOCUSTOMER" (id int, name text)')
+    conn.execute("insert into \"ZSD_GEOCUSTOMER\" values (1, 'Acme')")
+    conn.commit()
+    conn.close()
+
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="sap_ecc",
+        entity_name="geocustomer",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={
+            "database": str(database_path),
+            "catalog_table": "ZSD_GEOCUSTOMER",
+        },
+    )
+    cfg = SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    assert cfg.query.sql == "SELECT * FROM ZSD_GEOCUSTOMER"
+
+    connector = LocalSqlConnector(
+        config=cfg,
+        run_context=new_run_context(
+            stage=StageName.ingest, job_name="cat-table", trigger_type="manual"
+        ),
+        root_path=str(tmp_path),
+    )
+    result = connector.run()
+    assert result.row_count == 1
+
+
+def test_sql_connector_sql_file_loading(tmp_path: Path) -> None:
+    sql_dir = tmp_path / "sql"
+    sql_dir.mkdir()
+    (sql_dir / "active_products.sql").write_text(
+        "select id, sku, price from products where active = 1 order by sku",
+        encoding="utf-8",
+    )
+
+    database_path = tmp_path / "shop.db"
+    conn = sqlite3.connect(str(database_path))
+    conn.execute(
+        "create table products (id int, sku text, price real, active int)"
+    )
+    conn.execute(
+        "insert into products values "
+        "(1, 'SKU-1', 10.0, 1), (2, 'SKU-2', 20.0, 0), (3, 'SKU-3', 30.0, 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="shop",
+        entity_name="products_active",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={
+            "database": str(database_path),
+            "sql_file": "sql/active_products.sql",
+        },
+        settings={"config_file_dir": str(tmp_path)},
+    )
+    cfg = SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    assert "from products" in cfg.query.sql.lower()
+
+    connector = LocalSqlConnector(
+        config=cfg,
+        run_context=new_run_context(
+            stage=StageName.ingest, job_name="sqlfile", trigger_type="manual"
+        ),
+        root_path=str(tmp_path),
+    )
+    result = connector.run()
+    assert result.row_count == 2
+
+
+def test_sql_connector_sql_file_not_found_raises_config_error(tmp_path: Path) -> None:
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="shop",
+        entity_name="bad_ref",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={"database": str(tmp_path / "x.db"), "sql_file": "nope.sql"},
+        settings={"config_file_dir": str(tmp_path)},
+    )
+    with pytest.raises(ConfigValidationError) as excinfo:
+        SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    assert excinfo.value.context["error_code"] == "SQL_SQLFILE_NOT_FOUND"
+
+
+def test_sql_connector_sql_file_no_basedir_raises(tmp_path: Path) -> None:
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="shop",
+        entity_name="bad_ref2",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={"database": str(tmp_path / "x.db"), "sql_file": "nope.sql"},
+        settings={},
+    )
+    with pytest.raises(ConfigValidationError) as excinfo:
+        SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    assert excinfo.value.context["error_code"] == "SQL_SQLFILE_NO_BASEDIR"
+
+
+def test_sql_connector_build_query_plan_auto_watermark_predicate(tmp_path: Path) -> None:
+    connector = InspectableSqlConnector(
+        config=SqlConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="orders_db",
+            entity_name="orders",
+            execution_mode="manual",
+            extraction_mode="delta",
+            connection={"database": str(tmp_path / "o.db")},
+            query={"sql": "SELECT * FROM orders"},
+            watermark={
+                "column_name": "updated_at",
+                "checkpoint_key": "max_updated_at",
+                "default_value": "2026-01-01T00:00:00+00:00",
+            },
+        )
+    )
+    queries = connector.build_query_plan(
+        checkpoint_before=None,
+        watermark_value="2026-01-04T00:00:00+00:00",
+    )
+    assert len(queries) == 1
+    assert "WHERE" in queries[0].sql.upper()
+    assert "updated_at > :watermark" in queries[0].sql
+    assert queries[0].parameters["watermark"] == "2026-01-04T00:00:00+00:00"
+
+
+def test_sql_connector_build_query_plan_filters_plus_auto_watermark(tmp_path: Path) -> None:
+    connector = InspectableSqlConnector(
+        config=SqlConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="orders_db",
+            entity_name="orders",
+            execution_mode="manual",
+            extraction_mode="delta",
+            connection={"database": str(tmp_path / "o.db")},
+            query={
+                "sql": "SELECT * FROM orders",
+                "filters": ["country = 'UK'", "status <> 'CANCELLED'"],
+            },
+            watermark={
+                "column_name": "updated_at",
+                "checkpoint_key": "max_updated_at",
+                "default_value": "2026-01-01T00:00:00+00:00",
+            },
+        )
+    )
+    queries = connector.build_query_plan(
+        checkpoint_before=None,
+        watermark_value="2026-01-04T00:00:00+00:00",
+    )
+    sql = queries[0].sql
+    assert "(country = 'UK')" in sql
+    assert "(status <> 'CANCELLED')" in sql
+    assert "(updated_at > :watermark)" in sql
+    assert sql.count(" AND ") == 2
+
+
+def test_sql_connector_build_query_plan_today_placeholders(tmp_path: Path) -> None:
+    connector = InspectableSqlConnector(
+        config=SqlConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="orders_db",
+            entity_name="orders",
+            execution_mode="snapshot",
+            extraction_mode="snapshot",
+            connection={"database": str(tmp_path / "o.db")},
+            query={
+                "sql": (
+                    "select * from orders where run_date = '{today.yyyymmdd}' "
+                    "and env = '{environment}' and dt = '{today.date}'"
+                ),
+            },
+        )
+    )
+    queries = connector.build_query_plan(
+        checkpoint_before=None,
+        watermark_value=None,
+    )
+    sql = queries[0].sql
+    expected_yyyymmdd = connector.run_context.started_at.strftime("%Y%m%d")
+    expected_date = connector.run_context.started_at.date().isoformat()
+    assert f"run_date = '{expected_yyyymmdd}'" in sql
+    assert "env = 'dev'" in sql
+    assert f"dt = '{expected_date}'" in sql
+
+
+def test_sql_connector_e2e_snapshot_with_filters_and_auto_star(tmp_path: Path) -> None:
+    database_path = tmp_path / "shop.db"
+    conn = sqlite3.connect(str(database_path))
+    conn.execute(
+        "create table products (id int, sku text, price real, active int, country text)"
+    )
+    conn.execute(
+        "insert into products values "
+        "(1, 'SKU-1', 10.0, 1, 'UK'), "
+        "(2, 'SKU-2', 20.0, 0, 'UK'), "
+        "(3, 'SKU-3', 30.0, 1, 'DE'), "
+        "(4, 'SKU-4', 40.0, 1, 'UK')"
+    )
+    conn.commit()
+    conn.close()
+
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="shop",
+        entity_name="products",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={
+            "database": str(database_path),
+            "filters": ["active = 1", "country = 'UK'"],
+        },
+    )
+    cfg = SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    connector = LocalSqlConnector(
+        config=cfg,
+        run_context=new_run_context(
+            stage=StageName.ingest, job_name="filt-e2e", trigger_type="manual"
+        ),
+        root_path=str(tmp_path),
+    )
+    result = connector.run()
+    assert result.row_count == 2
+
+
+def test_sql_connector_e2e_delta_auto_watermark_with_auto_star(tmp_path: Path) -> None:
+    database_path = tmp_path / "orders.db"
+    _create_orders_db(
+        database_path,
+        [
+            (1, "2026-01-02T00:00:00+00:00", "COMPLETE"),
+            (2, "2026-01-05T00:00:00+00:00", "PENDING"),
+            (3, "2026-01-07T00:00:00+00:00", "COMPLETE"),
+        ],
+    )
+
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="orders_db",
+        entity_name="raw_orders",
+        connector_type="sql",
+        trigger_mode="manual",
+        extraction={
+            "database": str(database_path),
+            "catalog_table": "orders",
+            "mode": "delta",
+            "watermark": {
+                "column_name": "updated_at",
+                "checkpoint_key": "max_updated_at",
+                "default_value": "2026-01-01T00:00:00+00:00",
+            },
+        },
+    )
+    cfg = SqlConnectorConfig.from_resolved_entity_config(resolved_config)
+    assert cfg.query.sql == "SELECT * FROM orders"
+
+    connector = LocalSqlConnector(
+        config=cfg,
+        run_context=new_run_context(
+            stage=StageName.ingest, job_name="delta-auto", trigger_type="manual"
+        ),
+        root_path=str(tmp_path),
+    )
+    result = connector.run()
+    assert result.row_count == 3
+    assert result.checkpoint_after == {
+        "max_updated_at": "2026-01-07T00:00:00+00:00"
+    }

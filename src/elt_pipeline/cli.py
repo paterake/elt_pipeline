@@ -1906,6 +1906,7 @@ def main(argv: list[str] | None = None) -> int:
                     environment=args.environment,
                     source_name=args.source,
                     entity_name=args.entity,
+                    config_path=explicit_cp or args.config_path,
                 )
                 print(json.dumps(resolved.model_dump(mode="json"), indent=2))
             else:
@@ -1933,8 +1934,10 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                     )
                 config = load_pipeline_config(str(ingest_cp))
+                ingest_config_path = str(ingest_cp)
             else:
                 config = load_pipeline_config(args.config_path)
+                ingest_config_path = args.config_path
             cli_window = _build_cli_window_selection(
                 window_start=args.window_start,
                 window_end=args.window_end,
@@ -1946,6 +1949,7 @@ def main(argv: list[str] | None = None) -> int:
                 environment=args.environment,
                 source_name=args.source,
                 entity_name=args.entity,
+                config_path=ingest_config_path,
             )
             results = [
                 _run_ingest_entity(
@@ -1987,8 +1991,10 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                     )
                 config = load_pipeline_config(str(normalize_cp))
+                normalize_config_path = str(normalize_cp)
             else:
                 config = load_pipeline_config(args.config_path)
+                normalize_config_path = args.config_path
             cli_window = _build_cli_window_selection(
                 window_start=args.window_start,
                 window_end=args.window_end,
@@ -2042,6 +2048,7 @@ def main(argv: list[str] | None = None) -> int:
                             environment=manifest.environment,
                             source_name=manifest.source_name,
                             entity_name=manifest.entity_name,
+                            config_path=normalize_config_path,
                         ),
                         root_path=args.root_path,
                         job_name=args.job_name,
@@ -3079,6 +3086,7 @@ def _resolve_entity_selections(
     environment: str,
     source_name: str | None,
     entity_name: str | None,
+    config_path: str | None = None,
 ) -> list[ResolvedEntityConfig]:
     if entity_name and not source_name:
         raise ConfigValidationError(
@@ -3103,6 +3111,7 @@ def _resolve_entity_selections(
                 environment=environment,
                 source_name=source_name,
                 entity_name=selected_entity_name,
+                config_path=config_path,
             )
             for selected_entity_name in entities
         ]
@@ -3113,6 +3122,7 @@ def _resolve_entity_selections(
             environment=environment,
             source_name=source.name,
             entity_name=entity.name,
+            config_path=config_path,
         )
         for source in config.sources
         for entity in source.entities

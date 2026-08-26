@@ -1130,6 +1130,7 @@ def _build_template_context(
 ) -> dict[str, Any]:
     window_start = window.start if window else None
     window_end = window.end if window else None
+    today = run_context.started_at
     return {
         "run": {
             "id": run_context.run_id,
@@ -1151,6 +1152,12 @@ def _build_template_context(
             "start_date": window_start.date().isoformat() if window_start else None,
             "end_date": window_end.date().isoformat() if window_end else None,
             "label": window.label if window else None,
+        },
+        "today": {
+            "date": today.date().isoformat(),
+            "yyyymmdd": today.strftime("%Y%m%d"),
+            "iso": today.isoformat(),
+            "datetime_iso": today.strftime("%Y-%m-%d %H:%M:%S"),
         },
         "checkpoint": checkpoint_before or {},
     }

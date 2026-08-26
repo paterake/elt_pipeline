@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
@@ -72,18 +73,35 @@ class SqlConnectionConfig(BaseModel):
 
 
 class SqlQueryTemplate(BaseModel):
-    sql: str
+    sql: str | None = None
+    sql_file: str | None = None
+    catalog_table: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
+    filters: list[str] = Field(default_factory=list)
     fetch_size: int = Field(default=1000, ge=1)
     artifact_name: str | None = None
 
-    @field_validator("sql")
+    @field_validator("sql", "sql_file", "catalog_table")
     @classmethod
-    def _validate_sql(cls, value: str) -> str:
+    def _validate_optional_strings(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
-            raise ValueError("sql must not be empty")
+            return None
         return normalized
+
+    @field_validator("filters")
+    @classmethod
+    def _validate_filters(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for item in value or []:
+            if not isinstance(item, str):
+                raise ValueError("filters entries must be strings")
+            stripped = item.strip()
+            if stripped:
+                cleaned.append(stripped)
+        return cleaned
 
 
 class SqlWatermarkConfig(BaseModel):
@@ -151,10 +169,36 @@ class SqlConnectorConfig(BaseModel):
         elif query_payload is None:
             query_payload = {
                 "sql": extraction.get("statement") or extraction.get("base_query"),
+                "sql_file": extraction.get("sql_file"),
+                "catalog_table": extraction.get("catalog_table"),
+                "filters": extraction.get("filters", []),
                 "parameters": extraction.get("query_parameters", {}),
                 "fetch_size": extraction.get("fetch_size", 1000),
                 "artifact_name": extraction.get("artifact_name"),
             }
+        else:
+            # Top-level keys in extraction (sql_file, filters, catalog_table) are
+            # accepted as short-form overrides even when query= dict is present
+            for key in ("sql_file", "catalog_table", "filters"):
+                if key in extraction and key not in query_payload:
+                    query_payload[key] = extraction[key]
+            if "query_parameters" in extraction and "parameters" not in query_payload:
+                query_payload["parameters"] = extraction["query_parameters"]
+            if "fetch_size" in extraction and "fetch_size" not in query_payload:
+                query_payload["fetch_size"] = extraction["fetch_size"]
+            if "artifact_name" in extraction and "artifact_name" not in query_payload:
+                query_payload["artifact_name"] = extraction["artifact_name"]
+
+        config_file_dir = resolved_config.settings.get("config_file_dir")
+        config_file_path = resolved_config.settings.get("config_file_path")
+        resolved_sql = _resolve_query_sql(
+            query_payload=query_payload,
+            resolved_config=resolved_config,
+            config_file_dir=config_file_dir,
+            config_file_path=config_file_path,
+        )
+        query_payload = dict(query_payload)
+        query_payload["sql"] = resolved_sql
 
         connection_payload = extraction.get("connection") or {
             "driver": extraction.get("driver", "sqlite"),
@@ -194,6 +238,87 @@ class SqlConnectorConfig(BaseModel):
                     "errors": exc.errors(include_url=False),
                 },
             ) from exc
+
+
+def _resolve_query_sql(
+    *,
+    query_payload: dict[str, Any],
+    resolved_config: ResolvedEntityConfig,
+    config_file_dir: str | None,
+    config_file_path: str | None,
+) -> str:
+    explicit_sql = query_payload.get("sql")
+    sql_file = query_payload.get("sql_file")
+    if explicit_sql:
+        return str(explicit_sql).strip()
+    if sql_file:
+        sql_path = Path(sql_file)
+        if not sql_path.is_absolute():
+            if not config_file_dir:
+                raise ConfigValidationError(
+                    message=(
+                        "sql_file is relative but no config_file_dir is available "
+                        "(pass config_path to resolve_entity_config())"
+                    ),
+                    context={
+                        "source_name": resolved_config.source_name,
+                        "entity_name": resolved_config.entity_name,
+                        "sql_file": sql_file,
+                        "config_file_path": config_file_path,
+                        "error_code": "SQL_SQLFILE_NO_BASEDIR",
+                    },
+                )
+            sql_path = Path(config_file_dir) / sql_file
+        if not sql_path.exists():
+            raise ConfigValidationError(
+                message=f"sql_file does not exist: {sql_path}",
+                context={
+                    "source_name": resolved_config.source_name,
+                    "entity_name": resolved_config.entity_name,
+                    "sql_file": sql_file,
+                    "resolved_path": str(sql_path),
+                    "error_code": "SQL_SQLFILE_NOT_FOUND",
+                },
+            )
+        try:
+            content = sql_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise ConfigValidationError(
+                message=f"Failed to read sql_file {sql_path}: {exc}",
+                context={
+                    "source_name": resolved_config.source_name,
+                    "entity_name": resolved_config.entity_name,
+                    "sql_file": sql_file,
+                    "resolved_path": str(sql_path),
+                    "error_code": "SQL_SQLFILE_READ_ERROR",
+                },
+            ) from exc
+        if not content:
+            raise ConfigValidationError(
+                message=f"sql_file is empty: {sql_path}",
+                context={
+                    "source_name": resolved_config.source_name,
+                    "entity_name": resolved_config.entity_name,
+                    "sql_file": sql_file,
+                    "error_code": "SQL_SQLFILE_EMPTY",
+                },
+            )
+        return content
+    # Auto fallback: SELECT * FROM <catalog_table or entity_name>
+    table_name = (query_payload.get("catalog_table") or resolved_config.entity_name).strip()
+    if not table_name:
+        raise ConfigValidationError(
+            message=(
+                "No SQL available: provide extraction.query.sql, extraction.sql_file, "
+                "or ensure entity_name is a valid source table name (auto-SELECT *)"
+            ),
+            context={
+                "source_name": resolved_config.source_name,
+                "entity_name": resolved_config.entity_name,
+                "error_code": "SQL_QUERY_UNAVAILABLE",
+            },
+        )
+    return f"SELECT * FROM {table_name}"
 
 
 class SqlPreparedQuery(BaseModel):
@@ -538,14 +663,36 @@ class SqlConnectorBase(ABC):
             checkpoint_before=checkpoint_before,
             watermark_value=watermark_value,
         )
+        watermark = self.config.watermark
+        base_sql = str(self.config.query.sql)
+        filters = list(self.config.query.filters or [])
+        parameters = dict(self.config.query.parameters)
+        if (
+            self.config.extraction_mode == SqlExtractionMode.delta
+            and watermark is not None
+            and watermark_value is not None
+        ):
+            param_name = watermark.parameter_name or "watermark"
+            explicit_user_watermark_handling = (
+                f":{param_name}" in base_sql
+                or param_name in parameters
+                or _sql_contains_any_parameter(base_sql)
+                or _any_value_references_watermark(parameters)
+            )
+            if not explicit_user_watermark_handling:
+                filters.append(f"{watermark.column_name} > :{param_name}")
+                parameters.setdefault(param_name, watermark_value)
+
+        final_sql = _assemble_sql_with_filters(base_sql=base_sql, filters=filters)
+
         compiled_sql = _render_string_template(
-            self.config.query.sql,
+            final_sql,
             template_context=template_context,
             source_name=self.config.source_name,
             entity_name=self.config.entity_name,
         )
         compiled_parameters = _render_template_value(
-            self.config.query.parameters,
+            parameters,
             template_context=template_context,
             source_name=self.config.source_name,
             entity_name=self.config.entity_name,
@@ -557,8 +704,10 @@ class SqlConnectorBase(ABC):
                 metadata={
                     "source_name": self.config.source_name,
                     "entity_name": self.config.entity_name,
-                    "compiled_sql": str(compiled_sql),
+                    "base_sql": base_sql,
+                    "final_sql": str(compiled_sql),
                     "compiled_parameters": dict(compiled_parameters),
+                    "filters_applied": list(filters),
                     "watermark_value": _serialize_template_scalar(watermark_value),
                     "extraction_mode": self.config.extraction_mode.value,
                 },
@@ -671,6 +820,7 @@ def _build_template_context(
     watermark_value: Any,
 ) -> dict[str, Any]:
     watermark = config.watermark
+    today = run_context.started_at
     return {
         "run": {
             "id": run_context.run_id,
@@ -695,8 +845,76 @@ def _build_template_context(
             "checkpoint_key": watermark.checkpoint_key if watermark else None,
             "parameter_name": watermark.parameter_name if watermark else None,
         },
+        "today": {
+            "date": today.date().isoformat(),
+            "yyyymmdd": today.strftime("%Y%m%d"),
+            "iso": today.isoformat(),
+            "datetime_iso": today.strftime("%Y-%m-%d %H:%M:%S"),
+        },
         "environment": config.environment,
     }
+
+
+_TEMPLATE_PATTERN = r"\{([a-zA-Z0-9_.]+)\}"
+
+
+def _sql_contains_any_parameter(sql: str) -> bool:
+    stripped = sql.strip()
+    if not stripped:
+        return False
+    for style in (":", "@", "?"):
+        if style == "?":
+            if "?" in stripped:
+                return True
+        else:
+            idx = 0
+            while True:
+                idx = stripped.find(style, idx)
+                if idx < 0:
+                    break
+                if idx + 1 < len(stripped) and (
+                    stripped[idx + 1].isalpha() or stripped[idx + 1] == "_"
+                ):
+                    return True
+                idx += 1
+    return False
+
+
+def _any_value_references_watermark(parameters: dict[str, Any]) -> bool:
+    for value in parameters.values():
+        if not isinstance(value, str):
+            continue
+        if (
+            "{watermark" in value
+            or "{checkpoint" in value
+            or "{today" in value
+        ):
+            return True
+    return False
+
+
+def _assemble_sql_with_filters(*, base_sql: str, filters: list[str]) -> str:
+    if not filters:
+        return base_sql
+    normalized = base_sql.rstrip().rstrip(";").rstrip()
+    combined = " AND ".join(f"({f})" for f in filters)
+    upper_sql = normalized.upper()
+    where_pos = upper_sql.rfind(" WHERE ")
+    group_pos = upper_sql.rfind(" GROUP BY ")
+    order_pos = upper_sql.rfind(" ORDER BY ")
+    limit_pos = upper_sql.rfind(" LIMIT ")
+    insert_pos = len(normalized)
+    for marker_pos in (group_pos, order_pos, limit_pos):
+        if marker_pos > where_pos and marker_pos < insert_pos:
+            insert_pos = marker_pos
+    if where_pos >= 0 and (insert_pos == len(normalized) or where_pos < insert_pos):
+        prefix = normalized[: where_pos + len(" WHERE ")]
+        rest = normalized[where_pos + len(" WHERE ") : insert_pos]
+        suffix = normalized[insert_pos:]
+        return f"{prefix}({rest}) AND {combined}{suffix}"
+    body = normalized[:insert_pos]
+    suffix = normalized[insert_pos:]
+    return f"{body} WHERE {combined}{suffix}"
 
 
 def _max_watermark_value(

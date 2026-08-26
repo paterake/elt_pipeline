@@ -1,0 +1,52 @@
+schema_version: v1
+environments:
+  default:
+    defaults: {}
+sources:
+  - name: infor_occm_mart
+    connector_type: sql
+    defaults:
+      extraction:
+        mode: delta
+        connection:
+          driver: sqlite
+          database: .ignore/occm_mart.db
+        watermark:
+          parameter_name: wm
+          state_source: checkpoint
+    entities:
+      - name: dim_customer
+        extraction:
+          catalog_table: "DIM_CUSTOMER"
+          watermark:
+            column_name: last_update
+            checkpoint_key: dim_customer_last_update
+            default_value: "2020-01-01T00:00:00+00:00"
+
+      - name: dim_product
+        extraction:
+          catalog_table: "DIM_PRODUCT"
+          filters:
+            - "is_active = 1"
+          watermark:
+            column_name: updated_at
+            checkpoint_key: dim_product_updated_at
+            default_value: "2020-01-01T00:00:00+00:00"
+
+      - name: f_winnings
+        extraction:
+          mode: snapshot
+          sql_file: sql/occm/f_winnings_active_rundate.sql
+          filters:
+            - "country_code IN ('UK', 'DE', 'FR')"
+            - "run_date = '{today.yyyymmdd}'"
+
+      - name: f_transaction
+        extraction:
+          catalog_table: "F_TRANSACTION"
+          filters:
+            - "void_ind = 'N'"
+          watermark:
+            column_name: transaction_ts
+            checkpoint_key: f_transaction_max_ts
+            default_value: "2021-01-01T00:00:00+00:00"

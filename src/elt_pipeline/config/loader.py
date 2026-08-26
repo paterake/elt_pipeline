@@ -97,6 +97,7 @@ def resolve_entity_config(
     environment: str,
     source_name: str,
     entity_name: str,
+    config_path: str | Path | None = None,
 ) -> ResolvedEntityConfig:
     source = _get_source(config, source_name)
     entity = _get_entity(source, entity_name)
@@ -115,18 +116,51 @@ def resolve_entity_config(
         source.defaults,
         entity.defaults,
     )
-    merged_payload = _deep_merge(
-        source.to_payload(exclude={"name", "connector_type", "entities"}),
-        entity.to_payload(exclude={"name"}),
+    source_payload = source.to_payload(exclude={"name", "connector_type", "entities"})
+    entity_payload = entity.to_payload(exclude={"name"})
+    # Cascade source-level extraction defaults (extraction inside the
+    # `source.defaults` dict) into the entity extraction block BEFORE the
+    # entity extraction overrides win.  This is the "list 50 simple tables
+    # under one source with a single shared extraction spec" ergonomic.
+    source_defaults_extraction = source.defaults.get("extraction") or {}
+    source_top_level_extraction = source_payload.pop("extraction", {}) or {}
+    entity_top_level_extraction = entity_payload.pop("extraction", {}) or {}
+    extraction = _deep_merge(
+        source_defaults_extraction,
+        source_top_level_extraction,
+        entity_top_level_extraction,
     )
 
-    trigger_mode = merged_payload.pop("trigger_mode", None)
-    level2_mode = merged_payload.pop("level2_mode", "required_level2")
-    auth = merged_payload.pop("auth", {})
-    extraction = merged_payload.pop("extraction", {})
-    persistence = merged_payload.pop("persistence", {})
-    state = merged_payload.pop("state", {})
-    settings = _deep_merge(merged_defaults, merged_payload.pop("settings", {}), merged_payload)
+    trigger_mode = source_payload.pop("trigger_mode", None)
+    trigger_mode = entity_payload.pop("trigger_mode", trigger_mode)
+    level2_mode = source_payload.pop("level2_mode", "required_level2")
+    level2_mode = entity_payload.pop("level2_mode", level2_mode)
+    auth = _deep_merge(
+        source_payload.pop("auth", {}) or {},
+        entity_payload.pop("auth", {}) or {},
+    )
+    persistence = _deep_merge(
+        source_payload.pop("persistence", {}) or {},
+        entity_payload.pop("persistence", {}) or {},
+    )
+    state = _deep_merge(
+        source_payload.pop("state", {}) or {},
+        entity_payload.pop("state", {}) or {},
+    )
+    settings = _deep_merge(
+        merged_defaults,
+        source_payload.pop("settings", {}) or {},
+        entity_payload.pop("settings", {}) or {},
+        source_payload,
+        entity_payload,
+    )
+    if config_path is not None:
+        settings.setdefault(
+            "config_file_dir", str(Path(config_path).resolve().parent)
+        )
+        settings.setdefault(
+            "config_file_path", str(Path(config_path).resolve())
+        )
 
     return ResolvedEntityConfig(
         schema_version=config.schema_version,
