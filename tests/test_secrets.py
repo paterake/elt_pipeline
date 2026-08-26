@@ -12,7 +12,6 @@ from elt_pipeline.shared.secrets import (
     SecretRefSyntaxError,
     SecretScheme,
     SecretsError,
-    SecretsNotImplementedError,
     SecretsProvider,
     SecretValue,
     get_provider,
@@ -226,27 +225,564 @@ class TestFileSecrets:
 
 
 # ---------------------------------------------------------------------------
-# Roadmap provider stubs → NotImplemented fail-fast
+# Cloud + Vault providers (SDK-mocked; 2 SDK-missing paths use real imports)
 # ---------------------------------------------------------------------------
 
 
-class TestRoadmapStubsFailFast:
+class TestAWSSecretsManagerSecrets:
+    """AWS SM tests: boto3 is an install extra; when present use moto mock,
+    when absent the two SDK-missing tests still cover the missing-SDK branch
+    with a real ModuleNotFoundError at import-time."""
+
+    @pytest.fixture
+    def _aws_sm_session(self):
+        """Return a moto-backed boto3 session creating secrets via moto, or
+        skip the test if boto3/moto aren't installed."""
+        try:
+            import boto3  # type: ignore[import-not-found]
+            from moto import mock_aws  # type: ignore[import-not-found]
+        except ModuleNotFoundError:
+            pytest.skip("boto3 or moto not installed — skipping AWS SM moto tests")
+            return None
+        with mock_aws():
+            session = boto3.Session(region_name="us-east-1")
+            client = session.client(service_name="secretsmanager", region_name="us-east-1")
+            yield session, client
+
+    def test_boto3_not_installed_raises_sdk_missing(self) -> None:
+        """Mock a fake boto3 client that raises a ResourceNotFoundException via response attr
+        (no botocore dependency)."""
+        import sys
+        import types as _t
+
+        from elt_pipeline.shared.secrets import (
+            AWSSecretsManagerSecrets,
+            SecretNotFoundError,
+        )
+
+        fake_boto3 = _t.ModuleType("boto3")
+        fake_session_mod = _t.ModuleType("boto3.session")
+
+        class _FakeClientError(Exception):
+            def __init__(self, response, operation_name):
+                self.response = response
+                self.operation_name = operation_name
+                super().__init__(f"{response}: {operation_name}")
+
+        def _raise_inside(*a, **k):
+            class FakeSession:
+                def client(self, *a2, **k2):
+                    class FakeClient:
+                        def get_secret_value(self, *a3, **k3):
+                            # Simulate ClientError with response dict shape
+                            exc = _FakeClientError(
+                                {
+                                    "Error": {
+                                        "Code": "ResourceNotFoundException",
+                                        "Message": (
+                                            "Secrets Manager can't find the "
+                                            "specified secret."
+                                        ),
+                                    }
+                                },
+                                "GetSecretValue",
+                            )
+                            raise exc
+
+                    return FakeClient()
+
+            return FakeSession()
+
+        fake_session_mod.Session = _raise_inside  # type: ignore[attr-defined]
+        fake_boto3.session = fake_session_mod  # type: ignore[attr-defined]
+        sys.modules["boto3"] = fake_boto3
+        sys.modules["boto3.session"] = fake_session_mod
+        try:
+            prov = AWSSecretsManagerSecrets()
+            with pytest.raises(SecretNotFoundError) as ei:
+                prov.resolve(path="nonexistent-secret")
+            assert ei.value.context["scheme"] == "aws_secretsmanager"
+        finally:
+            sys.modules.pop("boto3", None)
+            sys.modules.pop("boto3.session", None)
+
+    def test_sdk_missing_via_module_masking(self) -> None:
+        """Confirm SECRETS_SDK_MISSING raised when boto3 module is absent."""
+        import sys
+
+        from elt_pipeline.shared.secrets import AWSSecretsManagerSecrets, SecretsError
+
+        # Hide boto3 completely behind an import that fails
+        orig = sys.modules.get("boto3")
+        sys.modules["boto3"] = None  # type: ignore[assignment]
+        try:
+            if "boto3" in sys.modules:
+                del sys.modules["boto3"]
+            # Inject a pragma via sys.meta_path finder that raises ModuleNotFoundError
+            class _RaiserFinder:
+                def find_module(self, name, path=None):  # pragma: no cover
+                    if name == "boto3":
+                        return self
+
+                def load_module(self, name):  # pragma: no cover
+                    raise ModuleNotFoundError("No module named 'boto3'")
+
+                def find_spec(self, name, path, target=None):
+                    if name == "boto3":
+                        raise ModuleNotFoundError("No module named 'boto3'")
+                    return None
+
+            finder = _RaiserFinder()
+            sys.meta_path.insert(0, finder)
+            try:
+                prov = AWSSecretsManagerSecrets()
+                with pytest.raises(SecretsError) as ei:
+                    prov.resolve(path="any")
+                assert ei.value.error_code == "SECRETS_SDK_MISSING"
+                assert "boto3" in ei.value.message
+            finally:
+                sys.meta_path.remove(finder)
+        finally:
+            if orig is not None:
+                sys.modules["boto3"] = orig
+            else:
+                sys.modules.pop("boto3", None)
+
+    def test_aws_empty_path_rejected(self) -> None:
+        from elt_pipeline.shared.secrets import AWSSecretsManagerSecrets
+
+        prov = AWSSecretsManagerSecrets()
+        # We expect either SecretRefSyntaxError (direct) or SDK miss — the
+        # syntax validation runs BEFORE SDK import, so we should always get
+        # SecretRefSyntaxError.
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path="  ")
+
+    def test_aws_syntax_empty_secret_id_before_colon(self) -> None:
+        from elt_pipeline.shared.secrets import AWSSecretsManagerSecrets
+
+        prov = AWSSecretsManagerSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=":AWSPREVIOUS")
+
+
+class TestAzureKeyVaultSecrets:
+    def test_azure_empty_path_rejected(self) -> None:
+        from elt_pipeline.shared.secrets import AzureKeyVaultSecrets
+
+        prov = AzureKeyVaultSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=" ")
+
+    @pytest.mark.parametrize("bad", ["justvault", "vault/", "/only-secret"])
+    def test_azure_syntax_needs_vault_and_secret(self, bad: str) -> None:
+        from elt_pipeline.shared.secrets import AzureKeyVaultSecrets
+
+        prov = AzureKeyVaultSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=bad)
+
+    def test_azure_sdk_missing(self) -> None:
+        import sys
+
+        from elt_pipeline.shared.secrets import AzureKeyVaultSecrets, SecretsError
+
+        class _RaiserFinder:
+            def find_spec(self, name, path, target=None):
+                if name == "azure.keyvault.secrets":
+                    raise ModuleNotFoundError(
+                        "No module named 'azure.keyvault.secrets'"
+                    )
+                return None
+
+        finder = _RaiserFinder()
+        sys.meta_path.insert(0, finder)
+        try:
+            prov = AzureKeyVaultSecrets()
+            with pytest.raises(SecretsError) as ei:
+                prov.resolve(path="my-v/my-s")
+            assert ei.value.error_code == "SECRETS_SDK_MISSING"
+            assert "azure-keyvault-secrets" in ei.value.message
+        finally:
+            sys.meta_path.remove(finder)
+
+    def test_azure_credential_via_mock(self) -> None:
+        """Fully mocked Azure SDK path: SecretClient + credential, no network."""
+        import sys
+        import types as _t
+
+        from elt_pipeline.shared.secrets import AzureKeyVaultSecrets, SecretValue
+
+        azure_root = _t.ModuleType("azure")
+        azure_kv = _t.ModuleType("azure.keyvault")
+        azure_kv_sec = _t.ModuleType("azure.keyvault.secrets")
+        azure_id = _t.ModuleType("azure.identity")
+
+        class _FakeSecret:
+            def __init__(self, v):
+                self.value = v
+
+        class _FakeSecretClient:
+            def __init__(self, vault_url, credential):
+                self.vault_url = vault_url
+
+            def get_secret(self, name, version=None):
+                if name == "the-secret":
+                    return _FakeSecret("azure-secret-val-42")
+                # Force a fake ResourceNotFoundError path via raising generic
+                raise RuntimeError("azure-identity-resource-not-found-404")
+
+        azure_kv_sec.SecretClient = _FakeSecretClient  # type: ignore[attr-defined]
+
+        class _FakeCred:
+            pass
+
+        azure_id.DefaultAzureCredential = lambda: _FakeCred()  # type: ignore[attr-defined]
+
+        for m_name, m_mod in [
+            ("azure", azure_root),
+            ("azure.keyvault", azure_kv),
+            ("azure.keyvault.secrets", azure_kv_sec),
+            ("azure.identity", azure_id),
+        ]:
+            sys.modules[m_name] = m_mod
+        try:
+            prov = AzureKeyVaultSecrets()
+            v = prov.resolve(path="myvault/the-secret")
+            assert isinstance(v, SecretValue)
+            assert v == "azure-secret-val-42"
+        finally:
+            for m_name in [
+                "azure",
+                "azure.keyvault",
+                "azure.keyvault.secrets",
+                "azure.identity",
+            ]:
+                sys.modules.pop(m_name, None)
+
+
+class TestGCPSecretManagerSecrets:
+    def test_gcp_empty_path_rejected(self) -> None:
+        from elt_pipeline.shared.secrets import GCPSecretManagerSecrets
+
+        prov = GCPSecretManagerSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=" ")
+
+    @pytest.mark.parametrize("bad", ["onlyproj", "proj/", "/secret-only"])
+    def test_gcp_syntax_needs_project_and_secret(self, bad: str) -> None:
+        from elt_pipeline.shared.secrets import GCPSecretManagerSecrets
+
+        prov = GCPSecretManagerSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=bad)
+
+    def test_gcp_sdk_missing(self) -> None:
+        import sys
+
+        from elt_pipeline.shared.secrets import GCPSecretManagerSecrets, SecretsError
+
+        class _RaiserFinder:
+            def find_spec(self, name, path, target=None):
+                if name == "google.cloud.secretmanager_v1":
+                    raise ModuleNotFoundError(
+                        "No module named 'google.cloud.secretmanager_v1'"
+                    )
+                return None
+
+        finder = _RaiserFinder()
+        sys.meta_path.insert(0, finder)
+        try:
+            prov = GCPSecretManagerSecrets()
+            with pytest.raises(SecretsError) as ei:
+                prov.resolve(path="proj/sec")
+            assert ei.value.error_code == "SECRETS_SDK_MISSING"
+            assert "google-cloud-secret-manager" in ei.value.message
+        finally:
+            sys.meta_path.remove(finder)
+
+    def test_gcp_mock_client_resolve(self) -> None:
+        """Fully-mocked GCP SecretManagerServiceClient via module injection."""
+        import sys
+        import types as _t
+
+        from elt_pipeline.shared.secrets import GCPSecretManagerSecrets, SecretValue
+
+        google_root = _t.ModuleType("google")
+        google_cloud = _t.ModuleType("google.cloud")
+        google_cloud_sm = _t.ModuleType("google.cloud.secretmanager_v1")
+
+        class _FakePayload:
+            def __init__(self, b):
+                self.data = b
+
+        class _FakeResp:
+            def __init__(self, b):
+                self.payload = _FakePayload(b)
+
+        class _FakeClient:
+            def access_secret_version(self, request):
+                name = request["name"]
+                if name.endswith("/secrets/tok/versions/latest"):
+                    return _FakeResp(b"gcp-token-77")
+                if name.endswith("/secrets/binbad/versions/latest"):
+                    return _FakeResp(b"\xff\xfe binary not utf8")
+                if name.endswith("/secrets/empty/versions/latest"):
+                    class _NoPayload:
+                        payload = None
+                    return _NoPayload()
+                # Simulate a not-found response
+                class _E(Exception):
+                    pass
+                nf = _E("google.api_core.exceptions NotFound 404 secret not found")
+                raise nf
+
+        google_cloud_sm.SecretManagerServiceClient = _FakeClient  # type: ignore[attr-defined]
+        for m, mod in [
+            ("google", google_root),
+            ("google.cloud", google_cloud),
+            ("google.cloud.secretmanager_v1", google_cloud_sm),
+        ]:
+            sys.modules[m] = mod
+        try:
+            prov = GCPSecretManagerSecrets()
+            v = prov.resolve(path="myproj/tok")
+            assert isinstance(v, SecretValue)
+            assert v == "gcp-token-77"
+            # Empty payload path
+            with pytest.raises(SecretsError) as ei:
+                prov.resolve(path="myproj/empty")
+            assert ei.value.error_code == "SECRETS_GCP_EMPTY_PAYLOAD"
+            # Bad binary
+            with pytest.raises(SecretsError) as ei:
+                prov.resolve(path="myproj/binbad")
+            assert ei.value.error_code == "SECRETS_GCP_BINARY_NOT_TEXT"
+            # 404-like failure via generic exception → SDK_ERROR code (no match)
+            with pytest.raises(SecretsError):
+                prov.resolve(path="myproj/other")
+        finally:
+            for m in [
+                "google",
+                "google.cloud",
+                "google.cloud.secretmanager_v1",
+            ]:
+                sys.modules.pop(m, None)
+
+
+class TestVaultSecrets:
+    def test_vault_empty_path_rejected(self) -> None:
+        from elt_pipeline.shared.secrets import VaultSecrets
+
+        prov = VaultSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=" ")
+
     @pytest.mark.parametrize(
-        "ref",
+        "bad",
         [
-            "aws_secretsmanager://any",
-            "azure_keyvault://v/s",
-            "gcp_secretmanager://p/s",
-            "vault://kv/x",
+            "nomount",  # no slash
+            "justmount/",  # empty rel
+            "kv/some/path#",  # trailing hash, empty field
         ],
     )
-    def test_stub_schemes_raise_not_implemented(self, ref: str) -> None:
-        with pytest.raises(SecretsNotImplementedError) as ei:
-            resolve_secret_ref(ref, strict=True)
-        err = ei.value
-        assert "not yet implemented" in err.message
-        # Ensure the ref's value isn't in the message
-        assert ref not in err.message
+    def test_vault_syntax_cases(self, bad: str) -> None:
+        from elt_pipeline.shared.secrets import VaultSecrets
+
+        prov = VaultSecrets()
+        with pytest.raises(SecretRefSyntaxError):
+            prov.resolve(path=bad)
+
+    def test_vault_sdk_missing(self) -> None:
+        import sys
+
+        from elt_pipeline.shared.secrets import SecretsError, VaultSecrets
+
+        class _RaiserFinder:
+            def find_spec(self, name, path, target=None):
+                if name == "hvac":
+                    raise ModuleNotFoundError("No module named 'hvac'")
+                return None
+
+        finder = _RaiserFinder()
+        sys.meta_path.insert(0, finder)
+        try:
+            prov = VaultSecrets(url="http://localhost:8200", token="x")
+            with pytest.raises(SecretsError) as ei:
+                prov.resolve(path="kv/secret/db")
+            assert ei.value.error_code == "SECRETS_SDK_MISSING"
+            assert "hvac" in ei.value.message
+        finally:
+            sys.meta_path.remove(finder)
+
+    def test_vault_url_missing(self) -> None:
+        """When SDK IS present but VAULT_ADDR/URL is not, we get URL_MISSING."""
+        import os
+        import sys
+        import types as _t
+
+        from elt_pipeline.shared.secrets import SecretsError, VaultSecrets
+
+        hvac_root = _t.ModuleType("hvac")
+        hvac_exc = _t.ModuleType("hvac.exceptions")
+
+        class _BaseExc(Exception):
+            pass
+
+        for name in ["Forbidden", "InvalidPath", "Unauthorized"]:
+            setattr(hvac_exc, name, type(name, (_BaseExc,), {}))
+        hvac_root.exceptions = hvac_exc  # type: ignore[attr-defined]
+
+        class _FakeClient:
+            pass
+
+        hvac_root.Client = _FakeClient  # type: ignore[attr-defined]
+        sys.modules["hvac"] = hvac_root
+        sys.modules["hvac.exceptions"] = hvac_exc
+        saved = os.environ.pop("VAULT_ADDR", None)
+        saved_url = os.environ.pop("VAULT_URL", None)
+        try:
+            prov = VaultSecrets()
+            with pytest.raises(SecretsError) as ei:
+                prov.resolve(path="kv/x")
+            assert ei.value.error_code == "SECRETS_VAULT_URL_MISSING"
+        finally:
+            if saved:
+                os.environ["VAULT_ADDR"] = saved
+            if saved_url:
+                os.environ["VAULT_URL"] = saved_url
+            sys.modules.pop("hvac", None)
+            sys.modules.pop("hvac.exceptions", None)
+
+    def test_vault_mock_client_field_and_whole_dict(self) -> None:
+        """Use injected hvac module + fake client to cover all happy paths."""
+        import json
+        import os
+        import sys
+        import types as _t
+
+        from elt_pipeline.shared.secrets import SecretNotFoundError, SecretValue, VaultSecrets
+
+        hvac_root = _t.ModuleType("hvac")
+        hvac_exc = _t.ModuleType("hvac.exceptions")
+
+        class _BaseExc(Exception):
+            pass
+
+        InvalidPath = type("InvalidPath", (_BaseExc,), {})
+        Forbidden = type("Forbidden", (_BaseExc,), {})
+        Unauthorized = type("Unauthorized", (_BaseExc,), {})
+        hvac_exc.Forbidden = Forbidden  # type: ignore[attr-defined]
+        hvac_exc.InvalidPath = InvalidPath  # type: ignore[attr-defined]
+        hvac_exc.Unauthorized = Unauthorized  # type: ignore[attr-defined]
+        hvac_root.exceptions = hvac_exc  # type: ignore[attr-defined]
+
+        STORE = {
+            ("kv", "data/mypath"): {"data": {"username": "app-user", "password": "s3cret!"}},
+            ("kv", "data/other"): {"data": None},  # missing inner data
+        }
+
+        class _FakeKVv2:
+            def read_secret_version(self, mount_point, path):
+                key = (mount_point, path)
+                if key not in STORE:
+                    raise InvalidPath("path not found")
+                return {"data": STORE[key]}
+
+        class _FakeSecrets:
+            def __init__(self):
+                self.kv = type("KV", (), {})()
+                self.kv.v2 = _FakeKVv2()
+
+        class _FakeClient:
+            def __init__(self, url, verify=True):
+                self.url = url
+                self.secrets = _FakeSecrets()
+                self.token = None
+
+        hvac_root.Client = _FakeClient  # type: ignore[attr-defined]
+        sys.modules["hvac"] = hvac_root
+        sys.modules["hvac.exceptions"] = hvac_exc
+        saved_addr = os.environ.get("VAULT_ADDR")
+        os.environ["VAULT_ADDR"] = "http://vault:8200"
+        try:
+            # 1) Resolve a single field via # suffix
+            prov = VaultSecrets()
+            v = prov.resolve(path="kv/data/mypath#password")
+            assert isinstance(v, SecretValue)
+            assert v == "s3cret!"
+            # 2) Field missing
+            with pytest.raises(SecretNotFoundError) as ei:
+                prov.resolve(path="kv/data/mypath#nonexistent_key")
+            assert "Available keys" in ei.value.message
+            # 3) Whole-dict JSON serialization
+            v2 = prov.resolve(path="kv/data/mypath")
+            parsed = json.loads(str(v2))
+            assert parsed == {"password": "s3cret!", "username": "app-user"}
+            # 4) InvalidPath → SecretNotFoundError
+            with pytest.raises(SecretNotFoundError):
+                prov.resolve(path="kv/data/nonexistent")
+            # 5) Response data.data is None → SecretNotFoundError with msg
+            with pytest.raises(SecretNotFoundError):
+                prov.resolve(path="kv/data/other")
+        finally:
+            if saved_addr:
+                os.environ["VAULT_ADDR"] = saved_addr
+            else:
+                os.environ.pop("VAULT_ADDR", None)
+            sys.modules.pop("hvac", None)
+            sys.modules.pop("hvac.exceptions", None)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: default registry now has real providers (not stubs)
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultRegistryRealProviders:
+    def test_bootstrap_registers_real_providers(self) -> None:
+        from elt_pipeline.shared.secrets import (
+            _PROVIDER_REGISTRY,
+            AWSSecretsManagerSecrets,
+            AzureKeyVaultSecrets,
+            GCPSecretManagerSecrets,
+            SecretScheme,
+            VaultSecrets,
+            _bootstrap_default_registry,
+        )
+
+        _bootstrap_default_registry()
+        assert isinstance(
+            _PROVIDER_REGISTRY[SecretScheme.aws_secretsmanager],
+            AWSSecretsManagerSecrets,
+        )
+        assert isinstance(
+            _PROVIDER_REGISTRY[SecretScheme.azure_keyvault],
+            AzureKeyVaultSecrets,
+        )
+        assert isinstance(
+            _PROVIDER_REGISTRY[SecretScheme.gcp_secretmanager],
+            GCPSecretManagerSecrets,
+        )
+        assert isinstance(_PROVIDER_REGISTRY[SecretScheme.vault], VaultSecrets)
+
+    def test_providers_implement_protocol(self) -> None:
+        from elt_pipeline.shared.secrets import (
+            AWSSecretsManagerSecrets,
+            AzureKeyVaultSecrets,
+            GCPSecretManagerSecrets,
+            SecretsProvider,
+            VaultSecrets,
+        )
+
+        for cls in [
+            AWSSecretsManagerSecrets,
+            AzureKeyVaultSecrets,
+            GCPSecretManagerSecrets,
+            VaultSecrets,
+        ]:
+            instance = cls()
+            assert isinstance(instance, SecretsProvider), f"{cls.__name__} is not a SecretsProvider"
+            assert isinstance(instance.provider_type, str)
 
 
 # ---------------------------------------------------------------------------

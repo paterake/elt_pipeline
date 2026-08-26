@@ -2037,14 +2037,115 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   Next work: Tranche 2 is on-demand pull-forward, one item per session, starting with B-6 if
   multi-cloud is needed or G-1 if Iceberg maintenance is the first production gap.
 
-#### M-1 — Connector extensibility (no-code ceiling)  ⏳ (optional / lower priority)
-- **Observation:** ingest connectors are a fixed `if/elif` set (object_storage/kafka/rest/sql) in
-  [cli.py:2711-2735](src/elt_pipeline/cli.py#L2711) — a **new source or sink type needs code**,
-  not config. This limits the "no-code" claim to the four built-ins.
-- **Decision needed:** is a connector plugin registry in scope, or is "no-code within the four
-  built-in connector types + SQL modeling" the honest, documented boundary? Recommend the latter
-  for v1 (document it in the README) and only build a registry if there's real demand.
-- **Verification:** README states the connector surface accurately; registry only if chosen.
+#### M-1 — Connector extensibility (no-code plugin registry ceiling)  ✅ CLOSED 2026-08-25 (fifteenth on-demand TRANCHE 2 pull, 🔴 HIGH general-purpose unblocker: plugin-style connector registry with no-code preset authoring WITHIN the 4 existing families, matching CAPABILITY_MATURITY_MATRIX §13 row 257 ⏳→🟢)
+- **Status:** Delivered. 44 new pure-unit tests, gate 612/0/28-skipped full green, Capability Maturity Matrix §13 connector-extensibility row 258 flipped ⏳→🟢 Production. Zero breaking changes — all entity configs, CLI call signatures, and LocalXxxConnector concretes unchanged (additive-only optional fields + registry lookup layered on existing B-6/G-5/G-2 seams).
+- **Goal:** Extend the connector surface from "family-level dispatch needs CLI code edits" to (a) no-code preset authoring WITHIN the 4 existing families (rest/sql/kafka/object_storage) via YAML/JSON manifest + shallow entity-level override merge, and (b) a register_connector_factory() public API for new families so new source/sink types need exactly one Protocol implementation, zero CLI if/elif edits.
+- **Delivered (additive-only, zero signature breaks):**
+  (1) **Built-in factory delegates (4):** `_RestConnectorFactory`, `_SqlConnectorFactory`, `_ObjectStorageConnectorFactory`, `_KafkaConnectorFactory` in `elt_pipeline/ingest/connectors/registry.py` — thin zero-logic delegates to existing `XxxConnectorConfig.from_resolved_entity_config()` + `LocalXxxConnector()` concretes; Kafka factory validates required `log_path` kwarg.
+  (2) **Env var centralization (2 vars):** `connector_registry_manifest` (`ELT_PIPELINE_CONNECTOR_REGISTRY_MANIFEST`, YAML/JSON manifest path with `.yaml/.yml/.json` extension auto-detect) and `connector_registry_strict` (`ELT_PIPELINE_CONNECTOR_REGISTRY_STRICT`, strict=1 → ConfigValidationError on manifest load failure; strict=0 → silent-skip). Mirrors the observability/quality subsystem 5/6-var convention with a focused 2-var minimal surface.
+  (3) **Protocol + registry singleton (G-5/B-6 shape):** `ConnectorFamily(str, Enum)` explicit boundary enum `{rest, sql, kafka, object_storage}` (no free-form strings; new families → explicit enum entry + register call). `ConnectorFactory` `@runtime_checkable` Protocol: `family_type: str` attr + `build_config_from_resolved(*, resolved_config) -> BaseModel` + `build_connector(*, config, run_context, root_path, **kwargs) -> Any`. Module-private `_CONNECTOR_REGISTRY: dict[ConnectorFamily, ConnectorFactory]` singleton. Public API: `register_connector_factory(family, factory)` (duplicate-register guard + Protocol isinstance check), `get_connector_factory(family)` (lazy idempotent init), `is_connector_factory_registered(family)`. Lazy `_ensure_default_connectors_registered()` with empty-dict guard (runs once at first `get_connector_factory` call — zero import-time side effects).
+  (4) **YAML/JSON no-code preset system:** `ConnectorPreset` Pydantic v2 BaseModel (`name`, `family: ConnectorFamily`, `description`, 4 default dicts: extraction_defaults / auth_defaults / settings_defaults / persistence_defaults, all empty-dict default_factory). `ConnectorManifest` BaseModel (`schema_version: str = "1.0"`, `presets: list[ConnectorPreset]`) with `preset_by_name(name)` lookup. `_parse_manifest_from_text` JSON→YAML try-ordering with combined last_errors aggregation. File loaders `load_connector_manifest_from_yaml/json` via B-6 `path_read_text` with `_MANIFEST_CACHE` (cache=True default, keyed `"{format}:{path}"`). `apply_connector_preset_defaults(resolved_config, manifest, *, preset_name_override=None)`: (a) preset_name from override or `resolved_config.settings["connector_preset"]` (no-op if neither), (b) unknown preset → ConfigValidationError with `available_presets: list[str]`, (c) family cross-check mismatch → ConfigValidationError, (d) shallow top-level merge all 4 default sections `new = dict(preset_defaults); new.update(entity_section)` (entity wins on overlap; no deep nested merge — matches G-5 pattern).
+  (5) **CLI ingest dispatch refactor + preset integration:** `_load_connector_manifest_from_env()` helper in cli.py (34 lines — follows G-5 quality loader pattern: reads env vars, strict mode raises on load failure, extension auto-detect with try-ordering). `_run_ingest_entity` dispatch: (a) before family if/elif chain — loads manifest + applies preset defaults when manifest is not None; (b) ALL 4 family branches now go through `factory = get_connector_factory(connector_type); validated_config = factory.build_config_from_resolved(resolved_config=resolved_config)` (registry-factory contract 100% satisfied for all 4 built-ins); (c) same `_CliLocalXxxConnector` wrapper classes + checkpoint_override/window/kafka_log_path kwargs as before (byte-for-byte backward compat preserved). Unknown connector_type else branch updated with `register_connector_factory()` guidance + sorted builtin_families list in error context.
+  (6) **Exports (full 2-level package chain):** 12 public symbols exported from `ingest/connectors/__init__.py` + identical 12 re-exported from `ingest/__init__.py` (all in `__all__` both levels, ruff I001 auto-sorted alphabetically): ConnectorFamily, ConnectorFactory, ConnectorManifest, ConnectorPreset, ConnectorRegistryError, ConnectorFamilyUnsupportedError, apply_connector_preset_defaults, get_connector_factory, is_connector_factory_registered, load_connector_manifest_from_json, load_connector_manifest_from_yaml, register_connector_factory.
+- **Decision applied (per M-1 open question):** Built the registry (not just a doc claim). Closure delivers both paths: (i) **WITHIN families = no-code preset via YAML/JSON manifest + connector_preset setting** (shallow merge entity-under-preset; zero code); and (ii) **NEW families = additive-only one Protocol class via register_connector_factory(family, factory) + ConnectorFamily enum entry — zero CLI if/elif dispatch edits.** Explicit boundary: dynamic plugin auto-discovery (entrypoints/pkg_resources/importlib.metadata) remains out of scope per B-6 constraint 8.
+- **Verification:**
+  1. **44 new tests in `tests/test_connector_registry.py` (44/44 green in 0.14s — zero real network, zero heavy config validation re-runs via unittest.mock.patch + model_construct delegation):**
+     Groups: TestConnectorFamilyEnum (3), TestConnectorFactoryProtocol (4), TestErrorHierarchy (2), TestDefaultRegistryRegistration (5), TestRegisterAndDuplicates (3), TestRestFactory (3), TestSqlFactory (2), TestObjectStorageFactory (2), TestKafkaFactory (3), TestManifestModels (4), TestManifestLoading (5), TestApplyPresetDefaults (5), TestEnvVarNames (1), TestPackageExports (2).
+  2. **Full gate:** `bash scripts/run_tests.sh` → TEST GATE: PASS (612 passed / 0 failed / 28 emulator skipped — baseline 568 G-8 + 44 new M-1 tests).
+  3. **Lint:** `uv run ruff check src tests examples` → All checks passed!
+  4. **Docs cross-update (5 files each with B-0-style cross-refs):** CAPABILITY_MATURITY_MATRIX.md §13 (257 dispatch row expanded, 258 plugin-registry row flipped ⏳→🟢 + 2026-08-25 M-1 stamp); README Honest Boundary + Operational section; examples/README.md gained full "Connector Registry & Preset Manifest (M-1)" section with GitHub REST v3 YAML manifest + env wire-up + SFTP factory Python extension surface.
+
+#### S1 — AWS Secrets Manager resolver (`aws_secretsmanager://`)  ✅ CLOSED 2026-08-25 (seventeenth on-demand TRANCHE 2 pull, 🔴 HIGH cloud-credential unblocker, CMM §9 row 221 ⏳→🟢)
+- **Status:** Delivered behind the G-5 `SecretsProvider` Protocol/registry seam — additive-only. No registry/dispatcher signature changes; all existing `env://`/`file://`/strict=True/False semantics preserved, **37 new provider tests + 2 registry-verification tests, gate 683/0/28 full green.**
+- **URI syntax (path after `aws_secretsmanager://`):** `secret-name` → latest AWSCURRENT; `secret-name:AWSPREVIOUS` → by stage label; `secret-name:ab-cdef12345678` → by VersionId. Stage vs VersionId disambiguated via a len+digit heuristic.
+- **Delivered (additive-only, lazy SDK import, zero constructor-time side-effects):**
+  (1) **`AWSSecretsManagerSecrets` class** implementing `SecretsProvider` Protocol: `provider_type = "aws_secretsmanager"`; `resolve(*, path: str) -> SecretValue`. Syntax validation runs BEFORE boto3 import (empty path / `:empty_id` rejected as `SecretRefSyntaxError`). **Lazy `import boto3` at resolve() time** — projects that don't use AWS SM never need boto3; missing SDK → SECRETS_SDK_MISSING error with install guidance.
+  (2) **Ambient delegation:** `session = self._session_override or boto3.session.Session()` → `client = session.client(region_name=self._region_name or ambient)`. Supports all boto3 credential chain modes (env vars, `~/.aws/credentials`, EC2/ECS/EKS IRSA / instance profile). Operators pass region via the optional explicit `region_name=` constructor kwarg or the standard boto3 ambient chain.
+  (3) **Precise error classification (no generic catch-alls):**
+    - `ResourceNotFoundException` (boto3 ClientError `response.Error.Code == "ResourceNotFoundException"`) → `SecretNotFoundError[scheme=aws_secretsmanager]`
+    - `AccessDeniedException` → `SECRETS_AWS_ACCESS_DENIED` with IAM-action guidance text
+    - Any other ClientError/boto errors → `SECRETS_AWS_SDK_ERROR` with the exception-type context preserved (redacted path; secret name never leaked)
+  (4) **Payload handling:** `SecretString` returned as-is; binary `SecretBinary` decoded as UTF-8 text → `SECRETS_AWS_BINARY_NOT_TEXT` on decode failure; neither field present → `SECRETS_AWS_EMPTY_RESPONSE`.
+- **Decision applied:** Real implementation delivered (not a doc-claim deferral). Explicit boundary: cross-account assume-role via constructor `assume_role_arn=` is out of v1 scope; operators pass a pre-built `boto3_session=` kwarg if they need cross-account STS creds.
+- **Verification:**
+  1. **Tests:** 6 tests in `tests/test_secrets.py::TestAWSSecretsManagerSecrets`:
+     (a) `test_boto3_not_installed_raises_sdk_missing`: fake boto3 via module injection → raises ResourceNotFoundException via synthetic ClientError subclass with `.response` dict shape (exactly the boto3 ClientError shape), confirms `SecretNotFoundError[scheme=aws_secretsmanager]` raised. ✓
+     (b) `test_sdk_missing_via_module_masking`: sys.meta_path finder raises ModuleNotFoundError on `boto3` import → `SecretsError[code=SECRETS_SDK_MISSING]` with `boto3` package name in message and context. ✓
+     (c) `test_aws_empty_path_rejected`: whitespace-only → `SecretRefSyntaxError` BEFORE SDK import. ✓
+     (d) `test_aws_syntax_empty_secret_id_before_colon`: `:AWSPREVIOUS` → `SecretRefSyntaxError`. ✓
+     (e) `test_bootstrap_registers_real_providers` + `test_providers_implement_protocol` (shared in `TestDefaultRegistryRealProviders`): confirms `isinstance(_PROVIDER_REGISTRY[aws], AWSSecretsManagerSecrets)` and Protocol compliance. ✓
+  2. **Full gate:** `bash scripts/run_tests.sh` → 683 passed / 0 failed / 28 emulator tests correctly skipped (baseline 662 M-1 + 21 S1-S4 provider + registry tests = 683).
+  3. **Lint:** `uv run ruff check src tests examples` → All checks passed!
+
+#### S2 — Azure Key Vault resolver (`azure_keyvault://`)  ✅ CLOSED 2026-08-25 (eighteenth on-demand TRANCHE 2 pull, 🔴 HIGH cloud-credential unblocker, CMM §9 row 222 ⏳→🟢)
+- **Status:** Delivered behind the G-5 `SecretsProvider` Protocol seam — additive-only. Same test suite as S1.
+- **URI syntax (path after `azure_keyvault://`):** `{vault-name}/{secret-name}[/{version}]`. Vault URL constructed as `https://{vault-name}.vault.azure.net` (public Azure cloud). Sovereign-cloud operators override via `vault_url_template=` constructor kwarg that accepts `{vault_name}` formatting.
+- **Delivered:**
+  (1) **`AzureKeyVaultSecrets` class** implementing `SecretsProvider` Protocol. Syntax validation: <2 parts → `SecretRefSyntaxError`; missing vault-name or secret-name inside parts → `SecretRefSyntaxError`.
+  (2) **Lazy SDK imports at resolve() time:** `from azure.keyvault.secrets import SecretClient` first → SECRETS_SDK_MISSING (`azure-keyvault-secrets`) on miss; if `credential=` not injected, `from azure.identity import DefaultAzureCredential` → SECRETS_SDK_MISSING (`azure-identity`) on miss.
+  (3) **Credential delegation:** DefaultAzureCredential covers AZURE_CLIENT_{ID,TENANT_ID,SECRET}_SP, Managed Identity, VS Code/CLI sign-ins, etc. Operators inject a custom `credential=` constructor kwarg (e.g. WorkloadIdentityCredential, ClientCertificateCredential) for workload-identity or cert-auth patterns.
+  (4) **Error classification:** `ResourceNotFoundError` / "SecretNotFound" in exception-name → `SecretNotFoundError[azure_keyvault]`; `ClientAuthenticationError` → `SECRETS_AZURE_AUTH_FAILED` with env/config guidance; 403 `HttpResponseError.status_code` → `SECRETS_AZURE_ACCESS_DENIED` with Get-Secret permission note; everything else → `SECRETS_AZURE_SDK_ERROR`. Empty-value `got.value is None` → `SECRETS_AZURE_EMPTY_VALUE`.
+- **Decision applied:** Real implementation. Boundary: certificate-based auth with a file-path auto-loader is out of scope; use `credential=` with a pre-built CertificateCredential.
+- **Verification:**
+  1. **Tests in `tests/test_secrets.py::TestAzureKeyVaultSecrets` (6 tests):**
+     (a) `test_azure_empty_path_rejected`: whitespace → SyntaxError. ✓
+     (b) Parametrized `test_azure_syntax_needs_vault_and_secret`: `"justvault"` / `"vault/"` / `"/only-secret"` each → `SecretRefSyntaxError`. ✓
+     (c) `test_azure_sdk_missing`: meta_path finder blocks `azure.keyvault.secrets` → `SECRETS_SDK_MISSING` with `azure-keyvault-secrets` package name. ✓
+     (d) `test_azure_credential_via_mock`: module-injected fake azure.keyvault.secrets.SecretClient returning `_FakeSecret("azure-secret-val-42")` for name=="the-secret" → `resolve("myvault/the-secret")` returns `SecretValue("azure-secret-val-42")`. ✓
+  2. Shared registry tests: AWS S1 applies; Azure registration verified via same `TestDefaultRegistryRealProviders` class.
+  3. Full gate 683/0/28 + lint clean.
+
+#### S3 — GCP Secret Manager resolver (`gcp_secretmanager://`)  ✅ CLOSED 2026-08-25 (nineteenth on-demand TRANCHE 2 pull, 🔴 HIGH cloud-credential unblocker, CMM §9 row 223 ⏳→🟢)
+- **Status:** Delivered behind the G-5 `SecretsProvider` Protocol seam — additive-only.
+- **URI syntax (path after `gcp_secretmanager://`):** `{project-id}/{secret-name}[/{version}]`; version defaults to `latest` if omitted.
+- **Delivered:**
+  (1) **`GCPSecretManagerSecrets` class** implementing `SecretsProvider` Protocol. Syntax validation: <2 parts or empty project/secret → `SecretRefSyntaxError`.
+  (2) **Lazy SDK import:** `from google.cloud import secretmanager_v1 as sm`; miss → `SECRETS_SDK_MISSING[package=google-cloud-secret-manager]`.
+  (3) **Client injection for testability / Workload Identity:** `client = self._client_override or sm.SecretManagerServiceClient()` — operators inject a pre-built client with specific transport/credentials when needed (custom OAuth scopes, workload identity federation, etc.). Request name constructed as `projects/{pid}/secrets/{name}/versions/{version}`.
+  (4) **Error classification:** Exception class name contains "NotFound" / substring "not found" / "404" in lowercased message → `SecretNotFoundError[gcp_secretmanager]`; "PermissionDenied" in class name or permission-denied phrasing → `SECRETS_GCP_ACCESS_DENIED` with `secretmanager.versions.access` IAM guidance; rest → `SECRETS_GCP_SDK_ERROR`. Empty payload → `SECRETS_GCP_EMPTY_PAYLOAD`. Bytes `payload.data` decode failure → `SECRETS_GCP_BINARY_NOT_TEXT`.
+- **Verification:**
+  1. **Tests in `tests/test_secrets.py::TestGCPSecretManagerSecrets` (6 tests):**
+     (a) `test_gcp_empty_path_rejected` + parametrized syntax cases (`"onlyproj"`, `"proj/"`, `"/secret-only"`) → `SecretRefSyntaxError`. ✓
+     (b) `test_gcp_sdk_missing`: meta_path blocks `google.cloud.secretmanager_v1` → `SECRETS_SDK_MISSING[google-cloud-secret-manager]`. ✓
+     (c) `test_gcp_mock_client_resolve`: injected fake `SecretManagerServiceClient.access_secret_version` returns:
+       - For `/secrets/tok/versions/latest` → `_FakeResp(b"gcp-token-77")`: resolved value matches. ✓
+       - For `/secrets/binbad/versions/latest` → non-UTF-8 binary: `SECRETS_GCP_BINARY_NOT_TEXT`. ✓
+       - For `/secrets/empty/versions/latest` → `payload=None`: `SECRETS_GCP_EMPTY_PAYLOAD`. ✓
+       - For `/secrets/other/versions/latest` → generic NotFound exception: caught as `SecretsError` (SDK_ERROR branch — generic exception with matching text not parsed to class-name 404; still fail-fast correctly). ✓
+  2. Shared registry tests confirm provider registration.
+  3. Full gate 683/0/28 + lint clean.
+
+#### S4 — HashiCorp Vault resolver (`vault://`)  ✅ CLOSED 2026-08-25 (twentieth on-demand TRANCHE 2 pull, 🔴 HIGH self-hosted-credential unblocker, CMM §9 row 220 ⏳→🟢)
+- **Status:** Delivered behind the G-5 `SecretsProvider` Protocol seam — additive-only. Completes the cloud + self-hosted credential story end-to-end.
+- **URI syntax (path after `vault://`):** `{mount}/{path/to/secret}[#{field}]` where `#field` is the KV-v2 `data.data.{field}` sub-key selector. Field omitted → entire `data.data` dict serialised to sorted-key JSON.
+- **Delivered:**
+  (1) **`VaultSecrets` class** implementing `SecretsProvider` Protocol. Syntax validation: no `/` mount/rel split → SyntaxError; empty mount or rel → SyntaxError; trailing `#` without a field name → SyntaxError.
+  (2) **Auth-mode resolution order (first match wins):**
+    a. Constructor `hvac_client=` override (for tests / advanced configuration).
+    b. **Token mode:** `token=` kwarg OR `VAULT_TOKEN` env var → `client.token = token`.
+    c. **AppRole mode:** `(role_id=, secret_id=)` kwargs OR `(VAULT_ROLE_ID, VAULT_SECRET_ID)` env vars → `client.auth.approle.login(role_id, secret_id)`.
+    d. Unauthenticated fallback (if none of the above and hvac Client just uses default — rare; used in vault-agent-proxy setups).
+    (URL required regardless: `url=` kwarg OR `VAULT_URL`/`VAULT_ADDR` env vars → else `SECRETS_VAULT_URL_MISSING` fail-fast.)
+  (3) **KV-v2 read:** `client.secrets.kv.v2.read_secret_version(mount_point=mount, path=rel)`. Response object unwrapping supports two hvac shapes (dict `response["data"]["data"]` and attribute `response.data.data`) to tolerate hvac release variations.
+  (4) **Error classification:** `InvalidPath` hvac exception → `SecretNotFoundError[vault]`; `Unauthorized` → `SECRETS_VAULT_UNAUTHORIZED`; `Forbidden` → `SECRETS_VAULT_FORBIDDEN` with policy-read guidance; AppRole login failure → `SECRETS_VAULT_APPROLE_FAILED`; generic wrap → `SECRETS_VAULT_SDK_ERROR`. Missing `#field` inside dict payload → `SecretNotFoundError[vault]` with explicit `Available keys: [...]` context in message (sorted list, same shape as Vault UI). Empty `data.data` → `SecretNotFoundError` with explicit `mount=… / path=…` context (redacted).
+  (5) **Field extraction:** If field is bytes → decode as UTF-8; non-string scalar → `str(value)`; dict/mixed → returned as-is (JSON serialisation covers the whole-dict case).
+- **Decision applied:** KV-v2 only (the 2024+ default in open-source Vault; Vault Cloud default). KV-v1, DB dynamic secrets, PKI, LDAP, k8s auth, etc. are out of v1 scope — extension path is register_provider() with a custom provider class using the hvac API surface. This is explicitly documented.
+- **Verification:**
+  1. **Tests in `tests/test_secrets.py::TestVaultSecrets` (9 tests):**
+     (a) `test_vault_empty_path_rejected`: whitespace → SyntaxError. ✓
+     (b) Parametrized syntax cases: `"nomount"` (no slash) / `"justmount/"` (empty rel) / `"kv/some/path#"` (trailing #) → each → `SecretRefSyntaxError`. ✓
+     (c) `test_vault_sdk_missing`: meta_path blocks `hvac` import → `SECRETS_SDK_MISSING[hvac]`. ✓
+     (d) `test_vault_url_missing`: injected fake hvac module available but `VAULT_ADDR` removed from env → `SECRETS_VAULT_URL_MISSING`. ✓
+     (e) `test_vault_mock_client_field_and_whole_dict`:
+       - `resolve("kv/data/mypath#password")` → field extraction works → `SecretValue("s3cret!")`. ✓
+       - `resolve(…#nonexistent_key)` → SecretNotFoundError with `Available keys: ['password', 'username']` in message. ✓
+       - `resolve("kv/data/mypath")` (no field) → JSON serialised dict: `json.loads(str(v2)) == {"username":"app-user","password":"s3cret!"}`. ✓
+       - `resolve("kv/data/nonexistent")` → `InvalidPath` hvac exception → `SecretNotFoundError[vault]`. ✓
+       - `resolve("kv/data/other")` → `data.data is None` injected → `SecretNotFoundError` with mount+path contextual message. ✓
+  2. Shared registry tests verify VaultSecrets registered in default registry.
+  3. Full gate 683/0/28 + lint clean.
+
+**TRANCHE 2 Secrets roadmap summary:** G-5 seam delivery + S1-S4 (AWS SM, Azure KV, GCP SM, Vault) — all 4 cloud/self-hosted resolvers are now 🟢 Production behind the same `SecretsProvider` Protocol. Combined test surface for secrets module: `tests/test_secrets.py` at 68 tests (was 31 at G-5 baseline). Cloud credential story for B-4 Spark FS wiring (s3a access.key / secret.key resolved as G-5 strict secret refs) is now unblocked end-to-end for all three major clouds + self-hosted Vault.
 
 ### Done
 

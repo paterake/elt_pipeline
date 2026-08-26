@@ -400,6 +400,99 @@ run identically to pre-M-1 (the manifest loader returns `None` on unset
 path in non-strict mode, and `apply_connector_preset_defaults` is a no-op
 when `connector_preset` is absent).
 
+## Secrets Resolver Examples (S1–S4, built on G-5 seam)
+
+The G-5 `secrets` subsystem supports **6 secret_ref URI schemes** — all are
+now 🟢 Production. Bare refs (no `://` scheme) default to `env://` for
+backward compatibility. All cloud/Vault resolvers use **lazy SDK imports** at
+`resolve()` time with a `SECRETS_SDK_MISSING` error (message + context) that
+directly names the exact Python package to install; missing a cloud SDK won't
+break projects that only use `env://`/`file://`.
+
+| Scheme | URI example | Required package |
+|---|---|---|
+| `env://` (default) | `ORDERS_API_TOKEN` or `env://ORDERS_API_TOKEN` | (stdlib) |
+| `file://` | `file:///var/run/secrets/orders-api-token` | (stdlib) |
+| `aws_secretsmanager://` | `aws_secretsmanager://orders/api-token` or `aws_secretsmanager://orders/api-token:AWSPREVIOUS` | `boto3` |
+| `azure_keyvault://` | `azure_keyvault://prod-vault/orders-token` or `azure_keyvault://prod-vault/orders-token/abcdef1234` | `azure-keyvault-secrets` + `azure-identity` |
+| `gcp_secretmanager://` | `gcp_secretmanager://my-gcp-proj/orders-token` or `gcp_secretmanager://my-gcp-proj/orders-token/5` | `google-cloud-secret-manager` |
+| `vault://` | `vault://kv/data/orders#api_token` (KV-v2, field selector) or `vault://kv/data/orders` (whole payload as JSON) | `hvac` |
+
+### How to use in entity config (REST connector example)
+
+```yaml
+schema_version: v1
+environment: prod
+source_name: payments
+entity_name: invoices
+connector_type: rest
+extraction:
+  base_url: https://api.payments.example.com
+  method: GET
+  headers:
+    Authorization: "Bearer {resolved_token}"
+auth:
+  # No literal secrets in YAML! This placeholder tells the connector to
+  # call resolve_secret("token", secret_ref) at runtime. The actual
+  # `resolved_token` above comes from RestConnectorBase resolve_secret.
+  token:
+    # Option A: AWS Secrets Manager (requires boto3 installed)
+    secret_ref: aws_secretsmanager://payments/prod/api-key
+
+    # Option B: Azure Key Vault (AKV)
+    # secret_ref: azure_keyvault://payments-vault/payments-api-key
+
+    # Option C: GCP Secret Manager
+    # secret_ref: gcp_secretmanager://acme-prod-42/payments-api-key
+
+    # Option D: HashiCorp Vault (KV-v2) — selects field "key" inside data.data
+    # secret_ref: vault://kv/data/payments#key
+
+    # Option E: env var (default when no :// present — existing configs work!)
+    # secret_ref: PAYMENTS_API_TOKEN
+```
+
+> **Operator install cheat sheet** (pick the ones you actually use):
+> ```bash
+> # AWS SM
+> uv add boto3
+> # Azure KV
+> uv add azure-keyvault-secrets azure-identity
+> # GCP SM
+> uv add google-cloud-secret-manager
+> # HashiCorp Vault (any auth)
+> uv add hvac
+> ```
+
+### Operator-friendly error map (all paths fail-fast with structured `error_code`)
+
+| Secret scheme | `SecretNotFoundError` | Access denied | SDK missing | Other |
+|---|---|---|---|---|
+| AWS SM | ✓ (ResourceNotFoundException) | SECRETS_AWS_ACCESS_DENIED | SECRETS_SDK_MISSING (boto3) | SECRETS_AWS_SDK_ERROR / BINARY_NOT_TEXT / EMPTY_RESPONSE |
+| Azure KV | ✓ (ResourceNotFound / SecretNotFound) | SECRETS_AZURE_AUTH_FAILED / ACCESS_DENIED (403) | SECRETS_SDK_MISSING (azure-keyvault-secrets / azure-identity) | SECRETS_AZURE_SDK_ERROR / EMPTY_VALUE |
+| GCP SM | ✓ (NotFound / 404 text match) | SECRETS_GCP_ACCESS_DENIED | SECRETS_SDK_MISSING (google-cloud-secret-manager) | SECRETS_GCP_SDK_ERROR / EMPTY_PAYLOAD / BINARY_NOT_TEXT |
+| Vault | ✓ (InvalidPath / data.data None / missing #field w/ Available keys) | SECRETS_VAULT_UNAUTHORIZED / FORBIDDEN / APPROLE_FAILED / URL_MISSING | SECRETS_SDK_MISSING (hvac) | SECRETS_VAULT_SDK_ERROR / BINARY_NOT_TEXT |
+
+### Extending: adding a custom secret provider
+
+New secret schemes land via the same `register_provider()` public API the
+default registry uses. No SDK coupling to the core:
+
+```python
+from elt_pipeline.shared.secrets import register_provider, SecretValue, SecretScheme
+
+class DummySecrets:
+    provider_type = "dummy"
+    def resolve(self, *, path: str) -> SecretValue:
+        return SecretValue("dummy-secret-for-" + path)
+
+# Option 1: register into an existing SecretScheme enum slot (overrides the default for custom deployments)
+# You must pop from the internal registry first — register_provider has duplicate-install guard
+from elt_pipeline.shared.secrets import _PROVIDER_REGISTRY
+_PROVIDER_REGISTRY.pop(SecretScheme.env, None)  # remove default EnvVarSecrets first
+register_provider(SecretScheme.env, DummySecrets())
+```
+
 ## Catalog Preflight (B-0)
 
 The B-0 catalog preflight validator runs **before every SparkSession boot**
