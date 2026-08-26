@@ -31,9 +31,9 @@ The founding principles for the platform are defined in [00-prd-platform-princip
 
 The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
 
-The existing ELT platforms under `legacy stack A` and the user-described `legacy stack B` solution both implement a multi-stage medallion architecture. Over time, these platforms accumulated a wide range of ingestion patterns, configuration approaches, orchestration styles, and stage-specific conventions.
+Production-grade ELT platforms universally implement a multi-stage medallion architecture. Over time, deployments accumulate a wide range of ingestion patterns, configuration approaches, orchestration styles, and stage-specific conventions.
 
-The new `elt_pipeline` solution will consolidate the useful patterns from both platforms into a single Python-based implementation with a simpler, more explicit architecture. This PRD defines the first stage: ingesting raw data from external and internal sources into `level1`.
+The `elt_pipeline` solution consolidates proven patterns from production deployments into a single Python-based implementation with a simpler, more explicit architecture. This PRD defines the first stage: ingesting raw data from external and internal sources into `level1`.
 
 `level1` is the immutable landing zone for source data. It stores data as close to the source representation as practical, preserving replayability, auditability, and downstream reprocessing.
 
@@ -100,7 +100,7 @@ This PRD does not cover:
 
 ## Source Types In Scope
 
-The framework must support source patterns already visible in the existing solutions:
+The framework must support the following source patterns commonly required for production-grade heterogeneous source onboarding:
 
 - REST and HTTP APIs
 - JDBC-accessible relational databases
@@ -622,7 +622,7 @@ Required execution modes are:
 
 The same connector family may support multiple execution modes.
 
-The `event_driven` mode must explicitly support EventBridge-style orchestration in addition to S3-event, SQS, and Lambda-triggered execution, reflecting capabilities present in the Legacy Stack A solution but not in the older Legacy Stack B stack.
+The `event_driven` mode must explicitly support EventBridge-style orchestration in addition to S3-event, SQS, and Lambda-triggered execution, ensuring the platform integrates natively with both managed and self-hosted event fabrics across cloud environments.
 
 ### FR33. Top-Level Pattern Admission Rule
 
@@ -842,19 +842,13 @@ This same architectural rule should be applied to other recurring concerns such 
 
 #### REST and HTTP Ingestion
 
-The first release should treat REST as a top-tier ingestion pattern because the discovered `legacy stack A` implementation demonstrates meaningful maturity in:
-
-- paginated extraction,
-- response-content targeting,
-- envelope unwrapping,
-- encoded payload extraction,
-- date-window parameterization.
+The first release should treat REST as a top-tier ingestion pattern because paginated extraction, response-content targeting, envelope unwrapping, encoded payload extraction, and date-window parameterization are the most mature and widely deployed ingestion techniques across production ELT platforms.
 
 The new product should preserve these strengths while simplifying the configuration model.
 
 #### Database Ingestion
 
-The first release should also treat database extraction as a top-tier ingestion pattern because both legacy solutions are described as strong in this area.
+The first release should also treat database extraction as a top-tier ingestion pattern because database ingestion is a universally required capability for enterprise ELT platforms, with consistent support for snapshot, delta, and windowed extraction strategies.
 
 The product must preserve the ability to:
 
@@ -928,7 +922,7 @@ This metadata may be stored as:
 
 ## Success Metrics
 
-- New source onboarding time is materially reduced from the legacy baseline.
+- New source onboarding time is materially reduced versus the alternative of source-specific one-off implementation across multiple codebases.
 - A new source can usually be onboarded using one of the four required connector families without adding a new top-level pattern.
 - Operators can replay any failed run without code changes.
 - All `level1` assets are attributable to a specific run and source window.
@@ -952,19 +946,19 @@ This metadata may be stored as:
 
 - Existing sources should be prioritized by business criticality and connector similarity.
 - The first migration wave should favor sources with clear contracts and high reuse potential.
-- Legacy operational semantics that vary per source should be normalized unless there is a strong business reason to preserve them.
+- Operational semantics that vary per source should be normalized unless there is a strong business reason to preserve them.
 
 ## Risks
 
-- Source-specific behavior embedded in legacy jobs may not be obvious from configuration alone.
+- Source-specific behavior embedded in per-source bespoke pipelines may not be obvious from configuration alone.
 - Some sources may require custom rate limiting, anti-bot handling, or specialized pagination semantics.
 - Checkpoint logic can become inconsistent if connector authors bypass the shared runtime.
 
 ## Assumptions
 
-- The new platform will preserve a medallion-style architecture but simplify stage semantics.
+- The platform will preserve a medallion-style architecture but simplify stage semantics.
 - `level1` remains the canonical immutable raw zone.
-- This document uses both the discovered `legacy stack A` and `legacy stack B` implementations as the current baseline, plus the user's design constraints about simplifying the future platform.
+- This document defines baseline ingestion design requirements consistent with production-grade ELT best practices, including support for nested sources, mixed delta/snapshot modes, envelope handling, and state-driven checkpoints.
 
 ## Open Questions
 

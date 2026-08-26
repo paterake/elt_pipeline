@@ -171,7 +171,7 @@ The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` t
 
 ## Current Scope and Capabilities (Honest Boundary)
 
-This section states what the code actually ships, so no reader infers more than is built. For the formal, per-capability classification with maturity definitions and notes, see [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md). The cross-doc roadmap and portability environment breakdown also lives in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md).
+This section states what the code actually ships, so no reader infers more than is built. For a condensed **what-ships feature-matrix overview by capability area** (15 sections, tabular, maturity-graded) see [Framework Feature Matrix](docs/FRAMEWORK_FEATURE_MATRIX.md). For the formal, per-capability classification with full maturity definitions, dates, and per-row test-count notes, see [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md). The cross-doc roadmap and portability environment breakdown also lives in [PRD 10 §6.3](docs/prd/10-prd-architecture-and-lifecycle.md). Domain-specific modules — per-entity SQL models, bespoke XML/ZIP/Excel/CSV/document parsers with reference-file mapping tables, reverse-ETL push connectors, and BI-embedding microservices — are explicitly out of this framework repo's scope, and belong in separate per-deployment cfg/domain Git repositories alongside the pipeline manifests they ship with (equivalent pattern to a framework library vs a project repository in any language).
 
 **Storage backends — implemented and tested:**
 - Local POSIX filesystem (bare paths or `file://` URIs) — fully implemented, default on a laptop.

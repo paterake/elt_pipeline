@@ -140,6 +140,16 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
   scripts/run_tests.sh → TEST GATE: PASS (769 / 0 failed; 28 emulator tests correctly
   skipped); ruff src/tests/examples clean. Archive closure spec moved to WORK_ITEMS_CLOSED.md
   per playbook.
+- **Doc-only publication-hardening bookkeeping (2026-08-26):** Public-repo scope boundary
+  clarification — since this repo is intended for publication, every doc section was
+  audited for organisation/programme identifiers and absolute internal file paths.
+  Both README Honest Boundary § and CMM §How to read §Maintainer reference now
+  explicitly state the framework/domain split: this repo ships only the reusable
+  platform code; per-deployment SQL models, bespoke parsers, reverse-ETL pushes,
+  and BI-embedding microservices belong in separate per-deployment cfg/domain
+  Git repositories alongside the pipeline manifests they ship with. The framework
+  doc set stands strictly on its own design and contracts. No code/test changes;
+  gate delta 769 → 769; ruff src/tests/examples clean.
 - **Next work:** None pre-scoped. Pull an item forward only on concrete consumer demand.
 
 ## Session start prompt

@@ -17,7 +17,7 @@ The level model and its medallion mapping is defined in [00-prd-architecture-lev
 
 The storage root and scheme dispatch (local / s3:// / gcs:// / abfss://) for file-level IO is defined in [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md). Catalog binding and serving-engine dispatch mirror that single-seam, env-dispatched pattern for both catalog type and serving engine.
 
-The existing platforms use SQL-driven transformation to promote source-aligned datasets into business-conformed models and then into consumer-facing or reporting-ready datasets. The discovered `legacy stack A` implementation shows several durable ideas worth preserving:
+The existing platforms use SQL-driven transformation to promote source-aligned datasets into business-conformed models and then into consumer-facing or reporting-ready datasets. SQL modeling design requirements collected across production data modeling practices include several durable ideas worth preserving:
 
 - configuration-driven SQL files,
 - ordered execution for dependent entities,
@@ -25,7 +25,7 @@ The existing platforms use SQL-driven transformation to promote source-aligned d
 - separate semantics for `level3` and `level4`,
 - support for incremental and full refresh patterns.
 
-The new `elt_pipeline` should retain these strengths while simplifying configuration, reducing operational coupling, and aligning the transformation model to a Python-first runtime.
+The `elt_pipeline` should retain these strengths while simplifying configuration, reducing operational coupling, and aligning the transformation model to a Python-first runtime.
 
 L3 and L4 materialization uses a **dual-path write seam** behind a single
 `--iceberg-enabled`/`--no-iceberg-enabled` flag pair. Iceberg is the default

@@ -177,7 +177,7 @@ For each of the 23 files:
 - For strings that are handed to Spark R/W: hand them directly as strings, unchanged, to `spark.read.parquet(path_str)` / `.write.parquet(path_str)`. Spark already handles the scheme routing.
 
 ### Deliverable 3: Ingest Object-Storage Connector (`ingest/connectors/`)
-- Remove the explicit `.is_dir()` validation guard at [local_object_storage.py:42-59](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/ingest/connectors/local_object_storage.py#L42-L59).
+- Remove the explicit `.is_dir()` validation guard at [local_object_storage.py:42-59](../../src/elt_pipeline/ingest/connectors/local_object_storage.py#L42-L59).
 - Replace bucket listing with `path_rglob()` / `path_listdir()` dispatcher.
 - Replace per-object read with `path_read_bytes()` dispatcher.
 - Rename note: the class `LocalObjectStorageConnector` has "Local" in its name, which is misleading after this PRD. Either (a) rename to `ObjectStorageConnector` and drop the base/split pattern, or (b) keep the class name for backward compat but route internally through the scheme dispatcher. Implementation call during deliverable. Keep in mind: per P1 ("No Inference"), the user does NOT change their config to select a different connector class; the routing is inside the existing connector code path and driven only by `bucket_path`'s scheme.
@@ -222,7 +222,7 @@ For each of the 23 files:
    - Level5 publish exports (CSV) land correctly and are readable via `aws s3 cp` + standard `cat`/`head`.
 5. **Lint + IDE diagnostics clean:** `ruff check` passes on all touched files; `GetDiagnostics` returns zero errors.
 6. **Cross-ref update:** New follow-up work against this PRD (if any) is triggered in-line from PRD 10 §11 / [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) follow-up operator-trigger sections. Descoped-object-URI handling was historically flagged as deferred in a prior design record; with this PRD's approval those URIs are restored to approved scope (see [PRD 10 §6](10-prd-architecture-and-lifecycle.md)).
-7. **Operator documentation:** [LOCAL_OPERATOR_RUNBOOK.md](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/docs/operator/LOCAL_OPERATOR_RUNBOOK.md) gets a new § *Cloud Native (No-Mounts) EMR Execution Pattern* describing the root-path convention, scheme routing, IAM-role credential note, and the 4-stage CLI invocation pattern with `s3://` URIs.
+7. **Operator documentation:** [LOCAL_OPERATOR_RUNBOOK.md](../operator/LOCAL_OPERATOR_RUNBOOK.md) gets a new § *Cloud Native (No-Mounts) EMR Execution Pattern* describing the root-path convention, scheme routing, IAM-role credential note, and the 4-stage CLI invocation pattern with `s3://` URIs.
 
 ## Implementation Order (recommended ordering)
 

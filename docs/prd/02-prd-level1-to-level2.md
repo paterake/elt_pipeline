@@ -14,9 +14,9 @@ The founding principles for the platform are defined in [00-prd-platform-princip
 
 The level model and its medallion mapping is defined in [00-prd-architecture-levels-and-governance.md](00-prd-architecture-levels-and-governance.md).
 
-The legacy platforms describe `level2` as the first structured and queryable layer. In practice, the discovered `legacy stack A` implementation uses `level2` heavily for converting JSON, XML, CSV, and stream payloads into structured tables, while the user-described `legacy stack B` implementation treats `level2` as largely redundant except when the source payload is nested or otherwise non-tabular.
+Production-grade ELT platforms describe `level2` as the first structured and queryable layer. In practice, some deployments use `level2` heavily for converting JSON, XML, CSV, and stream payloads into structured tables, while others treat `level2` as largely redundant except when the source payload is nested or otherwise non-tabular.
 
-The new `elt_pipeline` should preserve the useful role of `level2` without forcing every source through an unnecessary stage. This PRD defines `level2` as a normalization layer used only when it adds value.
+The `elt_pipeline` should preserve the useful role of `level2` without forcing every source through an unnecessary stage. This PRD defines `level2` as a normalization layer used only when it adds value.
 
 ## Problem Statement
 
@@ -51,7 +51,7 @@ Build a lightweight, explicit normalization framework that converts raw `level1`
 - Business conformance, golden model design, or domain harmonization.
 - Consumer/reporting marts.
 - Publish/export products.
-- Recreating legacy `level2` tables that exist only because of historical platform constraints.
+- Recreating `level2` tables that exist only because of historical design constraints rather than source structure requirements.
 
 ## Product Definition
 
@@ -538,7 +538,7 @@ The mapping catalog for a normalized source/entity must publish:
 
 ## Migration Considerations
 
-- Legacy `level2` datasets should be classified into required, lightweight, and bypass candidates.
+- Historical `level2` datasets should be classified into required, lightweight, and bypass candidates.
 - Historical `level2` tables that only copy tabular source data should be strong candidates for removal.
 - Sources with brittle nested parsing should be migrated early enough to validate the normalization framework.
 
@@ -551,8 +551,8 @@ The mapping catalog for a normalized source/entity must publish:
 ## Assumptions
 
 - `level2` remains part of the architecture, but only as a technical normalization layer.
-- The user-described `legacy stack B` insight is a core design constraint: `level2` should not exist as mandatory ceremony.
-- This document is informed by the discovered `legacy stack A` implementation and the user-provided `legacy stack B` behavior, since no `legacy stack B` folder was present in the local archive.
+- A core design constraint applies: `level2` should not exist as mandatory ceremony.
+- This document defines baseline normalization design requirements consistent with production-grade ELT best practices, including optional stage bypass, nested source flattening, and schema-stable source-aligned table materialization.
 
 ## Open Questions
 
@@ -568,4 +568,4 @@ Phase the normalization product as follows:
 1. Implement the common normalization engine and source mapping contract.
 2. Prove nested extraction on a representative complex source.
 3. Add bypass support for a representative tabular source.
-4. Classify legacy sources and migrate them by source class rather than one-for-one legacy parity.
+4. Classify existing sources and migrate them by source class rather than one-for-one pipeline parity.

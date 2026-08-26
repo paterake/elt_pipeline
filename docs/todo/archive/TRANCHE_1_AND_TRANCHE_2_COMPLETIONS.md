@@ -1022,10 +1022,8 @@ Verification, Constraints, Platform strengths, Gotchas, Continuity).
   rewritten from Demo-only:sqlite → Production:6-driver; Multi-DB SQL removed from Roadmap bullets
   (remaining roadmap: Real Kafka broker + New connector families beyond 4); examples/README.md local
   sqlite delta example line extended with driver-swap guidance + per-driver `uv sync --extra …`
-  install commands. Real end-to-end smoke against user
-  `~/Documents/__data/duckdb/rpatel.duckdb` (runtime config path
-  `~/Documents/__code/git/emailrak/elt_lake/elt_ingest_excel/config/runtime/default.json` with
-  `{databasePath: "~/Documents/__data/duckdb/rpatel.duckdb"}`) produced SUCCESS output confirming
+  install commands. Real end-to-end smoke against a user-local DuckDB database file referenced
+  by a user-local runtime config JSON produced SUCCESS output confirming
   the connector reads `bkp_src_fin_supplier` table correctly. **Verification:** isolated-per-file
   gate GREEN (baseline 692 S4 + 13 new M-2 focused tests = **705 passed / 0 failed / 28 emulator
   tests correctly SKIPPED**; 8 pre-existing ENV-only PySparkRuntimeError `JAVA_GATEWAY_EXITED`

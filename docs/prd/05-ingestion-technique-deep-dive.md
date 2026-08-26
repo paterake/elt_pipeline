@@ -4,15 +4,12 @@
 
 This document defines the required ingestion feature set for `elt_pipeline`.
 
-The feature set is derived from techniques observed across mature legacy ELT stacks, but this repository remains client-neutral:
-
-- no client names, vendor names, or legacy repository names appear in this document
-- legacy stacks are used only as an internal baseline to define a generic superset of ingestion patterns
+The feature set is scoped as a generic superset of patterns needed for reliable heterogeneous source onboarding across multi-cloud deployment environments and transport families, supporting batch, micro-batch, event-driven, and replay modes as first-class execution modes.
 
 This document complements:
 
 - [01-prd-ingestion-raw-to-level1.md](01-prd-ingestion-raw-to-level1.md)
-- [04-ingestion-inventory-legacy-baseline.md](04-ingestion-inventory-legacy-baseline.md)
+- [04-prd-ingestion-inventory-pattern-reference.md](04-prd-ingestion-inventory-pattern-reference.md)
 
 ## Final Ingestion Model
 

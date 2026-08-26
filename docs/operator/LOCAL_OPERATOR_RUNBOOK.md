@@ -147,7 +147,7 @@ they differ only in where the per-row relationalization work executes.
 
 **Programmatic access:** the dual-engine switch is exposed via the
 `normalize_engine=` keyword of `normalize_level1_to_local_level2(...)` in
-[normalize/pipeline.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/normalize/pipeline.py#L106-L117).
+[normalize/pipeline.py](../../src/elt_pipeline/normalize/pipeline.py#L106-L117).
 **CLI access:** `normalize run --normalize-engine spark|python` (default:
 `spark`).
 
@@ -460,7 +460,7 @@ tools.
 ## Trino Reference Serving Engine
 
 The repository ships a zero-config Trino 468 bootstrap + launch script at
-[ops/trino_serving/run_trino.sh](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/ops/trino_serving/run_trino.sh)
+[ops/trino_serving/run_trino.sh](../../ops/trino_serving/run_trino.sh)
 that reads the exact same `ELT_PIPELINE_ICEBERG_*` environment the pipeline
 itself uses. This lets you materialize a table with `sql run --iceberg-enabled`
 and immediately query it from the same warehouse path with Trino.

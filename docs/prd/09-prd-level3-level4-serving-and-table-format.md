@@ -17,9 +17,9 @@ The platform's stated reason to exist is a governed data layer that BI tools can
 
 ### Current state (verified 2026-08-15)
 
-- `level3`/`level4` are written with `DataFrame.write.parquet(target_path)` — plain Parquet, no table format, no catalog. See [sql/spark_executor.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/spark_executor.py) (`writer.parquet(...)`).
+- `level3`/`level4` are written with `DataFrame.write.parquet(target_path)` — plain Parquet, no table format, no catalog. See [sql/spark_executor.py](../../src/elt_pipeline/sql/spark_executor.py) (`writer.parquet(...)`).
 - There is **no metastore/catalog**: no Glue, Hive, Iceberg, or Delta anywhere in `src/`. Table discovery is by filesystem path convention only.
-- Atomic/overwrite correctness is provided by a **bespoke staging-swap protocol** ([sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py)) — scheme-dispatched POSIX rename / S3 copy-delete, plus a manual partition-overwrite merge.
+- Atomic/overwrite correctness is provided by a **bespoke staging-swap protocol** ([sql/_staging_swap.py](../../src/elt_pipeline/sql/_staging_swap.py)) — scheme-dispatched POSIX rename / S3 copy-delete, plus a manual partition-overwrite merge.
 
 ### Why this blocks consumption
 
@@ -72,7 +72,7 @@ The staging-swap protocol is **custom platform code re-implementing a commodity 
 Rationale, mapped to principles:
 
 - **Closes the serving gap** (Req 1): Iceberg tables are natively queryable by Athena/Trino/Spark SQL, which is how Qlik/Tableau/Quicksight connect. This is the usable end state.
-- **Deletes custom code** (Req 5 + OSS Strategy): Iceberg's atomic commits, partition overwrite (`overwrite`/`MERGE`/`replaceWhere`-equivalent), and snapshot isolation **replace [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the manual partition merge.** Net custom-code *reduction* — advancing "library purity" further than the dual-engine normalize selection does.
+- **Deletes custom code** (Req 5 + OSS Strategy): Iceberg's atomic commits, partition overwrite (`overwrite`/`MERGE`/`replaceWhere`-equivalent), and snapshot isolation **replace [sql/_staging_swap.py](../../src/elt_pipeline/sql/_staging_swap.py) and the manual partition merge.** Net custom-code *reduction* — advancing "library purity" further than the dual-engine normalize selection does.
 - **Preserves portability** (Req 3): open Apache format on any Spark; catalog is env-dispatched (Hadoop/JDBC local, Glue/REST cloud) exactly like storage scheme in PRD 08. No AWS in business logic.
 - **Keeps the model owned** (Req 4): the level contract, mapping catalog, audit/lineage, and SQL authoring model are unchanged. Iceberg is wrapped behind the L3/L4 write/read layer — it is the commodity substrate, not the architecture.
 - **No change to the user contract** (Req 2): transforms stay SQL, engine stays Spark. The change is in *how the result is materialized*, invisible to config authors.
@@ -125,7 +125,7 @@ Iceberg at L2 is chosen for **platform consistency and custom-code deletion** (o
 ## Impact and Migration
 
 - **Write path:** L3/L4 materialization switches from `writer.parquet(target_path)` to Iceberg table writes behind the same abstraction. `load_mode` (`full_refresh`, `partition_overwrite`, `append`) maps to Iceberg native operations.
-- **Staging-swap:** [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) and the plain-parquet same-path-overwrite handling become **obsolete** for L3/L4 (Iceberg commits are atomic and read-consistent). Removal is in scope once 60 consecutive days of production use show zero `--no-iceberg-enabled` opt-outs, all L3/L4 load-mode + same-path-rebuild tests pass green, and the operator runbook no longer describes swap-layer steps for L3/L4. This also dissolves the Spark 4.x same-path overwrite DAG hazard by construction.
+- **Staging-swap:** [sql/_staging_swap.py](../../src/elt_pipeline/sql/_staging_swap.py) and the plain-parquet same-path-overwrite handling become **obsolete** for L3/L4 (Iceberg commits are atomic and read-consistent). Removal is in scope once 60 consecutive days of production use show zero `--no-iceberg-enabled` opt-outs, all L3/L4 load-mode + same-path-rebuild tests pass green, and the operator runbook no longer describes swap-layer steps for L3/L4. This also dissolves the Spark 4.x same-path overwrite DAG hazard by construction.
 - **Catalog config:** a catalog binding enters the config contract (`elt_pipeline_cfg`) — env-scoped, defaulting to a local filesystem/JDBC catalog so local-first dev keeps working with no cloud account.
 - **L2:** **No catalog entity — explicitly rejected.** L2 is a transient,
 source-aligned staging layer. Value accrues for downstream consumers at L3/L4;
@@ -135,7 +135,7 @@ overlay over existing parquet directories if a real L2 JDBC consumer appears
 later; L2 itself remains plain parquet with `mergeSchema` read semantics
 (see [PRD 10 §5](10-prd-architecture-and-lifecycle.md) for full rationale
 and 4-condition trigger for the overlay). The discovery glob + `mergeSchema`
-pattern in [sql/level2_source.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/level2_source.py)
+pattern in [sql/level2_source.py](../../src/elt_pipeline/sql/level2_source.py)
 is the canonical L2 read mechanism (parity Finding 5). **L1 remains raw**
 immutable landing — no table format. Trino / the serving binding exposes
 **L3/L4** as the governed BI surface; L2 is accessed either via the 2-line
@@ -159,5 +159,5 @@ overlay trigger is met, via a thin read-only registrar.
 ## Cross-References
 
 - Serving gap identified in the 2026-08-15 platform assessment (all-Spark alignment review).
-- Custom table-management code targeted for removal: [sql/_staging_swap.py](file:///Users/Rakesh.Patel/Documents/__code/git/emailrak/elt_pipeline/src/elt_pipeline/sql/_staging_swap.py) once the plain-parquet escape hatch is no longer used for L3/L4.
+- Custom table-management code targeted for removal: [sql/_staging_swap.py](../../src/elt_pipeline/sql/_staging_swap.py) once the plain-parquet escape hatch is no longer used for L3/L4.
 - Storage/scheme dispatch pattern to mirror for catalog dispatch: [08-prd-storage-root-uri-io-dispatch.md](08-prd-storage-root-uri-io-dispatch.md).

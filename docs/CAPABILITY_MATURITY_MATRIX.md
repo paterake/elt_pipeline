@@ -14,6 +14,18 @@ the roadmap. Every **Production** entry is backed by a passing test in the green
 (`bash scripts/run_tests.sh`). **Demo** entries ship code but with deliberate scope
 limits. **Roadmap** entries are design intent without shipped implementation.
 
+Complementary documents:
+- For a **condensed tabular "what ships" feature-matrix overview by capability area**
+  (15 sections, maturity-graded, no per-row test-count detail) see
+  [FRAMEWORK_FEATURE_MATRIX.md](FRAMEWORK_FEATURE_MATRIX.md). This is the best
+  first-stop document for new readers who just want "what is in the box".
+- For architecture/lifecycle source of truth, see
+  [PRD 10 §6.3](prd/10-prd-architecture-and-lifecycle.md).
+- For operator runbooks (governance, Trino serving, local execution), see the
+  [docs/operator/](operator/) directory.
+- For maintainer playbooks (backlog continuity, JVM toolchain, release), see the
+  [docs/maintainer/](maintainer/) directory.
+
 ## Maturity definitions
 
 | Label | Meaning | Test & support posture |
@@ -283,3 +295,7 @@ For a public consumer walking in cold:
 
 To update this matrix as a capability closes: move its row to the correct 🟢/🟠/⏳ column,
 stamp the date, and cross-reference the closed BACKLOG item in the "Notes" column.
+
+### Maintainer reference: Framework-vs-domain scope boundary
+
+This repository ships the **framework / platform** only. Domain-specific modules — per-entity SQL models, bespoke XML/ZIP/Excel/CSV/document parsers with reference-file mapping tables, reverse-ETL push connectors, and BI-embedding microservices — are explicitly out of scope, and belong in separate per-deployment cfg/domain Git repositories alongside the pipeline manifests they ship with (equivalent pattern to a framework library vs a project repository in any language). Each deployment adds those domain artefacts and treats this repo as a pinned dependency.
