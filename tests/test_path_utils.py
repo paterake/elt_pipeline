@@ -46,8 +46,8 @@ class TestDetectScheme:
             "s3a://bucket/prefix",
             "s3n://bucket/prefix",
             "dbfs://path",
-            "hdfs://namenode/path",
             "https://example.com/foo",
+            "ftp://server/file",
         ):
             with pytest.raises(ConfigValidationError) as exc_info:
                 pu.detect_scheme(bad)
@@ -58,6 +58,44 @@ class TestDetectScheme:
             assert "gs:// (Google Cloud Storage)" in msg
             assert "abfss:// (Azure ADLS Gen2)" in msg
             assert "Never silently coerce schemes." in exc_info.value.context["note"]
+
+    def test_reject_wasbs_with_abfss_migration_pointer(self) -> None:
+        bad_paths = (
+            "wasbs://container@account.blob.core.windows.net/path",
+            "wasbs://mycontainer/myblob.parquet",
+        )
+        for bad in bad_paths:
+            with pytest.raises(ConfigValidationError) as exc_info:
+                pu.detect_scheme(bad)
+            msg = exc_info.value.message
+            assert "Legacy Azure Blob scheme detected" in msg
+            assert "wasbs:// is out of scope" in msg
+            assert "Migrate to Azure Data Lake Storage Gen2 (abfss://)" in msg
+            ctx = exc_info.value.context
+            assert ctx["detected_scheme"] == "wasbs://"
+            assert "abfss:// (Azure ADLS Gen2)" in ctx["recommended_scheme"]
+            assert "dfs.core.windows.net" in ctx["migration_guidance"]
+            assert "Hierarchical Namespace" in ctx["migration_guidance"]
+
+    def test_reject_hdfs_with_scope_guidance(self) -> None:
+        bad_paths = (
+            "hdfs://namenode:8020/user/data/path",
+            "hdfs://cluster/path/to/file.parquet",
+        )
+        for bad in bad_paths:
+            with pytest.raises(ConfigValidationError) as exc_info:
+                pu.detect_scheme(bad)
+            msg = exc_info.value.message
+            assert "Hadoop HDFS scheme detected" in msg
+            assert "hdfs:// is out of scope for v1" in msg
+            assert "s3:// (AWS S3)" in msg
+            assert "gs:// (Google Cloud Storage)" in msg
+            assert "abfss:// (Azure ADLS Gen2)" in msg
+            ctx = exc_info.value.context
+            assert ctx["detected_scheme"] == "hdfs://"
+            assert "s3:// (AWS S3)" in ctx["alternatives"]
+            assert "B-6 StorageBackend facade pattern" in ctx["note"]
+            assert "Never silently coerce schemes" not in ctx.get("note", "")
 
     def test_validate_root_rejects_pathlib(self) -> None:
         from pathlib import Path

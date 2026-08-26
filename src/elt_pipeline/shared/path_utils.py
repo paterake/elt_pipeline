@@ -65,6 +65,59 @@ def detect_scheme(path: str) -> _StorageScheme:
         return _StorageScheme.abfss
     if path.startswith("file://"):
         return _StorageScheme.file
+    if path.startswith("wasbs://"):
+        scheme_part = "wasbs://"
+        raise ConfigValidationError(
+            message=(
+                f"Legacy Azure Blob scheme detected in path: {path!r}. "
+                f"wasbs:// is out of scope — Azure Blob Storage legacy "
+                f"is not on the recommended path. "
+                f"Migrate to Azure Data Lake Storage Gen2 (abfss://) "
+                f"instead: replace the URI scheme from "
+                f"wasbs://container@account.blob.core.windows.net/path "
+                f"to abfss://container@account.dfs.core.windows.net/path."
+            ),
+            context={
+                "path": path,
+                "detected_scheme": scheme_part,
+                "recommended_scheme": "abfss:// (Azure ADLS Gen2)",
+                "migration_guidance": (
+                    "ADLS Gen2 uses the dfs.core.windows.net suffix "
+                    "(not blob.core.windows.net) and the abfss:// scheme. "
+                    "The same StorageBackend registry, Spark Hadoop FS "
+                    "config surface, and B-2 production backend already "
+                    "support abfss:// end-to-end. For existing wasbs-based "
+                    "containers, enable Hierarchical Namespace on the "
+                    "storage account (or create a new Gen2 account) then "
+                    "rewrite the URI scheme + authority suffix — the "
+                    "container name and relative path stay identical."
+                ),
+            },
+        )
+    if path.startswith("hdfs://"):
+        scheme_part = "hdfs://"
+        raise ConfigValidationError(
+            message=(
+                f"Hadoop HDFS scheme detected in path: {path!r}. "
+                f"hdfs:// is out of scope for v1. On-prem HDFS was deliberately de-scoped; "
+                f"the recommended path is cloud-native object storage: s3:// (AWS S3), "
+                f"gs:// (Google Cloud Storage), or abfss:// (Azure ADLS Gen2)."
+            ),
+            context={
+                "path": path,
+                "detected_scheme": scheme_part,
+                "alternatives": list(_SUPPORTED_SCHEMES_FOR_ERROR),
+                "note": (
+                    "Re-evaluate hdfs:// support only if a concrete on-prem deployment "
+                    "need appears and object storage is genuinely unavailable. If added, "
+                    "follow the B-6 StorageBackend facade pattern: register an "
+                    "HDFSStorageBackend class + add an hdfs enum entry + registry line, "
+                    "with Spark-side hdfs Hadoop FS config surface wired alongside the "
+                    "existing s3a/gs/abfss entries. No short-circuit scheme coercion "
+                    "or silent fallback is permitted."
+                ),
+            },
+        )
     if "://" in path:
         scheme_part = path.split("://", 1)[0]
         raise ConfigValidationError(

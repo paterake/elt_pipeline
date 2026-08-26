@@ -1085,12 +1085,83 @@
   collected vs M-2 705 baseline; `uv run ruff check src tests examples` clean. **Twenty-second
   TRANCHE 2 on-demand pull closed. PRD 04 list-tables UX goal now zero-code default for simple
   SQL ingestion — typical entity YAML drops from ~20 lines to 2-4 lines.**
-  No remaining honest-scope 🔴 HIGH gaps exist in the current CMM — all next candidates are 🟠 MED
-  additive-only (M-3 Real Kafka broker, M-4 Trino auth, M-5 HDFS backend, M-6 Mage orchestrator,
-  M-7 wasbs fail-fast).
+- **TRANCHE 2 — M-7 CLOSED (2026-08-26, twenty-third on-demand pull, 🟠 MED adoption unblocker:
+  wasbs:// fail-fast with abfss:// migration pointer, per CMM §1 verbatim spec):**
+  Additive-only scheme-specific fail-fast branch in [path_utils.py:detect_scheme()](src/elt_pipeline/shared/path_utils.py#L58-L135) at L68-L91, inserted BEFORE the generic unknown-scheme raise. Raises a targeted `ConfigValidationError` when `wasbs://container@account.blob.core.windows.net/…` (or any bare `wasbs://` URI) is encountered as a storage root/path. **Error surface:**
+  - `message`: "Legacy Azure Blob scheme detected … wasbs:// is out of scope … Migrate to Azure Data Lake Storage Gen2 (abfss://) instead: replace the URI scheme from wasbs://container@account.blob.core.windows.net/path to abfss://container@account.dfs.core.windows.net/path."
+  - `context["recommended_scheme"]` = `abfss:// (Azure ADLS Gen2)`
+  - `context["migration_guidance"]` = structured guidance on Hierarchical Namespace enablement, authority suffix change (`blob.core.windows.net` → `dfs.core.windows.net`), container/path preservation, and the fact that the same B-2 Production ADLS backend + Spark Hadoop FS config surface already supports `abfss://` end-to-end.
+  **Zero breaking changes:** existing callers (path_utils, storage_backends, loader) unchanged; the generic unknown-scheme raise still fires for every OTHER unsupported scheme (dbfs, s3a, sftp, https://…). `abfss://` path, `s3://`, `gs://`, `file://`, and local unschemed paths all return identically.
+  **Tests (1 new focused test):** `tests/test_path_utils.py::TestDetectScheme::test_reject_wasbs_with_abfss_migration_pointer` — verifies 2 representative `wasbs://` URIs raise the specific error (not the generic one), checks all 4 message substrings, checks `detected_scheme` + `recommended_scheme` + `migration_guidance` context keys + `dfs.core.windows.net` + `Hierarchical Namespace` content substrings.
+  **Docs updates:** CAPABILITY_MATURITY_MATRIX §1 wasbs row flipped ⏳ Roadmap → 🟢 Production with cross-ref to M-7 2026-08-26 + test location; CMM Status Updated line re-stamped.
+  **Verification:** `TestDetectScheme` 10/10 GREEN (0.05s); 709 total non-emulator tests + 28 emulator SKIPPED (full gate confirmation follows M-5 close below).
+  **Twenty-third TRANCHE 2 on-demand pull closed — matches CMM §1 verbatim: "When multi-cloud is pulled forward, wasbs:// fails fast with a pointer to abfss://."**
+- **TRANCHE 2 — M-5 CLOSED (2026-08-26, twenty-fourth on-demand pull, 🟠 MED adoption unblocker:
+  hdfs:// explicit fail-fast with v1 de-scope guidance + B-6 pattern roadmap note, per CMM §1):**
+  Additive-only scheme-specific fail-fast branch in [path_utils.py:detect_scheme()](src/elt_pipeline/shared/path_utils.py#L58-L135) at L92-L115, inserted between the `wasbs://` branch (L68-L91) and the generic unknown-scheme raise (L116+). Raises a targeted `ConfigValidationError` when `hdfs://namenode:8020/…` (or any `hdfs://` URI) is encountered as a storage root/path. **Error surface:**
+  - `message`: "Hadoop HDFS scheme detected … hdfs:// is out of scope for v1. On-prem HDFS was deliberately de-scoped; the recommended path is cloud-native object storage: s3:// (AWS S3), gs:// (Google Cloud Storage), or abfss:// (Azure ADLS Gen2)."
+  - `context["alternatives"]` = full `_SUPPORTED_SCHEMES_FOR_ERROR` tuple (s3/gs/abfss/file/bare-local) so error triage shows exactly what IS supported;
+  - `context["note"]` = forward-only roadmap guidance on future implementation path (if concrete on-prem demand appears): follow the B-6 StorageBackend facade pattern (register `HDFSStorageBackend` class + add `hdfs` enum entry + registry line + Spark-side Hadoop FS `hdfs` config surface wired alongside existing s3a/gs/abfss entries). Explicitly reaffirms the anti-scope rule: "No short-circuit scheme coercion or silent fallback is permitted."
+  **Zero breaking changes:** existing paths unchanged; generic unknown-scheme raise still fires for every OTHER unsupported scheme (s3a, dbfs, sftp, ftp://…). All 4 supported schemes return identically.
+  **Tests (1 new focused test):** `tests/test_path_utils.py::TestDetectScheme::test_reject_hdfs_with_scope_guidance` — verifies 2 representative `hdfs://` URIs raise the specific error (not the generic one), checks all 6 message substrings, checks `detected_scheme` = `"hdfs://"`, `alternatives` contains all supported schemes, `note` contains `"B-6 StorageBackend facade pattern"`, AND asserts the generic `"Never silently coerce schemes."` string is NOT in the hdfs-specific note (differentiates the hdfs branch from the generic branch). The existing `test_reject_unknown_schemes_sharp` test was updated to remove `hdfs://namenode/path` from its generic bad-list (since hdfs now has a specific branch) and added `ftp://server/file` as a fresh generic-unknown control to continue exercising the generic raise.
+  **Docs updates:** CAPABILITY_MATURITY_MATRIX §1 HDFS row flipped ⏳ Roadmap → 🟢 Production with cross-ref to M-5 2026-08-26 + test location; CMM Status Updated line re-stamped in the same M-7 commit above.
+  **Verification:** `TestDetectScheme` 10/10 GREEN (0.05s); 709 non-emulator tests (baseline 707 + 2 new M-5/M-7 = 709) / 0 failed / 28 emulator correctly SKIPPED; `uv run ruff check src tests examples` clean.
+  **Twenty-fourth TRANCHE 2 on-demand pull closed — CMM §1 §Storage hdfs:// row is now actionable, fail-fast, and test-backed.**
+  No remaining honest-scope 🔴 HIGH gaps exist in the current CMM — next candidates are 🟠 MED
+  additive-only (M-3 Real Kafka broker, M-4 Trino auth, M-6 Mage orchestrator).
+  M-5 (HDFS fail-fast) and M-7 (wasbs fail-fast) are CLOSED above.
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
-  - M-* (remaining)
+  - **M-3 Real Kafka broker consumer (🟠 MED, additive-only). Scope:** Add a REAL Kafka broker-backed
+    concrete subclass behind the existing [kafka.py:KafkaConnectorBase](src/elt_pipeline/ingest/connectors/kafka.py#L123-L140)
+    abstraction, preserving the local JSONL-replay `LocalKafkaConnector` as the default
+    unchanged. `KafkaConnectorConfig` gains an optional `bootstrap_servers: str | list[str]` Field
+    (default=None → JSONL replay path is selected, matching current behavior — zero breaking).
+    Broker connector uses `kafka-python` as the optional SDK (lighter pure-Python dep over
+    confluent-kafka; both are valid but `kafka-python` is zero-native-build for CI). SDK-missing
+    path raises `ConfigValidationError` with `uv sync --extra kafka` install hint, matching the
+    M-2 SQL SDK-missing pattern. Consumer group, offset commits, JSON/AVRO payload parsing, and
+    the existing KafkaStartingPosition enum (checkpoint/earliest) + checkpoint_before / start_offset
+    resolution logic all reuse the existing base class. Approx tests: 8-12 (bootstrap_servers None
+    → LocalKafkaConnector backward compat; SDK missing → install hint; earliest/latest offset;
+    checkpoint resume; consume N messages; max_messages cap; JSON payload roundtrip; consumer
+    group id; broker connection error handling). Closure = gate green (709+N / 0) + CMM §2
+    Kafka Real broker row ⏳→🟢 + BACKLOG M-3 CLOSED bullet in Resume.
+  - **M-4 Trino authentication (HTTPS / password / Kerberos) (🟠 MED, additive-only). Scope:**
+    Expand `ops/trino_serving/run_trino.sh` to surface TLS/HTTPS + http auth as a documented,
+    env-var-driven config surface, preserving the current default `insecure/none/http-only`
+    path 100% unchanged (auth switch already exists at run_trino.sh L500-L504; it emits
+    `http-server.authentication.type=…` only when VAR_FINAL_HTTP_AUTH_TYPE ∉ {"", "none",
+    "disabled", "insecure"} — this behavior is retained). New env vars in the L15 Usage comment
+    block + env-var registration for: `ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE` (password/certificate/
+    kerberos/jwt/oauth2/form), `ELT_PIPELINE_TRINO_HTTPS_ENABLED`, `ELT_PIPELINE_TRINO_HTTPS_PORT`,
+    `ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH`/`_PASSWORD`, `ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PATH`/
+    `_PASSWORD`, `ELT_PIPELINE_TRINO_PASSWORD_FILE_PATH` (for PASSWORD auth),
+    `ELT_PIPELINE_TRINO_KRB5_CONF` + `ELT_PIPELINE_TRINO_KERBEROS_PRINCIPAL`/`_KEYTAB` (for
+    KERBEROS auth). `config.properties` emitter (L510+ block) adds TLS keys conditionally and
+    password/kerberos config keys conditionally. Reuses the existing `_shared_secret`
+    `dd if=/dev/urandom bs=1 count=16 | base64` generator (L499) for
+    `internal-communication.shared-secret`; only emits when auth_type is not none. Tests: 6-8
+    (env var roundtrip → config.properties lines present; none/insecure path unchanged → zero
+    new lines emitted; keystore+password auth type → correct lines; kerberos → correct lines;
+    HTTPS enabled → http-server.https.enabled=true + correct port; password file missing →
+    fail-fast script error). Closure = gate green + CMM §4 Trino auth row ⏳→🟢 + BACKLOG M-4
+    CLOSED bullet in Resume.
+  - **M-6 Mage orchestrator wrapper (🟠 MED, additive-only). Scope:** Follow the exact G-3
+    Airflow/Dagster/Prefect wrapper pattern (see CMM §7 L192): add `build_mage_orchestration_metadata(
+    context)` context extractor + `MageCliWrapper(repo_root, *, invoker, environment_overrides)` thin
+    subclass in `src/elt_pipeline/integrations/orchestration.py` (file already exists with
+    Airflow/Dagster/Prefect — purely additive, no existing code touched). Mage context fields:
+    `pipeline_name` (Mage pipeline → flow_name), `run_id` (Mage run uuid → flow_run_id), `block_uuid`
+    (Mage block/transform → task_name), `block_attempt` (Mage retry count + 1 → task_attempt),
+    `tags` (Mage pipeline tags → tags["mage_pipeline_tags"] CSV), `execution_date` (Mage exec
+    date → tags["execution_date"]). Reference example pipeline: `examples/orchestration/mage/
+    reference_pipeline.py` — mirrors the G-3 reference DAG/assets/flow count. Tests: 6 (builder
+    populates all 6 fields from fake Mage context dict; builder handles explicit overrides;
+    wrapper.build_request(mage_context=…) produces correct CliInvocationRequest with
+    orchestration_metadata.platform="mage"; wrapper.invoke(…) calls invoker.invoke; to_env()
+    roundtrip 6 fields; load_orchestration_metadata_from_env with platform="mage" loads
+    correctly). Closure = gate green + CMM §7 Mage row ⏳→🟢 + BACKLOG M-6 CLOSED bullet in Resume.
   Each item ⏳, worked one-per-session when a consumer needs it; every close must also update the matching
   row in the Capability Maturity Matrix with the date + BACKLOG ref.
 - **Read `## Platform strengths` before touching anything — protect that list.**
@@ -1110,14 +1181,14 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (707 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (709 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
-  (zero code relation to I-2 / M-2 / any recent code);
+  (zero code relation to I-2 / M-2 / M-5 / M-7 / any recent code);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped after I-2 + M-2 + S1→S4 closure). Origin: a portability +
+- **Captured:** 2026-08-26 (re-stamped after I-2 + M-2 + S1→S4 + M-5 + M-7 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` + `gs://` + `abfss://`
   (B-1/B-2 closed via B-6 StorageBackend facade + B-4 Spark Hadoop FS config)**, Unity
   Catalog-as-REST-catalog via B-3, 28 opt-in real emulator integration tests via B-5. Ingest
