@@ -25,7 +25,7 @@ Cold-start contract: the bullets below are the NEXT-WORK POINTER and high-level 
 Verbose per-item closure narratives (test counts, code diff regions, verification output) for
 all completed tranches live in [TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md](docs/todo/archive/TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md).
 Full work-item specifications (design rationale, tradeoffs, per-item checklists) for every
-closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-7 / S1 → S4 / I-1 / I-2) live in
+closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I-2) live in
 [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md).
 
 - **TRANCHE 1 COMPLETE (publication-readiness gate, 2026-08-19):** D-0 ✅ → D-1 ✅ → I-1 ✅ → **D-2 ✅**.
@@ -50,6 +50,25 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-7 / S1 → S4 / I-1 / I
      Kafka broker stale "roadmap" classification → Production M-3, Airflow-only orchestration
      listing → 4 wrappers (Airflow/Dagster/Prefect/Mage). examples/README + CMM were already
      consistent with code; no source edits.
+- **M-8 ✅ CLOSED (2026-08-26, on-demand first pull post T2):** `elt schedule` runner flipped
+  🟠 Demo → 🟢 Production. DAG-aware execution via per-job `depends_on:` with declaration-order-
+  stable topological sort (cyclic / unknown-dep fail-fast at validation time via
+  ConfigValidationError). Per-job `retries: 0-100` + `retry_delay_seconds: 0-3600` with per-attempt
+  `exit_code/output/error` audit in `jobs[].attempts[]`. Structured `schedule_execution_audit.json`
+  written to `--audit-root` (default `<plan-dir>/runs/schedule_<sha>/`) with `run_id / started_at_iso /
+  finished_at_iso / execution_order / success+failed+skipped counts`. Backward-compat payloads:
+  legacy `executed_count` counts only actually-executed jobs; `jobs[]` stays execution-only; new
+  `skipped_jobs[]` carries 3 skip reasons (`skipped_stop_on_error / skipped_upstream_failure /
+  skipped_unmet_dependencies`) so downstream JSON parsers are unbroken. 2 legacy schedule tests
+  pass unchanged; 9 new focused tests added (topological order, unknown-dep, cycle, audit json write
+  explicit+default roots, upstream skip, retry success+exhaustion, bounds validation). Full gate:
+  765 / 0 passed (was 756 — delta = 9 new schedule tests); 28 emulator tests skipped as expected;
+  ruff `src/ tests/ examples` clean. Doc updates: CMM §7 row flipped 🟠→🟢; CMM "How to read this
+  for publication" §1 Production list extended with DAG runner + 4 orchestrators merged; §2 Demo
+  shrunk from 3 → 2 items (JSONL Kafka replay, bespoke lineage JSONL only); README Honest Boundary
+  Orchestration line updated to `elt schedule DAG runner + 4 wrappers` M-8/G-3/M-6 all Production.
+  Archive closure spec moved to WORK_ITEMS_CLOSED.md per playbook (canonical spec, rationale,
+  detailed checklist, test outputs with counts + exit codes).
 - **Next work:** None pre-scoped. Pull an item forward only on concrete consumer demand.
 
 ## Session start prompt
@@ -67,20 +86,30 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
 doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (756 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (765 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
   (zero code relation to recent work);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped post PUBLICATION HARDENING PASS COMPLETE — all 3 items closed,
-  AND post backlog-deflation archive move of verbose narratives to docs/todo/archive/).
+- **Captured:** 2026-08-26 (re-stamped POST Publication Hardening Pass COMPLETE + backlog deflation
+  + **M-8 closed on-demand first pull post T2**: gate 756→765 tests, CMM §7 🟠→🟢 flipped,
+  CMM "How to read" §1 Production list extended with `elt schedule` DAG runner merged with 4 orchestrators;
+  §2 Demo list 3→2 items (JSONL Kafka replay + bespoke lineage JSONL only); README Honest Boundary
+  Orchestration line updated to M-8/G-3/M-6 Production all).
   TRANCHE 2 is COMPLETE: all 28 pre-scoped items closed, 0 ⏳ Roadmap rows in CMM.
   Publication Hardening Pass (cold-start ordered) FULLY CLOSED:
   (1) ✅ B-5 emulator tests (19/19 S3 green via moto, 2 real bugs fixed, 10 GCS+ADLS = Docker user-side step),
   (2) ✅ CMM §8 Python sdist+wheel 🟠→🟢 Production (doc-only + empirical METADATA 16 extras),
   (3) ✅ Cross-doc consistency audit (8-point numeric checklist verified, 3 README mismatches fixed).
+  **M-8 on-demand first pull post-T2 FULLY CLOSED (2026-08-26):**
+  (4) ✅ `elt schedule` runner 🟠 Demo → 🟢 Production: declaration-order-stable DAG via `depends_on:`
+  topological sort, cyclic/unknown-dep validation-time fail-fast (ConfigValidationError),
+  per-job `retries: 0-100` / `retry_delay_seconds: 0-3600` with per-attempt audit,
+  `schedule_execution_audit.json` with run_id + ISO timestamps + execution_order counters,
+  backward-compat payload shapes (`executed_count` semantics unchanged, `jobs[]` = execution-only,
+  new `skipped_jobs[]` with 3 skip-reason codes).
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -214,6 +243,8 @@ work it one-per-session, then on close move the body to the archive file and lea
 ### Still Todo
 
 *None pre-scoped. Pull forward on concrete consumer demand only.*
+
+#### M-8 — `elt schedule` runner 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 
