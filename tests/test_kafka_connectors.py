@@ -830,3 +830,177 @@ def test_broker_connector_end_to_end_run_with_fake_consumer(tmp_path: Path, monk
     )
     assert checkpoint.current_checkpoint["offset"] == 2
 
+
+def test_local_kafka_connector_empty_log_returns_zero_messages(tmp_path: Path) -> None:
+    log_path = tmp_path / "empty.jsonl"
+    log_path.write_text("", encoding="utf-8")
+
+    connector = LocalKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            partition=0,
+            starting_position="earliest",
+            max_messages=100,
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+        log_path=str(log_path),
+    )
+
+    result = connector.run()
+    assert result.message_count == 0
+    assert result.checkpoint_before is None
+    assert result.checkpoint_after is None
+    assert result.manifests == []
+
+
+def test_local_kafka_connector_offset_gaps_sorted_deterministically(tmp_path: Path) -> None:
+    log_path = tmp_path / "gappy.jsonl"
+    records = [
+        {"topic": "orders-events", "partition": 0, "offset": 100, "value": "v100"},
+        {"topic": "orders-events", "partition": 0, "offset": 50, "value": "v50"},
+        {"topic": "orders-events", "partition": 0, "offset": 75, "value": "v75"},
+    ]
+    log_path.write_text(
+        "\n".join(json.dumps(rec) for rec in records),
+        encoding="utf-8",
+    )
+
+    connector = LocalKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            partition=0,
+            starting_position="earliest",
+            max_messages=100,
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+        log_path=str(log_path),
+    )
+
+    result = connector.run()
+    assert result.message_count == 3
+    assert result.checkpoint_after is not None
+    assert result.checkpoint_after["offset"] == 101
+    offsets_in_order = [m.metadata["offset"] for m in result.manifests]
+    assert offsets_in_order == [50, 75, 100]
+
+
+def test_local_kafka_connector_skips_other_partitions_and_topics(tmp_path: Path) -> None:
+    log_path = tmp_path / "multipart.jsonl"
+    records = [
+        {"topic": "orders-events", "partition": 0, "offset": 10, "value": "me"},
+        {"topic": "other-topic", "partition": 0, "offset": 20, "value": "skip-topic"},
+        {"topic": "orders-events", "partition": 1, "offset": 30, "value": "skip-partition"},
+        {"topic": "orders-events", "partition": 0, "offset": 11, "value": "me2"},
+    ]
+    log_path.write_text(
+        "\n".join(json.dumps(r) for r in records),
+        encoding="utf-8",
+    )
+
+    connector = LocalKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            partition=0,
+            starting_position="earliest",
+            max_messages=100,
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+        log_path=str(log_path),
+    )
+
+    result = connector.run()
+    assert result.message_count == 2
+    offsets = [m.metadata["offset"] for m in result.manifests]
+    assert offsets == [10, 11]
+    assert result.checkpoint_after is not None
+    assert result.checkpoint_after["offset"] == 12
+
+
+def test_local_kafka_connector_replay_from_middle_checkpoint(tmp_path: Path) -> None:
+    log_path = tmp_path / "window.jsonl"
+    records = [
+        {"topic": "orders-events", "partition": 0, "offset": 0, "value": "a"},
+        {"topic": "orders-events", "partition": 0, "offset": 1, "value": "b"},
+        {"topic": "orders-events", "partition": 0, "offset": 2, "value": "c"},
+        {"topic": "orders-events", "partition": 0, "offset": 3, "value": "d"},
+        {"topic": "orders-events", "partition": 0, "offset": 4, "value": "e"},
+    ]
+    log_path.write_text(
+        "\n".join(json.dumps(r) for r in records),
+        encoding="utf-8",
+    )
+
+    checkpoint_store = LocalCheckpointStore(str(tmp_path))
+    checkpoint_store.commit(
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        run_id="prior-run",
+        checkpoint_before=None,
+        checkpoint_after={"topic": "orders-events", "partition": 0, "offset": 2},
+        recorded_at=new_run_context(
+            stage=StageName.ingest,
+            job_name="prior-kafka-ingest",
+            trigger_type="micro_batch",
+        ).started_at,
+    )
+
+    connector = LocalKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            partition=0,
+            starting_position="checkpoint",
+            max_messages=100,
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+        log_path=str(log_path),
+    )
+
+    result = connector.run()
+    assert result.checkpoint_before == {"topic": "orders-events", "partition": 0, "offset": 2}
+    assert result.message_count == 3
+    offsets = [m.metadata["offset"] for m in result.manifests]
+    assert offsets == [2, 3, 4]
+    assert result.checkpoint_after is not None
+    assert result.checkpoint_after["offset"] == 5
+

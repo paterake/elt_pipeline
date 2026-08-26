@@ -77,7 +77,7 @@ class TestDetectScheme:
             assert "dfs.core.windows.net" in ctx["migration_guidance"]
             assert "Hierarchical Namespace" in ctx["migration_guidance"]
 
-    def test_reject_hdfs_with_scope_guidance(self) -> None:
+    def test_reject_hdfs_with_defunct_guidance(self) -> None:
         bad_paths = (
             "hdfs://namenode:8020/user/data/path",
             "hdfs://cluster/path/to/file.parquet",
@@ -87,7 +87,8 @@ class TestDetectScheme:
                 pu.detect_scheme(bad)
             msg = exc_info.value.message
             assert "Hadoop HDFS scheme detected" in msg
-            assert "hdfs:// is out of scope for v1" in msg
+            assert "DEFUNCT" in msg
+            assert "cloud-native object storage" in msg
             assert "s3:// (AWS S3)" in msg
             assert "gs:// (Google Cloud Storage)" in msg
             assert "abfss:// (Azure ADLS Gen2)" in msg
@@ -95,6 +96,7 @@ class TestDetectScheme:
             assert ctx["detected_scheme"] == "hdfs://"
             assert "s3:// (AWS S3)" in ctx["alternatives"]
             assert "B-6 StorageBackend facade pattern" in ctx["note"]
+            assert "intentionally NOT implementable" in ctx["note"]
             assert "Never silently coerce schemes" not in ctx.get("note", "")
 
     def test_validate_root_rejects_pathlib(self) -> None:

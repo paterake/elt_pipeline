@@ -85,6 +85,61 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
   unchanged 765/0/28; ruff src/tests/examples clean. Archive closure spec with full decision
   rationale, verification checklist, and exact doc-edit inventory moved to WORK_ITEMS_CLOSED.md
   per playbook.
+- **M-10 ✅ CLOSED (2026-08-26, on-demand third pull post T2):** HDFS hdfs:// scheme
+  reclassified as **DEFUNCT**. Industry convergence: on-prem Hadoop/HDFS clusters have been
+  displaced by cloud-native object storage (AWS EMR / GCP Dataproc / Azure Synapse / Databricks /
+  Snowflake / Trino+Iceberg all converge on object stores as durable substrate). Code change:
+  [path_utils.py](src/elt_pipeline/shared/path_utils.py#L97-L129) `detect_scheme()` hdfs branch
+  message rewritten from "v1 de-scoped / re-evaluate" → "DEFUNCT" with concrete migration path
+  (land legacy payloads in object storage via object_storage connector first → standard ELT
+  pipeline); `context.note` clarifies hdfs:// is **intentionally NOT implementable via the B-6
+  StorageBackend facade for this project** — reconsideration requires paying signed-off customer
+  contract explicitly demanding on-prem HDFS AND object storage genuinely unavailable. Test:
+  [test_path_utils.py](tests/test_path_utils.py#L80-L100) `test_reject_hdfs_with_scope_guidance`
+  renamed to `test_reject_hdfs_with_defunct_guidance` with assert strings updated (DEFUNCT /
+  "cloud-native object storage" / "intentionally NOT implementable" present). Doc updates: CMM
+  §1 HDFS row re-stamped with DEFUNCT classification + M-10 closure date + test method rename;
+  CMM §"How to read this for publication" §1 gains hdfs DEFUNCT entry with migration guidance +
+  B-6 non-implementability note; §3 Roadmap clarifies hdfs is excluded via DEFUNCT not Roadmap;
+  README Honest Boundary Storage-backends line rewritten from "de-scoped for v1 / re-evaluate"
+  → DEFUNCT with M-10 ref + migration path + customer-contract reconsideration bar. Gate delta:
+  M-10 rename-only = 0 net change; combined with M-11 +4 → overall 765 → 769. Archive closure
+  spec moved to WORK_ITEMS_CLOSED.md per playbook.
+- **M-11 ✅ CLOSED (2026-08-26, on-demand fourth pull post T2):** Kafka JSONL file replay flipped
+  🟠 Demo → 🟢 Production. Promotion rationale: JSONL replay fills 3 legitimate production
+  niches the M-3 broker consumer does not cover: (1) CI/test pipelines where a real broker is
+  undesirable, (2) offline backfill/replay from Kafka Connect S3-sinked JSONL exports (via
+  object_storage connector first), (3) workstation PoC for Kafka-shaped payloads before deploying
+  a real broker. Guarantees formalized: strict offset-sorted consumption (not file-order —
+  prevents accidentally non-deterministic L1 manifests when upstream writers reorder lines),
+  empty-log zero-message no-op (no spurious empty artifacts; checkpoint_after stays None so
+  idempotency preserved), cross-topic/cross-partition message filtering (JSONL file may carry
+  multiplexed payloads; only configured topic+partition consumed — same filter semantics as
+  M-3), explicit `starting_position` (earliest / checkpoint) + `start_offset` passthrough with
+  `max_messages` cap, AND `checkpoint_before → max(offsets)+1` checkpoint-after idempotency
+  byte-for-byte identical to M-3 broker consumer. Code parity: both M-3 and JSONL replay use
+  the same `KafkaConnectorBase` seam, `LocalCheckpointStore` schema, and `encode_message_payload`
+  wire format — so switching modes is a single config key toggle (`bootstrap_servers:` present →
+  broker; absent → JSONL replay). Production error codes: `KAFKA_LOG_READ_FAILED` (retryable=false
+  so retries don't spin on a bad file) + `KAFKA_LOG_INVALID_JSON` (input_contract_error) with
+  structured context (source_name, entity_name, log_path, error_type). 4 new focused tests added
+  to [test_kafka_connectors.py](tests/test_kafka_connectors.py#L834-L1005):
+  `test_local_kafka_connector_empty_log_returns_zero_messages`,
+  `test_local_kafka_connector_offset_gaps_sorted_deterministically`,
+  `test_local_kafka_connector_skips_other_partitions_and_topics`,
+  `test_local_kafka_connector_replay_from_middle_checkpoint`. 9 total LocalKafkaConnector tests
+  (5 pre-existing + 4 new) all pass. Doc updates: CMM §2 row flipped 🟠→🟢 with 3 production use
+  cases + guarantees + error codes + test counts + M-11 date; CMM §"How to read this for
+  publication" §1 gains Kafka BOTH-modes Production entry (M-3 broker + M-11 JSONL replay) with
+  toggle semantics + test counts; §2 Demo list shrunk 1→0 (NO Demo items remaining — every
+  shipped capability is 🟢 Production or explicitly DEFUNCT); CMM Document Status header stamped
+  with M-10+M-11 closure summary + actual gate delta 765→769; README Honest Boundary Kafka
+  line rewritten from "Demo JSONL replay fallback" → "BOTH modes Production" (M-3+M-11) with
+  3 use cases + formalized guarantees + error code names + test counts. Gate: 765 + 4
+  = **769** (delta +4 Kafka replay tests; HDFS test rename not a count change). Verified:
+  scripts/run_tests.sh → TEST GATE: PASS (769 / 0 failed; 28 emulator tests correctly
+  skipped); ruff src/tests/examples clean. Archive closure spec moved to WORK_ITEMS_CLOSED.md
+  per playbook.
 - **Next work:** None pre-scoped. Pull an item forward only on concrete consumer demand.
 
 ## Session start prompt
@@ -102,25 +157,54 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
 doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (765 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (769 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
   (zero code relation to recent work);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped POST Publication Hardening Pass COMPLETE + backlog deflation
-  + **M-8 closed on-demand first pull post T2** + **M-9 closed on-demand second pull post T2**:
-  gate unchanged at 765 tests, CMM §12 🟠→🟢 flipped (bespoke JSONL lineage emitter promoted to
-  Production — always-on authoritative sink + Pydantic-validated LineageEvent/DatasetRef model +
-  B-6 scheme-agnostic write path on local/S3/GCS/ADLS + 13 focused tests green); CMM "How to read"
-  §1 Production list gains native JSONL authoritative sink entry merged with OpenLineage wire
-  export; §2 Demo list shrunk 2→1 (only JSONL Kafka replay remains Demo); README Honest Boundary
-  Lineage line updated to "BOTH native emitter + OpenLineage wire export are Production".
-  Previously M-8 close: gate 756→765 tests, CMM §7 🟠→🟢 flipped, CMM "How to read" §1 Production
-  list extended with `elt schedule` DAG runner merged with 4 orchestrators; §2 Demo list 3→2 items
-  (JSONL Kafka replay + bespoke lineage JSONL only); README Honest Boundary Orchestration line
-  updated to M-8/G-3/M-6 Production all.
+- **Captured:** 2026-08-26 (re-stamped POST M-10 closed on-demand third pull post T2 +
+  M-11 closed on-demand fourth pull post T2:
+  Gate bumped 765 → 769 tests (delta +4: 4 new LocalKafkaConnector replay-semantics
+  focused tests in test_kafka_connectors.py; HDFS defunct test_* rename = zero net
+  count change). Actual gate result: Non-Spark 571 passed 28 skipped + 14 isolated
+  Spark/Iceberg file processes 26/9/34/25/1/14/7/9/8/8/27/5/25 = 198 → total
+  571+198 = **769 passed, 0 failed, 28 skipped.** Full exit 0; ruff clean.
+  **M-10:** HDFS hdfs:// scheme reclassified DEFUNCT — message in
+  path_utils.py detect_scheme() rewritten from "v1 de-scoped / re-evaluate" →
+  "DEFUNCT" with concrete migration guidance (land on-prem payloads in cloud object
+  store via object_storage connector first → standard ELT pipeline; context.note
+  clarifies intentionally NOT implementable via B-6 facade; customer-contract
+  reconsideration bar). Test: test_path_utils.py `test_reject_hdfs_with_*` renamed
+  to `test_reject_hdfs_with_defunct_guidance` with DEFUNCT +
+  "intentionally NOT implementable" asserts. Docs: CMM §1 HDFS row updated with
+  DEFUNCT stamp + M-10 date + test rename; CMM How to read §1 gains hdfs DEFUNCT
+  entry + §3 Roadmap clarifies hdfs excluded via DEFUNCT not Roadmap; README Honest
+  Boundary Storage backends line rewritten.
+  **M-11:** Kafka JSONL file replay flipped 🟠 Demo → 🟢 Production. Promotion
+  rationale: fills 3 legitimate production niches the M-3 broker consumer does not
+  cover (CI/test pipelines, offline backfill from Kafka Connect S3 JSONL exports,
+  workstation PoC before broker deploy). Formalized guarantees: strict offset-sort
+  (not file-order), empty-log no-op, cross-topic/partition filter, checkpoint-middle
+  window replay, max+1 checkpoint-after identical to M-3. Production error codes:
+  KAFKA_LOG_READ_FAILED / KAFKA_LOG_INVALID_JSON retryable=false with structured
+  context. 4 new focused tests in test_kafka_connectors.py (empty-log / offset-gap
+  sort / cross-topic+partition filter / checkpoint-middle window replay). Docs:
+  CMM §2 row 🟠→🟢; CMM How to read §1 gains Kafka BOTH-modes (M-3+M-11) Production
+  entry; §2 Demo list shrunk 1→0 (NO Demo items remaining; every shipped capability
+  is 🟢 Production or explicitly DEFUNCT); CMM Document Status header stamped with
+  M-10+M-11 summary + actual gate delta 765→769; README Honest Boundary Kafka line
+  rewritten Demo→"BOTH modes Production" with 3 use cases + guarantees + error
+  codes + test counts.
+  Previously M-9 close: gate unchanged 765 tests, CMM §12 🟠→🟢 flipped (bespoke
+  JSONL lineage emitter promoted to Production — always-on authoritative sink +
+  Pydantic-validated LineageEvent/DatasetRef model + B-6 scheme-agnostic write
+  path on local/S3/GCS/ADLS + 13 focused tests green); CMM "How to read"
+  §1 Production list gains native JSONL authoritative sink entry merged with
+  OpenLineage wire export; §2 Demo list shrunk 2→1 (only JSONL Kafka replay remains
+  Demo); README Honest Boundary Lineage line updated to "BOTH native emitter +
+  OpenLineage wire export are Production".
   TRANCHE 2 is COMPLETE: all 28 pre-scoped items closed, 0 ⏳ Roadmap rows in CMM.
   Publication Hardening Pass (cold-start ordered) FULLY CLOSED:
   (1) ✅ B-5 emulator tests (19/19 S3 green via moto, 2 real bugs fixed, 10 GCS+ADLS = Docker user-side step),
@@ -276,6 +360,8 @@ work it one-per-session, then on close move the body to the archive file and lea
 
 #### M-8 — `elt schedule` runner 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 #### M-9 — Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
+#### M-10 — HDFS hdfs:// scheme: DEFUNCT classification (industry shift to cloud object stores)  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
+#### M-11 — Kafka JSONL file replay 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

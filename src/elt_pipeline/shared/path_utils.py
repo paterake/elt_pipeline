@@ -99,22 +99,31 @@ def detect_scheme(path: str) -> _StorageScheme:
         raise ConfigValidationError(
             message=(
                 f"Hadoop HDFS scheme detected in path: {path!r}. "
-                f"hdfs:// is out of scope for v1. On-prem HDFS was deliberately de-scoped; "
-                f"the recommended path is cloud-native object storage: s3:// (AWS S3), "
-                f"gs:// (Google Cloud Storage), or abfss:// (Azure ADLS Gen2)."
+                f"hdfs:// support is DEFUNCT. Industry reality: on-prem Hadoop/HDFS "
+                f"clusters have been displaced by cloud-native object storage. Use "
+                f"s3:// (AWS S3), gs:// (Google Cloud Storage), or abfss:// "
+                f"(Azure ADLS Gen2). For legacy on-prem data, migrate payloads to a "
+                f"cloud object store first (the platform's §2 object_storage connector "
+                f"ingests from any of the 4 supported schemes), then run the standard "
+                f"ELT pipeline against the object store."
             ),
             context={
                 "path": path,
                 "detected_scheme": scheme_part,
                 "alternatives": list(_SUPPORTED_SCHEMES_FOR_ERROR),
                 "note": (
-                    "Re-evaluate hdfs:// support only if a concrete on-prem deployment "
-                    "need appears and object storage is genuinely unavailable. If added, "
-                    "follow the B-6 StorageBackend facade pattern: register an "
-                    "HDFSStorageBackend class + add an hdfs enum entry + registry line, "
-                    "with Spark-side hdfs Hadoop FS config surface wired alongside the "
-                    "existing s3a/gs/abfss entries. No short-circuit scheme coercion "
-                    "or silent fallback is permitted."
+                    "hdfs:// is intentionally NOT implementable via the B-6 "
+                    "StorageBackend facade pattern for this project. Every modern "
+                    "data platform (AWS EMR, GCP Dataproc, Azure Synapse, Databricks, "
+                    "Snowflake, Trino/Iceberg) has converged on object storage as "
+                    "the durable storage substrate; a bespoke HDFS backend adds "
+                    "permanent maintenance surface for a shrinking legacy niche. "
+                    "Reconsider only if a paying, signed-off customer contract "
+                    "explicitly requires on-prem HDFS AND object storage is "
+                    "genuinely unavailable at that site. If that day comes, "
+                    "register HDFSStorageBackend via B-6 + add Spark Hadoop FS "
+                    "config surface — but expect zero upstream support from this "
+                    "project's maintainers for that bespoke fork."
                 ),
             },
         )
