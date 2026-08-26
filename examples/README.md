@@ -21,15 +21,17 @@ All orchestration examples follow the **thin CLI wrapper** pattern: each orchest
 - `examples/orchestration/airflow/reference_dag.py`: **Apache Airflow** — full 7-task DAG (ingest → normalize → sql_compile → sql_run → publish_validate → publish_run → maintain_iceberg_tables) using `AirflowCliWrapper` + `PythonOperator`. Sets retries=2 with 1-min retry_delay via Airflow `default_args`. Uses `**context` auto-passthrough so `dag_id`/`run_id`/`task_id`/`try_number`/`dag.tags`/`logical_date` are all forwarded via `build_airflow_orchestration_metadata(context)` — all 6 Airflow context extraction fields supported.
 - `examples/orchestration/dagster/reference_assets.py`: **Dagster** — 4-asset graph (`ingest_orders_l1 → normalize_orders_l2 → sql_orders_l3_l4 → publish_orders_l5) using `DagsterCliWrapper` + `@asset` decorators with `PipelineConfig` config schema for environment/source/entity/start_date/end_date parameters plus `elt_pipeline_daily_job` with `max_retries=2`. Forward job name, run_id, op name, retry_number (+1 for 1-indexed), run tags, and partition key via `build_dagster_orchestration_metadata(context)`.
 - `examples/orchestration/prefect/reference_flow.py`: **Prefect** — 4-task flow (`ingest_orders_l1 → normalize_orders_l2 → sql_compile_and_run → publish_orders_l5`) using `PrefectCliWrapper` + `@flow`/`@task` decorators with `retries=2` and `retry_delay_seconds=30` on tasks. Flow name/run_id, task key/run id, run_count/task_run_count (→attempt_number), flow tags, and scheduled_start_time are all forwarded via `build_prefect_orchestration_metadata(context)` with context extracted from `prefect.context.get_run_context()`.
+- `examples/orchestration/mage/reference_pipeline.py`: **Mage** — 7 blocks (`ingest_orders_l1` @data_loader + `normalize_orders_l2` / `sql_compile_models` / `sql_run_models` / `publish_validate` / `publish_run_l5` / `maintain_iceberg_tables` @transformer) using `MageCliWrapper`. Each block extracts Mage context from `kwargs["context"]` — pipeline_name, run_id, block_uuid, block_attempt (+1 1-indexed), pipeline tags, and execution_date are all forwarded via `build_mage_orchestration_metadata(mage_context)`. Closed in BACKLOG item M-6 2026-08-26.
 
 Orchestration helpers are exported from `elt_pipeline.integrations`:
 
 ```python
 from elt_pipeline.integrations import (
-    AirflowCliWrapper, DagsterCliWrapper, PrefectCliWrapper,
+    AirflowCliWrapper, DagsterCliWrapper, PrefectCliWrapper, MageCliWrapper,
     build_airflow_orchestration_metadata,
     build_dagster_orchestration_metadata,
     build_prefect_orchestration_metadata,
+    build_mage_orchestration_metadata,
     OrchestrationMetadata, load_orchestration_metadata_from_env,
     CliInvocationRequest, SubprocessCliInvoker,
 )

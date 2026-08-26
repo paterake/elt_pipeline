@@ -640,6 +640,82 @@ class PrefectCliWrapper:
         return result
 
 
+def build_mage_orchestration_metadata(
+    context: Mapping[str, Any] | None = None,
+) -> OrchestrationMetadata:
+    source = context or {}
+    pipeline_name = _coerce_optional_string(source.get("pipeline_name"))
+    run_id = _coerce_optional_string(source.get("run_id"))
+    block_uuid = _coerce_optional_string(source.get("block_uuid"))
+    raw_block_attempt = _coerce_optional_int(source.get("block_attempt"))
+
+    tags: dict[str, str] = {}
+    mage_tags = _coerce_tag_sequence(source.get("tags"))
+    if mage_tags:
+        tags["mage_pipeline_tags"] = ",".join(mage_tags)
+    execution_date = _coerce_optional_string(source.get("execution_date"))
+    if execution_date is not None:
+        tags["execution_date"] = execution_date
+
+    return OrchestrationMetadata(
+        platform="mage",
+        flow_name=pipeline_name,
+        flow_run_id=run_id,
+        task_name=block_uuid,
+        task_attempt=raw_block_attempt,
+        tags=tags,
+    )
+
+
+@dataclass
+class MageCliWrapper:
+    repo_root: Path
+    invoker: OrchestrationCliInvoker = field(default_factory=SubprocessCliInvoker)
+    environment_overrides: dict[str, str] = field(default_factory=dict)
+
+    def build_request(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        mage_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+    ) -> CliInvocationRequest:
+        combined_environment = dict(self.environment_overrides)
+        if environment_overrides is not None:
+            combined_environment.update(
+                {key: str(value) for key, value in environment_overrides.items()}
+            )
+        return CliInvocationRequest(
+            subcommand=tuple(str(value) for value in subcommand),
+            arguments=tuple(str(value) for value in arguments),
+            cwd=self.repo_root.resolve(),
+            environment_overrides=combined_environment,
+            orchestration_metadata=build_mage_orchestration_metadata(mage_context),
+        )
+
+    def invoke(
+        self,
+        *,
+        subcommand: Sequence[str],
+        arguments: Sequence[str] = (),
+        mage_context: Mapping[str, Any] | None = None,
+        environment_overrides: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = None,
+        check: bool = True,
+    ) -> CliInvocationResult:
+        request = self.build_request(
+            subcommand=subcommand,
+            arguments=arguments,
+            mage_context=mage_context,
+            environment_overrides=environment_overrides,
+        )
+        result = self.invoker.invoke(request, timeout_seconds=timeout_seconds)
+        if check:
+            result.raise_for_exit_code()
+        return result
+
+
 def _coerce_strings(args: Sequence[str] | str) -> Sequence[str]:
     if isinstance(args, str):
         return [args]
