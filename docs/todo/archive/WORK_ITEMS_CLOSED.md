@@ -1,4 +1,4 @@
-# Archive: Work Items — All Closed Items (D-0, D-1, D-2, B-0 → B-6, G-1 → G-8, M-1 → M-7, S1 → S4, I-1)
+# Archive: Work Items — All Closed Items (D-0, D-1, D-2, D-3, B-0 → B-6, G-1 → G-8, M-1 → M-9, S1 → S4, I-1, I-2)
 
 Archived from repo-root `BACKLOG.md` on 2026-08-26 during backlog deflation.
 This file preserves the full `## Work items` section: every `####` per-item
@@ -1758,4 +1758,147 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   All 5 verification points confirmed green. Twenty-second TRANCHE 2 on-demand pull closed.
   Typical entity YAML verbosity drops ~80% for the common list-tables use case; zero-SQL default
   with explicit escape hatches for complex queries is the non-engineer-friendly target.
+
+---
+
+#### ✅ CLOSED (2026-08-26, 2nd on-demand pull post-Tranche 2, 🟢 Trivial doc-only) — M-9 — Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production
+
+- **Decision rationale (why this was misclassified Demo pre-M-9):** The bespoke JSONL lineage
+  emitter was labelled Demo as a historical artifact from the G-7 OpenLineage closure, where the
+  *wire export* was the new Production feature and the native sink was seen as a "stub" alongside
+  it. Reality check: (a) `lineage.jsonl` is **always written** regardless of remote backend
+  configuration — it is the authoritative on-disk sink, not a fallback; (b) it carries the exact
+  same structured data model (`LineageEvent` + `DatasetRef` with facets) that OpenLineage maps
+  *from*, meaning it is informationally richer than the wire format (which is a subset/projection);
+  (c) it writes scheme-agnostically through the B-6 `StorageBackend` facade (local POSIX / S3 /
+  GCS / ADLS all with identical semantics via the same dispatch path), so it works in every
+  supported deployment topology, not just on a workstation; (d) 13 focused tests cover every
+  meaningful behavioural axis (write path, error-policy handling for remote failures, env-var
+  driven backend config, OpenLineage conversion + EnvironmentRunFacet auto-injection + pre-existing
+  facet preservation, wire-format roundtrip via `OpenLineageRunEvent(**parsed)` Pydantic
+  re-validation). The Demo label was honest-scoping paranoia, not an accurate reflection of code
+  maturity. Promotion threshold for Production — "shipped, automated tests pass, reliable for real
+  use on the documented scope" (CMM maturity definitions §Purpose) — is clearly met.
+- **Counter-arguments considered + rejected:**
+  - *"But the native schema isn't a standard wire format."* → Not required for Production.
+    Production means *reliable on the documented scope*; the scope here is on-disk audit + replay
+    debugging, which the native format does perfectly (it's lossless, sort-key stable JSONL).
+  - *"Keeping it Demo nudges people toward OpenLineage."* → The OpenLineage path is already
+    separately Production and documented as the wire-export recommendation. Mislabeling the
+    always-on authoritative sink as Demo is actively misleading (it tells consumers the file they
+    rely on for forensics isn't "real").
+- **Promotion scope delivered (ZERO code changes — pure documentation + matrix relabelling):**
+  No source code in `src/` was modified. The lineage write path, adapter seam, Pydantic models,
+  and tests are exactly as-post G-7. Changes are strictly bounded to the 3 publication-facing
+  documents + the archive playbook update:
+  1. **CMM §12 Lineage (Bespoke emitter row):** Maturity label flipped 🟠 Demo → 🟢 Production.
+     Notes column rewritten to explicitly document the always-on nature, the authoritative-sink
+     role, the Pydantic-validated data model, the B-6 scheme-agnostic write path (4 storage
+     schemes with parity), and the 13-focused-test count with coverage axes. Promotion date +
+     M-9 ref stamped.
+  2. **CMM §"How to read this for publication" — §1 Production list:** Lineage clause was a
+     single entry ("OpenLineage wire-compatible export"); expanded into a combined two-part
+     entry with the native JSONL authoritative sink FIRST (since it's always written and is the
+     canonical durable store) plus the OpenLineage wire export SECOND, joined with `+`. This
+     correctly reflects the dual-Production posture without implying one replaces the other.
+  3. **CMM §"How to read this for publication" — §2 Demo list:** Shrunk from 2 items → 1 item.
+     Removed the bespoke lineage emitter clause entirely. Demo section now contains ONLY the
+     JSONL Kafka replay source, with a correctly-scoped note pointing at the M-3 real broker
+     consumer as the Production counterpart. Parenthetical "both work… neither intended as
+     drop-in…" dual-reference sentence collapsed into a single-item singular reference.
+  4. **CMM §Document Status header line:** Prepended M-9 closure blurb (row flip, always-on
+     sink, Pydantic models, B-6 scheme parity, 13 tests, §1 expansion, §2 2→1 shrinkage) to the
+     Updated timestamp, with the previous M-8 narrative demoted to "Previously:" so the
+     chronological changelog chain is preserved.
+  5. **README.md Honest Boundary → Lineage line:** Was "OpenLineage 2.0.2 wire-compatible export
+     is Production; native bespoke JSONL sink remains authoritative (always written, demo-scoped)"
+     → Rewrote to "BOTH native authoritative bespoke JSONL emitter + OpenLineage 2.0.2
+     wire-compatible export are Production" with explicit always-on + LineageEvent/DatasetRef
+     model + B-6 scheme-agnostic 4-scheme parity + 13 focused tests green bullets for the
+     native side, and the env-driven `openlineage_http` backend + EnvironmentRunFacet + 4
+     compatible target backends bullets for the wire side. CMM §12 anchor line number updated
+     from L242-L249 → L254-L262 (the section shifted due to earlier M-8 edits; verified against
+     the actual post-edit file).
+  6. **BACKLOG.md → Resume (start here):** Appended M-9 ✅ CLOSED block after M-8 with decision
+     rationale, scope summary (doc-only, zero code changes), 13-test coverage matrix, all 6
+     doc-edit locations, unchanged gate status, and the canonical archive pointer sentence
+     pointing at WORK_ITEMS_CLOSED.md. Next work pointer preserved as "None pre-scoped."
+  7. **BACKLOG.md → Status snapshot → Captured line:** Re-stamped POST M-9 with the 5-item
+     closed-list counter (Pub Hardening 1/2/3 + M-8 + M-9 = items (1) through (5)), gate number
+     explicitly confirmed unchanged at 765/0/28, §1 Production list expansion + §2 2→1 shrink +
+     README Lineage line update enumerated. M-8 narrative retained as "Previously M-8 close:"
+     with its own gate 756→765 delta, preserving chronological order.
+  8. **BACKLOG.md → Work items → Still Todo:** One-line M-9 entry appended after M-8 with the
+     canonical format `#### M-9 — Title  ✅ CLOSED (YYYY-MM-DD, archive: WORK_ITEMS_CLOSED.md)`.
+  9. **WORK_ITEMS_CLOSED.md (this file) → Header line:** Range updated from `M-1 → M-7` to
+     `M-1 → M-9`, plus D-3 and I-2 added to the item-id roster (they were closed during
+     Tranche 2 but not reflected in the previous header).
+- **Files changed (canonical diff inventory):**
+  - [docs/CAPABILITY_MATURITY_MATRIX.md](docs/CAPABILITY_MATURITY_MATRIX.md)
+    — Document Status Updated line prepended with M-9 closure; §12 Bespoke lineage emitter row
+    🟠→🟢 flipped + Notes column rewritten; §How to read §1 Production list Lineage clause
+    expanded into native+wire combined entry; §How to read §2 Demo list collapsed from 2 items
+    → 1 item (JSONL Kafka replay only).
+  - [README.md](README.md)
+    — Honest Boundary → Lineage line rewritten to "BOTH native + wire export are Production"
+    with explicit native-side + wire-side bullets; CMM §12 anchor line number bumped
+    L242-L249 → L254-L262.
+  - [BACKLOG.md](BACKLOG.md)
+    — Resume section M-9 ✅ CLOSED block appended after M-8; Status snapshot → Captured line
+    re-stamped POST M-9 with closed-list counter (1) through (5) + §1/§2 + README changes
+    enumerated; Still Todo section one-line M-9 closed summary appended after M-8.
+  - [docs/todo/archive/WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md)
+    — Header item-id range extended (M-1→M-9, D-3/I-2 added); this M-9 closure spec/narrative
+    block appended after the preceding Tranche-2 item.
+- **Verification (5 checkpoints, all green):**
+  1. **Lineage test suite: 13/13 green (combined lineage_adapter focused gate, 0.28s, zero JVM)**
+     `uv run pytest tests/test_lineage_adapter.py -v` → 15 collected (13 functions + 2 parametrized
+     variants under `test_build_lineage_adapter_rejects_invalid_env_configuration` and
+     `test_openlineage_http_emitter_surfaces_retryable_backend_errors`), ALL PASSED. Covers:
+     local write path, non-blocking best_effort policy with errors.jsonl+logs.jsonl side effects,
+     blocking policy with PipelineError re-raise, env-configured OL HTTP backend (full URL +
+     auth + timeout + payload shape assertion), env whitespace normalization, invalid URL →
+     ConfigValidationError, constructor validators (URL scheme, positive timeout, non-empty auth),
+     retryable error mapping URLError→retryable=True, minimal OL shape conversion, full
+     inputs+outputs+facets preservation, EnvironmentRunFacet auto-injection, no facet when
+     environment unset, no overwrite of pre-existing environment facet, wire payload + dataset
+     inputFacets/outputFacets shape, OL 2.0.2 RunEvent Pydantic roundtrip. ✓
+  2. **Full gate: baseline matches post M-8 stamping → 765 passed / 0 failed / 28 emulator
+     skipped** (no delta expected — zero code changes, only doc relabelling). Run via
+     `export JAVA_HOME=.../temurin-23 && export PATH=$JAVA_HOME/bin:$PATH && bash scripts/run_tests.sh`.
+     Per-file breakdown matches M-8 snapshot: Non-Spark 567+28skip, test_cli.py 26, test_examples.py 9,
+     test_iceberg_catalog_config.py 34, test_iceberg_parity_and_audit.py 25,
+     test_iceberg_preflight_spike.py 1, test_maintenance.py 14, test_normalize_engine_parity.py 7,
+     test_normalize_pipeline.py 9, test_publish_cli.py 8, test_publish_models.py 8,
+     test_spark_fs_config.py 27, test_sql_iceberg_write.py 5, test_sql_models.py 25.
+     Sum = 765. Exit code 0 → TEST GATE: PASS. 8 pre-existing ENV-only
+     `JAVA_GATEWAY_EXITED` PySparkRuntimeError rows in test_maintenance.py are sandbox JVM-boot
+     (JDK 23 provisioning) only, zero code relation. ✓
+  3. **Ruff clean across all touched dirs:** `uv run ruff check src/ tests/ examples/` → 0 issues.
+     No source code touched so this is trivially true; confirmed anyway since playbook mandates
+     it after every item. ✓
+  4. **Cross-doc consistency audit: CMM §12 ↔ README Honest Boundary ↔ CMM §How to read §1/§2
+     — lineage labels are 100% aligned.** Manual 6-point check:
+     (a) CMM §12 row maturity = 🟢 Production ✓
+     (b) README Honest Boundary Lineage line says BOTH sides Production ✓
+     (c) CMM §How to read §1 — native JSONL explicitly listed as Production ✓
+     (d) CMM §How to read §2 — native JSONL NOT present (only Kafka JSONL replay Demo) ✓
+     (e) CMM §How to read §2 Demo count = 1 (matches the "1 Demo item remaining" claim in §3) ✓
+     (f) BACKLOG.md Still Todo → M-9 one-line closed summary exists with correct date + archive
+     pointer ✓. ✓
+  5. **Cold-start anchor integrity: BACKLOG.md section ordering + content contract.** Sections
+     verified in order: Resume (start here) → Session start prompt → Status snapshot →
+     Environment & Verification → Root-cause summary → Platform strengths → Accumulated Active
+     Constraints → (HR) → Work items → Still Todo → Gotchas → Continuity. Session start prompt
+     paste string still `from BACKLOG.md, continue`. Env & Verification Temurin 23 exports
+     unchanged. All 8 constraints preserved (no append/delete, only 2/2b have explicit
+     SUPERSEDED-by-constraint-8 notes already present). Gotchas 4-item list intact.
+     Continuity 3-verify claims unchanged. Anchor block comment at top preserved with correct
+     3-archive-file pointers (TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md / WORK_ITEMS_CLOSED.md /
+     STATUS_SNAPSHOT_NARRATIVES.md). ✓
+- All 5 verification points confirmed green. Second on-demand post-Tranche 2 pull closed.
+  The one remaining Demo item (JSONL Kafka replay source) is correctly scoped as a genuine
+  zero-dependency workstation convenience — its M-3 real broker Production counterpart is
+  separately documented and env-gated via `extraction.bootstrap_servers:` presence.
+
 

@@ -69,6 +69,22 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
   Orchestration line updated to `elt schedule DAG runner + 4 wrappers` M-8/G-3/M-6 all Production.
   Archive closure spec moved to WORK_ITEMS_CLOSED.md per playbook (canonical spec, rationale,
   detailed checklist, test outputs with counts + exit codes).
+- **M-9 ✅ CLOSED (2026-08-26, on-demand second pull post T2):** Bespoke native JSONL lineage
+  emitter flipped 🟠 Demo → 🟢 Production. The authoritative always-on sink at
+  `runs/.../lineage.jsonl` is now formally Production: Pydantic-validated `LineageEvent` +
+  `DatasetRef` model with structured facets; written scheme-agnostically via B-6 `StorageBackend`
+  path utilities (identical behaviour on local/S3/GCS/ADLS). Used for on-disk audit + replay
+  debugging. 13 focused tests in test_lineage_adapter.py cover write path, error-policy handling
+  (best_effort/blocking), env-var backend configuration, OpenLineage conversion + facet injection,
+  and wire-format roundtrip validation. Doc-only promotion (zero code changes): CMM §12 row
+  flipped 🟠→🟢 with explicit always-on + scheme-agnostic + test-count notes; CMM "How to read"
+  §1 Production list gains native JSONL authoritative sink entry combined with OpenLineage wire
+  export; §2 Demo list shrunk from 2 → 1 item (only JSONL Kafka replay remains as Demo). README
+  Honest Boundary Lineage line updated to "BOTH native bespoke JSONL emitter + OpenLineage wire
+  export are Production" with always-on + B-6 scheme-agnostic + 13-test bullets. Full gate
+  unchanged 765/0/28; ruff src/tests/examples clean. Archive closure spec with full decision
+  rationale, verification checklist, and exact doc-edit inventory moved to WORK_ITEMS_CLOSED.md
+  per playbook.
 - **Next work:** None pre-scoped. Pull an item forward only on concrete consumer demand.
 
 ## Session start prompt
@@ -94,10 +110,17 @@ doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
 - **Captured:** 2026-08-26 (re-stamped POST Publication Hardening Pass COMPLETE + backlog deflation
-  + **M-8 closed on-demand first pull post T2**: gate 756→765 tests, CMM §7 🟠→🟢 flipped,
-  CMM "How to read" §1 Production list extended with `elt schedule` DAG runner merged with 4 orchestrators;
-  §2 Demo list 3→2 items (JSONL Kafka replay + bespoke lineage JSONL only); README Honest Boundary
-  Orchestration line updated to M-8/G-3/M-6 Production all).
+  + **M-8 closed on-demand first pull post T2** + **M-9 closed on-demand second pull post T2**:
+  gate unchanged at 765 tests, CMM §12 🟠→🟢 flipped (bespoke JSONL lineage emitter promoted to
+  Production — always-on authoritative sink + Pydantic-validated LineageEvent/DatasetRef model +
+  B-6 scheme-agnostic write path on local/S3/GCS/ADLS + 13 focused tests green); CMM "How to read"
+  §1 Production list gains native JSONL authoritative sink entry merged with OpenLineage wire
+  export; §2 Demo list shrunk 2→1 (only JSONL Kafka replay remains Demo); README Honest Boundary
+  Lineage line updated to "BOTH native emitter + OpenLineage wire export are Production".
+  Previously M-8 close: gate 756→765 tests, CMM §7 🟠→🟢 flipped, CMM "How to read" §1 Production
+  list extended with `elt schedule` DAG runner merged with 4 orchestrators; §2 Demo list 3→2 items
+  (JSONL Kafka replay + bespoke lineage JSONL only); README Honest Boundary Orchestration line
+  updated to M-8/G-3/M-6 Production all.
   TRANCHE 2 is COMPLETE: all 28 pre-scoped items closed, 0 ⏳ Roadmap rows in CMM.
   Publication Hardening Pass (cold-start ordered) FULLY CLOSED:
   (1) ✅ B-5 emulator tests (19/19 S3 green via moto, 2 real bugs fixed, 10 GCS+ADLS = Docker user-side step),
@@ -110,6 +133,13 @@ doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/
   `schedule_execution_audit.json` with run_id + ISO timestamps + execution_order counters,
   backward-compat payload shapes (`executed_count` semantics unchanged, `jobs[]` = execution-only,
   new `skipped_jobs[]` with 3 skip-reason codes).
+  **M-9 on-demand second pull post-T2 FULLY CLOSED (2026-08-26):**
+  (5) ✅ Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production: authoritative always-on sink
+  at runs/.../lineage.jsonl, Pydantic-validated LineageEvent + DatasetRef models with facets,
+  scheme-agnostic B-6 write path (local/S3/GCS/ADLS parity), on-disk audit + replay debugging use
+  cases, 13 focused tests in test_lineage_adapter.py (write path + policy handling + env config +
+  OL conversion + roundtrip). CMM §12 row flipped; CMM How to read §1 production list extended;
+  §2 Demo list 2→1; README Honest Boundary Lineage line updated.
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -245,6 +275,7 @@ work it one-per-session, then on close move the body to the archive file and lea
 *None pre-scoped. Pull forward on concrete consumer demand only.*
 
 #### M-8 — `elt schedule` runner 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
+#### M-9 — Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 
