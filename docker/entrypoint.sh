@@ -27,7 +27,7 @@ mkdir -p \
 # Seed the reference pipeline.yaml if the config directory is empty (rare).
 if [[ ! -f "${ELT_CONFIG_DIR}/pipeline.yaml" ]]; then
   mkdir -p "${ELT_CONFIG_DIR}"
-  cp "${ELT_SHARE}/../pipeline.yaml" "${ELT_CONFIG_DIR}/pipeline.yaml" 2>/dev/null || true
+  cp "${ELT_SHARE}/pipeline.yaml" "${ELT_CONFIG_DIR}/pipeline.yaml" 2>/dev/null || true
 fi
 
 first_arg="${1:-}"

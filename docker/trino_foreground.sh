@@ -65,7 +65,7 @@ TRINO_DATA_DIR = TRINO_RUNTIME + "/data"
 TRINO_PID_DIR = TRINO_RUNTIME + "/var/run"
 
 lines = [
-    f'TRINO_HOME_DIR="{_final("trino_serving.install_dir", "/opt/trino") if False else "/opt/trino"}"',
+    f'TRINO_HOME_DIR="/opt/trino"',
     f'TRINO_RUNTIME="{TRINO_RUNTIME}"',
     f'TRINO_ETC_DIR="{TRINO_ETC_DIR}"',
     f'TRINO_DATA_DIR="{TRINO_DATA_DIR}"',

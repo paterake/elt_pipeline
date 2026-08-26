@@ -170,6 +170,7 @@ ENV ELT_PIPELINE_REPO_RUN_DIR=/var/lib/elt_pipeline \
 # container paths so `docker run … --config-path /etc/elt_pipeline/pipeline.yaml`
 # works with zero bind-mounts for the smoke demo.
 COPY pipeline.yaml /etc/elt_pipeline/pipeline.yaml
+COPY pipeline.yaml /usr/share/elt_pipeline/pipeline.yaml
 COPY examples/ /usr/share/elt_pipeline/examples/
 COPY ops/ /usr/share/elt_pipeline/ops/
 COPY docker/ /usr/share/elt_pipeline/docker/

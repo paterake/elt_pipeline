@@ -19,7 +19,7 @@ REPO_ROOT="/usr/share/elt_pipeline"
 ELT_HOME="/var/lib/elt_pipeline"
 ELT_CLI=(elt-pipeline)
 
-CONFIG="${ELT_CONFIG_PATH:-${REPO_ROOT}/../pipeline.yaml}"
+CONFIG="${ELT_PIPELINE_CONFIG_PATH:-${REPO_ROOT}/../pipeline.yaml}"
 EXAMPLE_CONFIG="/examples/configs/local_object_storage_orders.yaml"
 PACKAGE_PATH="/examples/sql/local_demo"
 PUBLISH_EXAMPLES="/examples/publish/local_demo"

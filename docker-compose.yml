@@ -37,9 +37,14 @@ x-elt-common: &elt-common
     ELT_PIPELINE_CONFIG_PATH: /etc/elt_pipeline/pipeline.yaml
     ELT_PIPELINE_ICEBERG_ENABLED: "true"
     ELT_PIPELINE_ICEBERG_CATALOG_NAME: iceberg
-    # zero-service metastore: jdbc+sqlite shared with trino service
+    # zero-service metastore: writer (Spark) + serving (Trino) BOTH use
+    # jdbc+sqlite pointing at the SAME shared file under /var/lib/elt_pipeline.
+    # This ensures that every Spark L3/L4 Iceberg write populates the shared
+    # SQLite metastore, so Trino's SHOW SCHEMAS / SHOW TABLES work instantly
+    # without needing register_table() calls.
+    ELT_PIPELINE_ICEBERG_WRITER_CATALOG_TYPE: jdbc
     ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE: jdbc
-    ELT_PIPELINE_ICEBERG_SERVING_JDBC_DRIVER: org.sqlite.JDBC
+    ELT_PIPELINE_ICEBERG_JDBC_DRIVER: org.sqlite.JDBC
     # Trino serving env (used by ops/trino_serving/run_trino.sh inside the
     # container and also by the trino service below via env inheritance).
     ELT_PIPELINE_TRINO_HOST: 0.0.0.0

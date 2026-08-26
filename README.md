@@ -1,8 +1,157 @@
 # elt_pipeline
 
-Client-neutral, configuration-driven runtime for a governed data platform.
+> A 5-layer configuration-driven ELT runtime for a governed, replayable,
+> zero-service Apache Iceberg lakehouse on your laptop.
+> **L1 raw → L2 normalized → L3 canonical → L4 marts → L5 exports → Trino SQL.**
+>
+> Paste ≤5 commands and you have a queryable modern lakehouse.
+> No Hive metastore, no Glue crawler, no Nessie, no Kyuubi, no Docker Compose
+> if you don't want it — just a shared SQLite JDBC metastore, Spark 4.1, and
+> Trino 468, all driven from a single YAML file.
 
-**Honest scope at a glance:** [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md) — classifies every feature as 🟢 Production / 🟠 Demo / ⏳ Roadmap.
+**Maturity at a glance:** [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md) — every feature is classified 🟢 Production / 🟠 Demo. **No pre-scoped ⏳ roadmap rows remain.**
+
+---
+
+## Architecture (30 seconds)
+
+```
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │                     CONFIG-DRIVEN ELT PIPELINE                          │
+ │                                                                        │
+ │  Ingest (CLI)    Normalize (Spark)    SQL (Spark Iceberg)   Maintain  │
+ │  ──────────     ─────────────────     ──────────────────    ────────   │
+ │  REST / SQL /   │  L1 raw → L2  │     │  L2 → L3 canonical │  compact │
+ │  object_sto. /  │  parquet +    │────▶│  L2 → L4 marts     │  expire  │
+ │  Kafka          │  MappingCat.   │     │  Apache Iceberg    │  orphan  │
+ │                 └────────────────┘     └─────────┬──────────┘  rewrite │
+ │                                                  │ Iceberg metadata     │
+ │                                                  ▼                      │
+ │  Publish (CLI)  ────────────  L5 exports (CSV / JSONL / TSV / ZIP)     │
+ │                                                  ▲                      │
+ │                                                  │ shared SQLite        │
+ │                         6 writer catalogs        │ JDBC metastore       │
+ │                    (hadoop/jdbc/rest/nessie/     │ + warehouse/ dir     │
+ │                     hive_metastore/glue)         │                      │
+ └──────────────────────────────────────────────────┼──────────────────────┘
+                                                    │
+                         Trino 468 JDBC serving    │
+                         (7 catalog bindings)      ▼
+                            ──────────────      SHOW SCHEMAS;
+                            SELECT ... FROM   SELECT * FROM
+                            iceberg.sales.    sales.order_summary;
+                            canonical_orders
+```
+
+Every arrow above is a **CLI subcommand**. No orchestrator, no scheduler, no
+broker, no metastore service required on a workstation. Swap the catalog
+binding via one env var and the same pipeline runs against Unity Catalog /
+Nessie / Glue / Hive Metastore / any JDBC database in production.
+
+---
+
+## Quick Start — Two Paths
+
+Pick **one**. Docker is fewer steps; no-Docker is for Python-native engineers
+who already have `uv` and a JDK.
+
+### Path A — Docker (3 commands → queryable Iceberg + Trino)
+
+```bash
+# 1. Build the image (Spark 4.1.2, Trino 468, Temurin 23, Python 3.11)
+docker compose build
+
+# 2. Run the end-to-end demo: ingest → normalize → sql (Iceberg) → maintain
+docker compose run --rm demo
+
+# 3. Boot Trino in the background and wait ~30s for the healthcheck
+docker compose up -d trino
+```
+
+**Query it.** Paste one command to get a Trino shell, then open
+[examples/queries/trino_medium_article.sql](examples/queries/trino_medium_article.sql)
+and copy-paste queries one-by-one:
+
+```bash
+docker compose exec trino trino --catalog iceberg
+```
+
+Expected first output (you should see `sales` and `inventory` immediately —
+no `register_table()` required):
+
+```
+trino:iceberg> SHOW SCHEMAS;
+   Schema
+-------------
+ inventory
+ sales
+(2 rows)
+```
+
+### Path B — No-Docker (uv + Temurin 23 JDK)
+
+Requires:
+- [`uv`](https://github.com/astral-sh/uv) for Python package management
+- [Temurin 23 JDK](https://adoptium.net/temurin/releases/?version=23) with
+  `JAVA_HOME` set (Spark + Trino both need a full JDK)
+
+```bash
+# 1. Install Python deps + Spark + optional drivers
+uv sync --extra dev --extra spark
+
+# 2. Point at the JDK
+export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# 3. L1 (raw landing) + L2 (parquet + MappingCatalog)
+uv run elt-pipeline ingest run \
+    examples/configs/local_object_storage_orders.yaml
+uv run elt-pipeline normalize run \
+    examples/configs/local_object_storage_orders.yaml
+
+# 4. L3 canonical Iceberg + L4 marts (2026-01 window, sales domain)
+uv run elt-pipeline sql run \
+    --include-deps --environment workstation \
+    --start-date 2026-01-01 --end-date 2026-01-31 --domain sales \
+    --iceberg-enabled examples/sql/local_demo
+
+# 5. Start Trino serving in the foreground (new terminal)
+uv run elt-pipeline trino start-foreground
+```
+
+**Query it** from a third terminal using any Trino 468 CLI:
+
+```bash
+trino --catalog iceberg --server http://127.0.0.1:8080
+```
+
+Then open
+[examples/queries/trino_medium_article.sql](examples/queries/trino_medium_article.sql)
+— all 6 query groups work against both Docker and no-Docker paths.
+
+---
+
+## 6 Copy-Paste Trino Queries (the "Medium article" section)
+
+Open [examples/queries/trino_medium_article.sql](examples/queries/trino_medium_article.sql)
+for the fully-commented version. The short version — paste these into your
+Trino shell after the Quick Start:
+
+| # | What it shows | Query to paste |
+|---|---|---|
+| 1 | **Discovery** — what schemas exist? | `SHOW SCHEMAS; SHOW TABLES FROM sales;` |
+| 2 | **L4 mart** — the BI-ready aggregation | `SELECT * FROM sales.order_summary ORDER BY order_date;` |
+| 3 | **L3 canonical** — row-level orders + top customer | `SELECT customer_id, customer_name, SUM(order_total_usd) FROM sales.canonical_orders GROUP BY 1,2 ORDER BY 3 DESC;` |
+| 4 | **Cross-domain** — orders ⋈ shipments fulfillment view | `SELECT o.order_id, o.customer_name, s.carrier, s.tracking_number, s.ship_date FROM sales.canonical_orders o LEFT JOIN inventory.canonical_shipments s ON s.order_id = o.order_id;` |
+| 5 | **Iceberg metadata** — versioned snapshot audit | `SELECT committed_at, operation, snapshot_id FROM iceberg.sales."canonical_orders$snapshots" ORDER BY 1 DESC;` |
+| 6 | **Gate check** — row counts across all layers | `… UNION ALL …` (see file) → expects 2/2/2 rows |
+
+Expected counts for the bundled demo:
+- `sales.canonical_orders`: **2 rows** (Alice A-100 $10 / Bob A-200 $25)
+- `inventory.canonical_shipments`: **2 rows** (S-100 / S-200 via `acme_freight`)
+- `sales.order_summary`: **2 rows** (2026-01-01 $10 / 2026-01-02 $25)
+
+---
 
 `elt_pipeline` is not only an ingestion and transformation tool. It is a governed data platform runtime for moving data through explicit architectural levels with strong auditability, lineage, metadata discipline, replayability, and access-control boundaries.
 
@@ -16,6 +165,9 @@ The platform is designed to align with DAMA-DMBOK v2 principles for:
 - operational auditability
 
 The repository does not claim that DAMA-DMBOK v2 prescribes the exact `level1` through `level5` naming used here. Instead, those levels are the platform's chosen architecture model for operationalizing DMBOK-aligned concerns in a concrete implementation.
+
+---
+
 
 ## Current Scope and Capabilities (Honest Boundary)
 

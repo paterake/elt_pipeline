@@ -363,6 +363,36 @@ def _materialize(
         ("iceberg_writer", "hive_metastore_uri"),
         "",
     )
+    writer_conf["jdbc_driver"] = _final(
+        env.iceberg_jdbc_driver,
+        ("iceberg_writer", "jdbc_driver"),
+        "org.sqlite.JDBC",
+    )
+    writer_conf["jdbc_schema_version"] = _final(
+        env.iceberg_jdbc_schema_version,
+        ("iceberg_writer", "jdbc_schema_version"),
+        "V1",
+    )
+    writer_conf["jdbc_jars_extra"] = _final(
+        env.iceberg_jdbc_jars_extra,
+        ("iceberg_writer", "jdbc_jars_extra"),
+        "",
+    )
+    _wct = str(writer_conf.get("catalog_type") or "").lower()
+    _wuri = str(writer_conf.get("catalog_uri") or "").strip()
+    _wdrv = str(writer_conf.get("jdbc_driver") or "").lower()
+    if (
+        _wct == "jdbc"
+        and not _wuri
+        and "sqlite" in _wdrv
+        and repo_run_dir is not None
+    ):
+        _elt_run = (repo_run_dir / paths.repo_run_results_elt_relpath).as_posix()
+        _tmpl = cat.workstation_default_serving_jdbc_sqlite_uri_template
+        try:
+            writer_conf["catalog_uri"] = _tmpl.format(repo_run_elt_dir=_elt_run)
+        except Exception:  # noqa: BLE001 — never crash materializer due to bad template
+            pass
     writer_conf["catalog_impl_override"] = _final(
         None,
         ("iceberg_writer", "catalog_impl_override"),
