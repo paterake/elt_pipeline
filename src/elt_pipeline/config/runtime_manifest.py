@@ -63,6 +63,17 @@ class EnvVarNames:
     trino_version: str = "ELT_PIPELINE_TRINO_VERSION"
     trino_jvm_xms_mb: str = "ELT_PIPELINE_TRINO_JVM_XMS_MB"
     trino_jvm_xmx_mb: str = "ELT_PIPELINE_TRINO_JVM_XMX_MB"
+    trino_http_auth_type: str = "ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE"
+    trino_https_enabled: str = "ELT_PIPELINE_TRINO_HTTPS_ENABLED"
+    trino_https_port: str = "ELT_PIPELINE_TRINO_HTTPS_PORT"
+    trino_ssl_keystore_path: str = "ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH"
+    trino_ssl_keystore_password: str = "ELT_PIPELINE_TRINO_SSL_KEYSTORE_PASSWORD"
+    trino_ssl_truststore_path: str = "ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PATH"
+    trino_ssl_truststore_password: str = "ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PASSWORD"
+    trino_password_file_path: str = "ELT_PIPELINE_TRINO_PASSWORD_FILE_PATH"
+    trino_krb5_conf: str = "ELT_PIPELINE_TRINO_KRB5_CONF"
+    trino_kerberos_principal: str = "ELT_PIPELINE_TRINO_KERBEROS_PRINCIPAL"
+    trino_kerberos_keytab: str = "ELT_PIPELINE_TRINO_KERBEROS_KEYTAB"
 
     # Publish runtime
     publish_max_rows: str = "ELT_PIPELINE_PUBLISH_MAX_ROWS"
@@ -239,6 +250,16 @@ class ServingDefaults:
     default_coordinator: bool = True
     default_include_coordinator: bool = True
     default_http_server_authentication_type: str = "none"
+    default_https_enabled: bool = False
+    default_https_port: int = 8443
+    default_ssl_keystore_path: str = ""
+    default_ssl_keystore_password: str = ""
+    default_ssl_truststore_path: str = ""
+    default_ssl_truststore_password: str = ""
+    default_password_file_path: str = ""
+    default_krb5_conf: str = ""
+    default_kerberos_principal: str = ""
+    default_kerberos_keytab: str = ""
     default_node_environment: str = "elt_pipeline_iceberg"
     # fs.hadoop.enabled=true registers the Hadoop-backed file:// scheme factory
     # inside Trino 468 SwitchingFileSystem; required for local POSIX file loads.

@@ -442,9 +442,63 @@ def _materialize(
         )
     )
     trino_conf["http_authentication_type"] = _final(
-        None,
+        env.trino_http_auth_type,
         ("trino_serving", "http_authentication_type"),
         serv.default_http_server_authentication_type,
+    )
+    trino_conf["https_enabled"] = bool(
+        _final(
+            env.trino_https_enabled,
+            ("trino_serving", "https_enabled"),
+            serv.default_https_enabled,
+        )
+    )
+    trino_conf["https_port"] = int(
+        _final(
+            env.trino_https_port,
+            ("trino_serving", "https_port"),
+            serv.default_https_port,
+        )
+    )
+    trino_conf["ssl_keystore_path"] = _final(
+        env.trino_ssl_keystore_path,
+        ("trino_serving", "ssl_keystore_path"),
+        serv.default_ssl_keystore_path,
+    )
+    trino_conf["ssl_keystore_password"] = _final(
+        env.trino_ssl_keystore_password,
+        ("trino_serving", "ssl_keystore_password"),
+        serv.default_ssl_keystore_password,
+    )
+    trino_conf["ssl_truststore_path"] = _final(
+        env.trino_ssl_truststore_path,
+        ("trino_serving", "ssl_truststore_path"),
+        serv.default_ssl_truststore_path,
+    )
+    trino_conf["ssl_truststore_password"] = _final(
+        env.trino_ssl_truststore_password,
+        ("trino_serving", "ssl_truststore_password"),
+        serv.default_ssl_truststore_password,
+    )
+    trino_conf["password_file_path"] = _final(
+        env.trino_password_file_path,
+        ("trino_serving", "password_file_path"),
+        serv.default_password_file_path,
+    )
+    trino_conf["krb5_conf"] = _final(
+        env.trino_krb5_conf,
+        ("trino_serving", "krb5_conf"),
+        serv.default_krb5_conf,
+    )
+    trino_conf["kerberos_principal"] = _final(
+        env.trino_kerberos_principal,
+        ("trino_serving", "kerberos_principal"),
+        serv.default_kerberos_principal,
+    )
+    trino_conf["kerberos_keytab"] = _final(
+        env.trino_kerberos_keytab,
+        ("trino_serving", "kerberos_keytab"),
+        serv.default_kerberos_keytab,
     )
     trino_conf["coordinator"] = bool(
         _final(

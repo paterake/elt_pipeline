@@ -625,6 +625,117 @@ if failed:
 
 All checks are pure-unit-testable (no JVM / no real network): HTTP/TCP/boto3 are fully mocked with `unittest.mock.patch` in the 50-test suite.
 
+## Trino Authentication & TLS (M-4)
+
+The M-4 Trino auth surface turns the default **insecure workstation-mode**
+Trino 468 JDBC serving endpoint (http-only, `authentication.type=none`,
+localhost-only binding) into a **Production-grade, env-var-driven HTTPS/TLS
++ 6-auth-type serving config** that is 100% backward-compatible (zero env
+var changes = zero behavior change vs pre-M-4).
+
+All 11 tunables are centralized in `EnvVarNames` dataclass in
+`src/elt_pipeline/config/runtime_manifest.py`; the full 4-tier config
+cascade applies: **CLI arg > `ELT_PIPELINE_TRINO_*` env var > pipeline YAML
+RuntimeTrinoServingConfig fields > manifest-frozen ServingDefaults**.
+
+### Centralized env var inventory
+
+| Env var name | Values / shape | Default manifest floor |
+|---|---|---|
+| `ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE` | `"password"` / `"certificate"` / `"kerberos"` / `"jwt"` / `"oauth2"` / `"form"` / `""` / `"none"` / `"disabled"` / `"insecure"` (case-insensitive) | `""` (insecure workstation default — no auth lines emitted) |
+| `ELT_PIPELINE_TRINO_HTTPS_ENABLED` | Boolean string: `"true"` / `"1"` / `"yes"` → enabled; anything else → disabled | `False` (HTTP-only default, unchanged pre-M-4) |
+| `ELT_PIPELINE_TRINO_HTTPS_PORT` | Integer port | `8443` |
+| `ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH` | Absolute path to JKS/PKCS#12 keystore file | `""` — required when HTTPS=enabled |
+| `ELT_PIPELINE_TRINO_SSL_KEYSTORE_PASSWORD` | Keystore passphrase string | `""` — required when HTTPS=enabled |
+| `ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PATH` | Absolute path to truststore (enterprise PKI client-ca bundle — *optional*) | `""` |
+| `ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PASSWORD` | Truststore passphrase (*optional, required with truststore path*) | `""` |
+| `ELT_PIPELINE_TRINO_PASSWORD_FILE_PATH` | Absolute path to `htpasswd`-style Trino password auth file | `""` — required when auth_type=password |
+| `ELT_PIPELINE_TRINO_KRB5_CONF` | Absolute path to `/etc/krb5.conf` style Kerberos config (*optional*) | `""` |
+| `ELT_PIPELINE_TRINO_KERBEROS_PRINCIPAL` | Kerberos principal, e.g. `HTTP/trino.example.com@EXAMPLE.COM` — required when auth_type=kerberos | `""` |
+| `ELT_PIPELINE_TRINO_KERBEROS_KEYTAB` | Absolute path to Kerberos keytab file — required when auth_type=kerberos | `""` |
+
+### Example 1: Password auth + HTTPS (common enterprise workstation self-host)
+
+Generate the password file + PKCS#12 keystore once, then export and run:
+
+```bash
+# 1. Create htpasswd password file (BCrypt entries — `htpasswd` from `apache2-utils` or `python3 -c 'import bcrypt; …'`)
+htpasswd -B -c .ignore/trino_passwords bcrypt   # first user; prompt for password; re-run without -c to append
+# 2. Generate a self-signed PKCS#12 keystore for HTTPS (replace CN with your hostname for enterprise PKI)
+keytool -genkeypair -alias trino \
+  -keyalg RSA -keysize 2048 -validity 3650 \
+  -storetype PKCS#12 -keystore .ignore/trino_keystore.p12 \
+  -dname "CN=localhost, OU=Analytics, O=Acme, L=NYC, ST=NY, C=US" \
+  -storepass "change-me-enterprise-pki-123" -keypass "change-me-enterprise-pki-123"
+
+# 3. Export and invoke write-configs (or foreground serve)
+export ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE="password"
+export ELT_PIPELINE_TRINO_PASSWORD_FILE_PATH="$(pwd)/.ignore/trino_passwords"
+export ELT_PIPELINE_TRINO_HTTPS_ENABLED="true"
+export ELT_PIPELINE_TRINO_HTTPS_PORT="8443"
+export ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH="$(pwd)/.ignore/trino_keystore.p12"
+export ELT_PIPELINE_TRINO_SSL_KEYSTORE_PASSWORD="change-me-enterprise-pki-123"
+
+bash ops/trino_serving/run_trino.sh write-configs
+# → emits config.properties with: https.enabled=true, https.port=8443, https.keystore.path/key set,
+#   http-server.authentication.type=PASSWORD, password.file set, internal-communication.shared-secret generated.
+```
+
+### Example 2: Kerberos auth (enterprise Active Directory / IPA integration)
+
+Point at your krb5.conf, principal and deployed keytab from your PKI team:
+
+```bash
+export ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE="kerberos"
+export ELT_PIPELINE_TRINO_KRB5_CONF="/etc/krb5.conf"
+export ELT_PIPELINE_TRINO_KERBEROS_PRINCIPAL="HTTP/trino-prod-01.corp.example.com@CORP.EXAMPLE.COM"
+export ELT_PIPELINE_TRINO_KERBEROS_KEYTAB="/etc/security/keytabs/trino.service.keytab"
+# Optional — serve under HTTPS too (combine with Example 1 keystore exports):
+export ELT_PIPELINE_TRINO_HTTPS_ENABLED="true"
+export ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH="/etc/pki/java/trino.p12"
+export ELT_PIPELINE_TRINO_SSL_KEYSTORE_PASSWORD="corp-pki-issued-pass"
+
+bash ops/trino_serving/run_trino.sh write-configs
+# Principal is auto-parsed: service-name=HTTP, principal-host=trino-prod-01.corp.example.com;
+# krb5.config line is optional (emitted only when ELT_PIPELINE_TRINO_KRB5_CONF is set);
+# user-mapping.pattern is always emitted = (.*)@.* so usernames are stripped of @REALM for lookups.
+```
+
+### Fail-fast script exit codes (bash write-configs validators BEFORE any file write)
+
+`ops/trino_serving/run_trino.sh write-configs` exits non-zero **before**
+writing any output config if a required M-4 input is missing or invalid.
+This mirrors the Python `build_trino_serving_configs(validate=True)` path's
+sharp `PipelineError` codes 1:1 so triage is identical whether you invoke
+through the framework or shell:
+
+| Exit code | Trigger | Includes in error output |
+|---|---|---|
+| `12` | auth_type=password but password-file path missing, OR path set but file not on disk | recipe for `htpasswd -B -c …` to create one |
+| `13` | auth_type=kerberos but principal and/or keytab missing; or keytab path set but file not on disk | bullet list of which of the two fields is missing |
+| `14` | HTTPS_ENABLED=true but SSL_KEYSTORE_PATH and/or SSL_KEYSTORE_PASSWORD missing; or keystore path set but file not on disk | `keytool -genkeypair …` recipe to generate a self-signed PKCS#12 keystore |
+
+The corresponding Python `PipelineError.error_code` constants for framework
+callers are: `TRINO_PASSWORD_AUTH_VALID_FILE_EXISTS` → exit 12;
+`TRINO_KERBEROS_AUTH_INCOMPLETE` → exit 13; `TRINO_SSL_KEYSTORE_REQUIRED`
+→ exit 14. Full test-backed invocations live in
+`tests/test_trino_serving_config.py` (27 tests, 9 classes).
+
+### Passthrough auth types (JWT / OAuth2 / Form / Certificate)
+
+The 4 remaining auth types — `jwt`, `oauth2`, `form`, `certificate` — are
+**passthrough from M-4's perspective**: `ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE`
+is emitted verbatim into `http-server.authentication.type=…` in
+`config.properties`, the `eltp-…` internal-communication shared-secret is
+generated and written, and NO extra enterprise-specific keys are emitted
+(token issuer, JWKS URL, OAuth2 client id/secret, Form action page,
+certificate trust chains). Those are deliberately delegated to follow-up
+per-deployment config patches inside the Trino `etc/` directory (or
+subsequent BACKLOG pulls) because every enterprise has a bespoke IdP
+(OIDC/SAML/Entra-ID/Ping/etc.); M-4 guarantees the *routing* (type line +
+shared-secret + TLS) is Production-grade and centrally env-driven so your
+IdP-specific patch only has to add the IdP keys on top.
+
 ## Object Storage JSON
 
 ```bash

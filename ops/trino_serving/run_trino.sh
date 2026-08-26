@@ -23,6 +23,23 @@
 #   ELT_PIPELINE_TRINO_PORT              HTTP port, default 8080.
 #   ELT_PIPELINE_TRINO_HOST              Bind host, default 127.0.0.1.
 #   ELT_PIPELINE_TRINO_VERSION           Default 468 (matches manifest).
+#
+#   --- Trino authentication & TLS (BACKLOG item M-4) ---
+#   Current default is http-only + no-auth for zero-dependency demos.
+#   Set the vars below for production-grade security.
+#   auth_type ∈ {password | certificate | kerberos | jwt | oauth2 | form}.
+#   ELT_PIPELINE_TRINO_HTTP_AUTH_TYPE  Authentication type. Default "none".
+#   ELT_PIPELINE_TRINO_HTTPS_ENABLED   Set to "1" / "true" to enable TLS.
+#   ELT_PIPELINE_TRINO_HTTPS_PORT      HTTPS port when enabled (default 8443).
+#   ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH    Path to JKS/PKCS12 keystore.
+#   ELT_PIPELINE_TRINO_SSL_KEYSTORE_PASSWORD Keystore password.
+#   ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PATH  Optional truststore path for mTLS.
+#   ELT_PIPELINE_TRINO_SSL_TRUSTSTORE_PASSWORD  Truststore password.
+#   ELT_PIPELINE_TRINO_PASSWORD_FILE_PATH   htpasswd-style file (auth_type=password).
+#   ELT_PIPELINE_TRINO_KRB5_CONF            Kerberos krb5.conf path (auth_type=kerberos).
+#   ELT_PIPELINE_TRINO_KERBEROS_PRINCIPAL   Kerberos service principal HTTP/_host@REALM.
+#   ELT_PIPELINE_TRINO_KERBEROS_KEYTAB      Kerberos service keytab path.
+#
 #   ELT_PIPELINE_ICEBERG_WAREHOUSE_DIR   Iceberg warehouse dir (default:
 #                                        $repo_run_parent/warehouse/iceberg).
 #   ELT_PIPELINE_ICEBERG_SERVING_CATALOG_TYPE
@@ -190,6 +207,27 @@ emit("VAR_FINAL_NODE_ENVIRONMENT",  _final("trino_serving.node_environment",
                                        M.serving.default_node_environment))
 emit("VAR_FINAL_HTTP_AUTH_TYPE",    _final("trino_serving.http_authentication_type",
                                        M.serving.default_http_server_authentication_type))
+emit_bool("VAR_FINAL_HTTPS_ENABLED",
+          bool(_final("trino_serving.https_enabled",
+                     M.serving.default_https_enabled)))
+emit("VAR_FINAL_HTTPS_PORT",        _final("trino_serving.https_port",
+                                       M.serving.default_https_port))
+emit("VAR_FINAL_SSL_KEYSTORE_PATH", _final("trino_serving.ssl_keystore_path",
+                                       M.serving.default_ssl_keystore_path))
+emit("VAR_FINAL_SSL_KEYSTORE_PW",   _final("trino_serving.ssl_keystore_password",
+                                       M.serving.default_ssl_keystore_password))
+emit("VAR_FINAL_SSL_TRUSTSTORE_PATH", _final("trino_serving.ssl_truststore_path",
+                                       M.serving.default_ssl_truststore_path))
+emit("VAR_FINAL_SSL_TRUSTSTORE_PW",   _final("trino_serving.ssl_truststore_password",
+                                       M.serving.default_ssl_truststore_password))
+emit("VAR_FINAL_PASSWORD_FILE_PATH",  _final("trino_serving.password_file_path",
+                                       M.serving.default_password_file_path))
+emit("VAR_FINAL_KRB5_CONF",           _final("trino_serving.krb5_conf",
+                                       M.serving.default_krb5_conf))
+emit("VAR_FINAL_KERBEROS_PRINCIPAL",  _final("trino_serving.kerberos_principal",
+                                       M.serving.default_kerberos_principal))
+emit("VAR_FINAL_KERBEROS_KEYTAB",     _final("trino_serving.kerberos_keytab",
+                                       M.serving.default_kerberos_keytab))
 emit_bool("VAR_FINAL_COORDINATOR",                  bool(_final("trino_serving.coordinator",
                                                         M.serving.default_coordinator)))
 emit_bool("VAR_FINAL_INCLUDE_COORDINATOR",          bool(_final("trino_serving.include_coordinator",
@@ -496,17 +534,142 @@ EOF
 EOF
   _coordinator_bool="false"; [[ "${VAR_FINAL_COORDINATOR}" == "1" ]] && _coordinator_bool="true"
   _include_coord_bool="false"; [[ "${VAR_FINAL_INCLUDE_COORDINATOR}" == "1" ]] && _include_coord_bool="true"
-  _shared_secret="$(dd if=/dev/urandom bs=1 count=16 2>/dev/null | base64 2>/dev/null || echo 'eltp-dev-static-shared-secret')"
-  _http_auth_line=""
+  _auth_enabled=0
   case "${VAR_FINAL_HTTP_AUTH_TYPE}" in
-    ""|none|disabled|insecure) ;;
-    *) _http_auth_line="http-server.authentication.type=${VAR_FINAL_HTTP_AUTH_TYPE}" ;;
+    ""|none|disabled|insecure) _auth_enabled=0 ;;
+    *) _auth_enabled=1 ;;
   esac
+
+  # --- Fail-fast auth / TLS pre-validation ----------------------------------
+  if [[ "${_auth_enabled}" == "1" ]]; then
+    _auth_lc="$(printf '%s' "${VAR_FINAL_HTTP_AUTH_TYPE}" | tr '[:upper:]' '[:lower:]')"
+    case "${_auth_lc}" in
+      password)
+        if [[ -z "${VAR_FINAL_PASSWORD_FILE_PATH}" ]]; then
+          echo "ERROR [run_trino.sh]: Trino auth_type=password requires password-file path." >&2
+          echo "  Set ELT_PIPELINE_TRINO_PASSWORD_FILE_PATH to an absolute path of a" >&2
+          echo "  htpasswd-style file (BCrypt hashes, format: username:password_hash)." >&2
+          exit 12
+        fi
+        if [[ ! -f "${VAR_FINAL_PASSWORD_FILE_PATH}" ]]; then
+          echo "ERROR [run_trino.sh]: password auth configured but password-file not found:" >&2
+          echo "  ${VAR_FINAL_PASSWORD_FILE_PATH}" >&2
+          echo "  Create it with htpasswd -B -C 10 <file> <username>." >&2
+          exit 12
+        fi
+        ;;
+      kerberos)
+        _kb_missing=()
+        [[ -z "${VAR_FINAL_KERBEROS_PRINCIPAL}" ]] && _kb_missing+=("kerberos_principal (ELT_PIPELINE_TRINO_KERBEROS_PRINCIPAL)")
+        [[ -z "${VAR_FINAL_KERBEROS_KEYTAB}" ]] && _kb_missing+=("kerberos_keytab (ELT_PIPELINE_TRINO_KERBEROS_KEYTAB)")
+        if ((${#_kb_missing[@]} > 0)); then
+          echo "ERROR [run_trino.sh]: Trino auth_type=kerberos missing required fields:" >&2
+          for m in "${_kb_missing[@]}"; do echo "  - ${m}" >&2; done
+          exit 13
+        fi
+        if [[ ! -f "${VAR_FINAL_KERBEROS_KEYTAB}" ]]; then
+          echo "ERROR [run_trino.sh]: Kerberos keytab file not found:" >&2
+          echo "  ${VAR_FINAL_KERBEROS_KEYTAB}" >&2
+          exit 13
+        fi
+        ;;
+    esac
+  fi
+  if [[ "${VAR_FINAL_HTTPS_ENABLED}" == "1" ]]; then
+    _https_missing=()
+    [[ -z "${VAR_FINAL_SSL_KEYSTORE_PATH}" ]] && _https_missing+=("ssl_keystore_path (ELT_PIPELINE_TRINO_SSL_KEYSTORE_PATH)")
+    [[ -z "${VAR_FINAL_SSL_KEYSTORE_PW}" ]] && _https_missing+=("ssl_keystore_password (ELT_PIPELINE_TRINO_SSL_KEYSTORE_PASSWORD)")
+    if ((${#_https_missing[@]} > 0)); then
+      echo "ERROR [run_trino.sh]: Trino HTTPS enabled but missing required fields:" >&2
+      for m in "${_https_missing[@]}"; do echo "  - ${m}" >&2; done
+      exit 14
+    fi
+    if [[ ! -f "${VAR_FINAL_SSL_KEYSTORE_PATH}" ]]; then
+      echo "ERROR [run_trino.sh]: SSL keystore file not found:" >&2
+      echo "  ${VAR_FINAL_SSL_KEYSTORE_PATH}" >&2
+      echo "  Generate with: keytool -genkeypair -alias trino -keyalg RSA \\" >&2
+      echo "    -keystore ${VAR_FINAL_SSL_KEYSTORE_PATH} -storepass <password> \\" >&2
+      echo "    -dname CN=${VAR_FINAL_TRINO_HOST:-$(hostname)}" >&2
+      exit 14
+    fi
+  fi
+
+  _shared_secret=""
+  if [[ "${_auth_enabled}" == "1" ]]; then
+    _shared_secret="$(dd if=/dev/urandom bs=1 count=16 2>/dev/null | base64 2>/dev/null || echo 'eltp-dev-static-shared-secret')"
+  fi
+
+  _http_auth_line=""
+  if [[ "${_auth_enabled}" == "1" ]]; then
+    _http_auth_line="http-server.authentication.type=${VAR_FINAL_HTTP_AUTH_TYPE}"
+  fi
+
+  _https_block=""
+  if [[ "${VAR_FINAL_HTTPS_ENABLED}" == "1" ]]; then
+    _https_block=$(cat <<HTTPS_EOF
+http-server.https.enabled=true
+http-server.https.port=${VAR_FINAL_HTTPS_PORT}
+http-server.https.keystore.path=${VAR_FINAL_SSL_KEYSTORE_PATH}
+http-server.https.keystore.key=${VAR_FINAL_SSL_KEYSTORE_PW}
+HTTPS_EOF
+)
+    if [[ -n "${VAR_FINAL_SSL_TRUSTSTORE_PATH}" ]]; then
+      _https_block="${_https_block}
+http-server.https.truststore.path=${VAR_FINAL_SSL_TRUSTSTORE_PATH}"
+    fi
+    if [[ -n "${VAR_FINAL_SSL_TRUSTSTORE_PW}" ]]; then
+      _https_block="${_https_block}
+http-server.https.truststore.key=${VAR_FINAL_SSL_TRUSTSTORE_PW}"
+    fi
+  else
+    _https_block="http-server.https.enabled=false"
+  fi
+
+  _password_auth_block=""
+  if [[ "${_auth_enabled}" == "1" ]]; then
+    _auth_lc="$(printf '%s' "${VAR_FINAL_HTTP_AUTH_TYPE}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${_auth_lc}" == "password" ]]; then
+      _password_auth_block="http-server.authentication.password.file=${VAR_FINAL_PASSWORD_FILE_PATH}"
+    fi
+  fi
+
+  _kerberos_auth_block=""
+  if [[ "${_auth_enabled}" == "1" ]]; then
+    _auth_lc="$(printf '%s' "${VAR_FINAL_HTTP_AUTH_TYPE}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${_auth_lc}" == "kerberos" ]]; then
+      _svcname="${VAR_FINAL_KERBEROS_PRINCIPAL%%/*}"
+      _svcname="${_svcname%%@*}"
+      _phost="${VAR_FINAL_KERBEROS_PRINCIPAL#*/}"
+      if [[ "${_phost}" != "${VAR_FINAL_KERBEROS_PRINCIPAL}" ]]; then
+        _phost="${_phost%%@*}"
+      else
+        _phost="${TRINO_HOST}"
+      fi
+      _kerberos_auth_block=$(cat <<KRB5_EOF
+http-server.authentication.krb5.service-name=${_svcname}
+http-server.authentication.krb5.principal-host=${_phost}
+http-server.authentication.krb5.keytab=${VAR_FINAL_KERBEROS_KEYTAB}
+KRB5_EOF
+)
+      if [[ -n "${VAR_FINAL_KRB5_CONF}" ]]; then
+        _kerberos_auth_block="${_kerberos_auth_block}
+http-server.authentication.krb5.config=${VAR_FINAL_KRB5_CONF}"
+      fi
+      _kerberos_auth_block="${_kerberos_auth_block}
+http-server.authentication.krb5.user-mapping.pattern=(.*)@.*"
+    fi
+  fi
+
+  _shared_secret_line=""
+  if [[ "${_auth_enabled}" == "1" && -n "${_shared_secret}" ]]; then
+    _shared_secret_line="internal-communication.shared-secret=eltp-${_shared_secret}"
+  fi
+
   cat > "${TRINO_ETC_DIR}/config.properties" <<EOF
 coordinator=${_coordinator_bool}
 node-scheduler.include-coordinator=${_include_coord_bool}
 http-server.http.port=${TRINO_PORT}
-http-server.https.enabled=false
+${_https_block}
 discovery.uri=http://${TRINO_HOST}:${TRINO_PORT}
 plugin.dir=${plugin_dir}
 web-ui.enabled=false
@@ -515,9 +678,12 @@ query.max-memory-per-node=2GB
 node.internal-address=${TRINO_HOST}
 node.environment=${VAR_FINAL_NODE_ENVIRONMENT}
 ${_http_auth_line}
-internal-communication.shared-secret=eltp-${_shared_secret}
+${_password_auth_block}
+${_kerberos_auth_block}
+${_shared_secret_line}
 EOF
-  unset _coordinator_bool _include_coord_bool _shared_secret _http_auth_line
+  unset _coordinator_bool _include_coord_bool _shared_secret _http_auth_line _auth_enabled
+  unset _https_block _password_auth_block _kerberos_auth_block _shared_secret_line
   mkdir -p -- "${TRINO_ETC_DIR}/catalog"
   cat > "${TRINO_ETC_DIR}/catalog/${ICEBERG_CATALOG_NAME}.properties" <<EOF
 connector.name=iceberg

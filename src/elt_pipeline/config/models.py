@@ -62,6 +62,16 @@ class RuntimeTrinoServingConfig(BaseModel):
     port: int | None = None
     version: str | None = None
     http_authentication_type: str | None = None
+    https_enabled: bool | None = None
+    https_port: int | None = None
+    ssl_keystore_path: str | None = None
+    ssl_keystore_password: str | None = None
+    ssl_truststore_path: str | None = None
+    ssl_truststore_password: str | None = None
+    password_file_path: str | None = None
+    krb5_conf: str | None = None
+    kerberos_principal: str | None = None
+    kerberos_keytab: str | None = None
     coordinator: bool | None = None
     include_coordinator: bool | None = None
     node_environment: str | None = None
