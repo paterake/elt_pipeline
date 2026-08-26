@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from typing import Any
 
 from elt_pipeline.ingest.connectors.sql import (
-    SqlConnectionDriver,
     SqlConnectorBase,
     SqlConnectorConfig,
+    SqlDbDriver,
     SqlPreparedQuery,
     SqlQueryResult,
+    _build_db_driver,
 )
 from elt_pipeline.ingest.models import Level1ArtifactManifest
 from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalLevel1Writer
-from elt_pipeline.shared.errors import ConfigValidationError
 from elt_pipeline.shared.runtime import RunContext
 
 
@@ -26,23 +26,25 @@ class LocalSqlConnector(SqlConnectorBase):
         config: SqlConnectorConfig,
         run_context: RunContext,
         root_path: str,
+        driver_override: SqlDbDriver | None = None,
     ) -> None:
         super().__init__(config=config, run_context=run_context)
         self.writer = LocalLevel1Writer(root_path)
         self.checkpoint_store = LocalCheckpointStore(root_path)
+        self._driver_override = driver_override
+        self._driver_cached: SqlDbDriver | None = None
+
+    @property
+    def _driver(self) -> SqlDbDriver:
+        if self._driver_cached is None:
+            if self._driver_override is not None:
+                self._driver_cached = self._driver_override
+            else:
+                self._driver_cached = _build_db_driver(self.config.connection.driver)
+        return self._driver_cached
 
     def validate_config(self) -> SqlConnectorConfig:
-        config = super().validate_config()
-        if config.connection.driver != SqlConnectionDriver.sqlite:
-            raise ConfigValidationError(
-                message="Local SQL connector only supports sqlite for v1",
-                context={
-                    "source_name": config.source_name,
-                    "entity_name": config.entity_name,
-                    "driver": config.connection.driver.value,
-                },
-            )
-        return config
+        return super().validate_config()
 
     def resolve_checkpoint_before(self) -> dict[str, Any] | None:
         checkpoint_document = self.checkpoint_store.load(
@@ -54,11 +56,40 @@ class LocalSqlConnector(SqlConnectorBase):
 
     def execute_query(self, query: SqlPreparedQuery) -> SqlQueryResult:
         executed_at = datetime.now(tz=UTC)
-        with sqlite3.connect(self.config.connection.database) as connection:
-            connection.row_factory = sqlite3.Row
-            cursor = connection.execute(query.sql, query.parameters)
-            rows = [dict(row) for row in cursor.fetchall()]
-            columns = [description[0] for description in (cursor.description or [])]
+        fetch_size = (
+            self.config.query.fetch_size if self.config.query.fetch_size >= 1 else 1000
+        )
+        connection = self._driver.connect(
+            database=self.config.connection.database,
+            options=self.config.connection.options,
+        )
+        try:
+            cursor = connection.cursor()
+            if query.parameters:
+                cursor.execute(query.sql, query.parameters)
+            else:
+                cursor.execute(query.sql)
+            rows: list[dict[str, Any]] = []
+            while True:
+                batch = cursor.fetchmany(fetch_size)
+                if not batch:
+                    break
+                for row in batch:
+                    if hasattr(row, "keys") and callable(getattr(row, "keys", None)):
+                        rows.append(dict(row))
+                    else:
+                        cols = [
+                            description[0]
+                            for description in (cursor.description or [])
+                        ]
+                        rows.append(
+                            dict(zip(cols, row, strict=False)) if cols else dict(row)
+                        )
+            columns = [
+                description[0] for description in (cursor.description or [])
+            ]
+        finally:
+            connection.close()
         return SqlQueryResult(
             rows=rows,
             columns=columns,
@@ -97,6 +128,7 @@ class LocalSqlConnector(SqlConnectorBase):
                 "compiled_sql": query.metadata.get("compiled_sql"),
                 "compiled_parameters": query.metadata.get("compiled_parameters"),
                 "columns": result.columns,
+                "driver": self.config.connection.driver.value,
             },
             ingest_completed_at=result.executed_at,
         )
@@ -128,6 +160,17 @@ class LocalSqlConnector(SqlConnectorBase):
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex()
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 

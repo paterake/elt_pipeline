@@ -52,6 +52,8 @@ from elt_pipeline.ingest.connectors.sql import (
     SqlConnectionDriver,
     SqlConnectorBase,
     SqlConnectorConfig,
+    SqlDbConnection,
+    SqlDbDriver,
     SqlExtractionMode,
     SqlPreparedQuery,
     SqlQueryResult,
@@ -59,6 +61,7 @@ from elt_pipeline.ingest.connectors.sql import (
     SqlRunResult,
     SqlWatermarkConfig,
     SqlWatermarkSource,
+    _build_db_driver,
 )
 
 __all__ = [
@@ -93,6 +96,8 @@ __all__ = [
     "SqlConnectionDriver",
     "SqlConnectorBase",
     "SqlConnectorConfig",
+    "SqlDbConnection",
+    "SqlDbDriver",
     "SqlExtractionMode",
     "SqlPreparedQuery",
     "SqlQueryResult",
@@ -100,6 +105,7 @@ __all__ = [
     "SqlRunResult",
     "SqlWatermarkConfig",
     "SqlWatermarkSource",
+    "_build_db_driver",
     "ConnectorFamily",
     "ConnectorFactory",
     "ConnectorManifest",

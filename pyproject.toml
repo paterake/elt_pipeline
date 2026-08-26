@@ -76,10 +76,26 @@ synapse = [
 delta = [
   "delta-spark>=4.0,<5.0",
 ]
+duckdb = [
+  "duckdb>=1.0,<2.0",
+]
+postgres = [
+  "psycopg[binary]>=3.2,<4.0",
+]
+mysql = [
+  "mysql-connector-python>=9.0,<11.0",
+]
+mssql = [
+  "pymssql>=2.3,<3.0",
+]
+jdbc = [
+  "JayDeBeApi>=1.2,<2.0",
+]
 dev = [
   "pytest>=8.3,<9.0",
   "ruff>=0.12,<0.13",
   "pyspark==4.1.2",
+  "duckdb>=1.0,<2.0",
 ]
 test_emulator = [
   "moto[s3]>=5.0,<6.0",

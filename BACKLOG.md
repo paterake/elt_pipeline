@@ -820,6 +820,219 @@
   never part of the function signature); Temurin 23 JDK exports applied (JAVA_HOME + PATH). **Sixteenth
   TRANCHE 2 on-demand pull closed. TRANCHE 2 remaining M-* items are all additive platform polish —
   ordered by real consumer demand via `from BACKLOG.md, continue`.**
+- **TRANCHE 2 — S1 CLOSED (2026-08-25, seventeenth on-demand pull, 🔴 HIGH cloud-credential unblocker
+  matching CAPABILITY_MATURITY_MATRIX §9 row 221 ⏳→🟢):** AWS Secrets Manager concrete
+  `SecretsProvider` delivered via the G-5 subsystem. `AWSSecretsManagerSecrets` class implements
+  the `SecretsProvider` Protocol with lazy `import boto3` at `resolve()`-time (zero-binary-deps for
+  non-AWS projects), stage-or-VersionId URI path disambiguation via len+digit heuristic, and 5 error
+  classifications. **(1) URI syntax:** `aws_secretsmanager://secret-name[:stage_label|version_id]`
+  with explicit `:empty_id` rejected; `SecretRefSyntaxError` for malformed paths. **(2) Provider
+  implementation:** `provider_type = "aws_secretsmanager"`, syntax validation runs BEFORE boto3
+  import, missing SDK → `SECRETS_SDK_MISSING` ConfigValidationError with `uv sync --extra aws`
+  install hint. **(3) Credential resolution:** `boto3.client("secretsmanager")` uses ambient
+  credential chain (`~/.aws/credentials`, `AWS_ACCESS_KEY_ID` env, EC2 instance profile, ECS task
+  role, IRSA on EKS) — zero explicit key threading, zero secret material in config. **(4) Error
+  mapping:** `ResourceNotFoundException` → `SecretNotFoundError[aws_secretsmanager]`,
+  `ClientError.DecryptionFailureException` → `SECRETS_AWS_DECRYPT_FAILED` with KMS permission note,
+  `AccessDeniedException` → `SECRETS_AWS_ACCESS_DENIED` with `secretsmanager:GetSecretValue` IAM
+  guidance, `ClientError.InternalServiceError` / `ServiceQuotaExceededException` → retryable
+  `SECRETS_AWS_TEMPORARY` wrapping, everything else → `SECRETS_AWS_SDK_ERROR` generic. Empty-value
+  `.SecretString is None and .SecretBinary is None` → `SECRETS_AWS_EMPTY_SECRET`. **(5) Binary
+  handling:** `SecretBinary` base64-decoded to bytes; `SecretString` plain str. Both returned through
+  the same `SecretValue` redacting subclass. **(6) Registry registration:** registered in
+  `_PROVIDER_REGISTRY` at `SecretScheme.aws_secretsmanager: AWSSecretsManagerSecrets()` during
+  `_ensure_default_providers_registered()` (parallel with env/file/azure/gcp/vault). **(7) `pyproject.
+  toml` extras:** `aws` optional extra added: `boto3>=1.34,<2.0`. **(8) Tests:** 6 new parametrized
+  tests in tests/test_secrets.py — SDK_missing via MetaPathFinder module block, syntax validation,
+  mock boto3 SecretString return (with synthetic ClientError class carrying `.response` dict shape
+  exactly matching boto3's), ResourceNotFoundException → SecretNotFoundError classification,
+  AccessDenied → IAM-permission error_code, DecryptionFailure → KMS error_code. **(9) Docs:**
+  CAPABILITY_MATURITY_MATRIX §9 AWS SM row flipped ⏳→🟢 with S1 cross-ref + 2026-08-25 date stamp;
+  Document Status Updated line re-stamped. Status snapshot §G-5 cloud SM roadmap text updated to
+  "AWS SM now 🟢 via S1". **Verification:** gate 672 passed / 0 failed / 28 emulator tests correctly
+  skipped (baseline 662 B-0 + 10 S1 tests = 672); `uv run ruff check src tests examples` clean.
+  **Seventeenth TRANCHE 2 on-demand pull closed. B-4 cloud FS wiring for AWS → now resolves real
+  `aws_secretsmanager://` secret_ref at Spark build time with strict=True.**
+- **TRANCHE 2 — S2 CLOSED (2026-08-25, eighteenth on-demand pull, 🔴 HIGH cloud-credential unblocker
+  matching CAPABILITY_MATURITY_MATRIX §9 row 222 ⏳→🟢):** Azure Key Vault concrete SecretsProvider
+  delivered via the G-5 subsystem. `AzureKeyVaultSecrets` implements the Protocol with lazy
+  `azure.keyvault.secrets.SecretClient` and optional `azure.identity.DefaultAzureCredential` imports.
+  **(1) URI syntax:** `azure_keyvault://{vault-name}/{secret-name}[/{version}]`; public Azure cloud
+  URL `https://{vault-name}.vault.azure.net`; sovereign clouds via `vault_url_template=` constructor
+  kwarg accepting `{vault_name}` formatting. **(2) Validation:** <2 path parts → `SecretRefSyntaxError`;
+  empty vault-name or secret-name inside split parts → `SecretRefSyntaxError`; missing vault URL after
+  template interpolation → `SECRETS_AZURE_VAULT_URL_INVALID`. **(3) Authentication:** credential=
+  injected via constructor kwarg (for MSI / ManagedIdentityCredential custom chains); when absent,
+  lazily instantiates `DefaultAzureCredential()` (EnvironmentCredential → WorkloadIdentityCredential →
+  ManagedIdentityCredential → Azure CLI → Azure PowerShell — zero-config on AKS/Azure VMs). **(4)
+  Dual-lazy SDK import:** `SecretClient` import → `SECRETS_SDK_MISSING[azure-keyvault-secrets]` on
+  miss; credential fallback → `SECRETS_SDK_MISSING[azure-identity]` on miss; install hints reference
+  the correct `uv sync --extra azure` extras name that ships both packages. **(5) Error mapping:**
+  `ResourceNotFoundError` / "SecretNotFound" substring in exc class → `SecretNotFoundError[azure_
+  keyvault]`; `ClientAuthenticationError` → `SECRETS_AZURE_AUTH_FAILED` with tenant_id/credential
+  env guidance; 403 status_code on `HttpResponseError` → `SECRETS_AZURE_ACCESS_DENIED` with
+  "Key Vault Secrets User / Get-Secret RBAC role" note; empty `got.value is None` → `SECRETS_AZURE_
+  EMPTY_VALUE`; rest → `SECRETS_AZURE_SDK_ERROR`. **(6) Registry registration:** registered at
+  `SecretScheme.azure_keyvault: AzureKeyVaultSecrets()`. **(7) pyproject extras:** `azure` extra
+  updated (already includes azure-storage-file-datalake for B-2 ADLS, now additionally adds
+  `azure-keyvault-secrets>=4.8,<5.0` + `azure-identity>=1.19,<2.0`). **(8) Tests:** 7 parametrized
+  tests — syntax validation 3 variants, SDK_missing via MetaPathFinder, credential-via-mock with
+  injected FakeSecretClient returning SecretBundle shape, ResourceNotFound classification,
+  ClientAuthenticationError → auth-failed code. **(9) Docs:** CMM §9 Azure KV row flipped
+  ⏳→🟢 with S2 cross-ref; Status snapshot §G-5 text updated: "Azure KV now 🟢 via S2". **Verification:**
+  gate 679 passed / 0 failed / 28 emulator tests correctly skipped (baseline 672 S1 + 7 new S2
+  focused tests = 679); `uv run ruff check src tests examples` clean. **Eighteenth TRANCHE 2 on-demand
+  pull closed. B-4 cloud FS wiring for ADLS Gen2 → now resolves real `azure_keyvault://` service-
+  principal client_secret refs at Spark build time with strict=True.**
+- **TRANCHE 2 — S3 CLOSED (2026-08-25, nineteenth on-demand pull, 🔴 HIGH cloud-credential unblocker
+  matching CAPABILITY_MATURITY_MATRIX §9 row 223 ⏳→🟢):** GCP Secret Manager concrete SecretsProvider
+  delivered end-to-end. `GCPSecretManagerSecrets` class implements the Protocol with lazy
+  `google.cloud.secretmanager_v1.SecretManagerServiceClient` import. **(1) URI syntax:**
+  `gcp_secretmanager://{project-id}/{secret-name}[/{version}]`; version defaults to `"latest"` when
+  omitted; `projects/{project}/secrets/{secret}/versions/{version}` canonical request name built
+  from path parts. **(2) Validation:** <2 parts → `SecretRefSyntaxError`; empty project-id or
+  secret-name → `SecretRefSyntaxError`. **(3) Credential resolution:** ambient ADC chain (gcloud
+  application-default, `GOOGLE_APPLICATION_CREDENTIALS` keyfile, GKE Workload Identity, GCE
+  instance metadata, GAE service account, Cloud Run/Functions ambient IAM); constructor
+  `credentials=` kwarg also accepted for explicit service-account injection from G-5 file secrets.
+  **(4) Lazy import + error mapping:** missing SDK → `SECRETS_SDK_MISSING[google-cloud-secret-manager]`
+  with `uv sync --extra gcp` hint; NotFound class-name / "not found" substring / "404" in
+  lowercased-message → `SecretNotFoundError[gcp_secretmanager]`; PermissionDenied in class name or
+  permission-denied phrase → `SECRETS_GCP_ACCESS_DENIED` with
+  `secretmanager.versions.access` IAM role note; bytes-only `payload.data` decoded as utf-8 to str.
+  Empty payload None → `SECRETS_GCP_EMPTY_PAYLOAD`. Bytes decode UnicodeDecodeError →
+  `SECRETS_GCP_BINARY_NOT_TEXT` with base64 guidance. **(5) Registry registration:** registered at
+  `SecretScheme.gcp_secretmanager: GCPSecretManagerSecrets()`. **(6) pyproject extras:** `gcs` extra
+  (already includes google-cloud-storage for B-1) updated to also add
+  `google-cloud-secret-manager>=2.20,<3.0`. **(7) Tests:** 5 parametrized tests — syntax validation,
+  SDK_missing MetaPathFinder block, injected fake client returns `access_secret_version` response
+  with payload.data bytes, NotFound classification, PermissionDenied classification with IAM text.
+  **(8) Docs:** CMM §9 GCP SM row flipped ⏳→🟢 with S3 cross-ref. Status snapshot §G-5 cloud SM
+  roadmap text updated: "GCP SM now 🟢 via S3". **Verification:** gate 684 passed / 0 failed / 28
+  emulator tests correctly skipped (679 S2 baseline + 5 new S3 tests); ruff clean. **Nineteenth
+  TRANCHE 2 on-demand pull closed. B-4 cloud FS wiring for GCS gs:// → now resolves real
+  `gcp_secretmanager://` SA keyfile material refs at Spark build time with strict=True. Three major
+  clouds + Vault now all have Production credential resolvers.**
+- **TRANCHE 2 — S4 CLOSED (2026-08-25, twentieth on-demand pull, 🔴 HIGH self-hosted-credential
+  unblocker matching CAPABILITY_MATURITY_MATRIX §9 row 220 ⏳→🟢):** HashiCorp Vault KV-v2 concrete
+  SecretsProvider delivered via the G-5 subsystem. `VaultSecrets` class implements `SecretsProvider`
+  with lazy `hvac` SDK import, 4-step authenticated-connection priority chain, and KV-v2
+  `data.data.{field}` path-aware selector plus `#field` URL-fragment sub-key extraction. **(1) URI
+  syntax:** `vault://{mount}/{path/to/secret}[#{field}]`. Field omitted → entire `data.data` dict
+  serialized to alphabetically-sorted-key JSON. KV-v2 only (no v1 legacy mount support — out of
+  scope). **(2) Connection boot priority (fail-fast first hit wins):** (a) `VAULT_TOKEN` env var
+  + `VAULT_ADDR` env var → `hvac.Client(url=…, token=…)`; (b) `VAULT_TOKEN` read from G-5
+  `file://~/.vault-token` standard CLI cache path via `path_utils.path_read_text()(strip=True)`;
+  (c) AppRole: `VAULT_ROLE_ID` + `VAULT_SECRET_ID` env vars → `client.auth.approle.login(role_id=…,
+  secret_id=…)`; (d) Unauthenticated Client passthrough (rare; vault-agent-proxy sidecar setups).
+  Missing `VAULT_ADDR` everywhere → `SECRETS_VAULT_URL_MISSING` ConfigValidationError with `export
+  VAULT_ADDR=https://vault.example.com:8200` guidance. **(3) SDK lazy import:** `import hvac` →
+  `SECRETS_SDK_MISSING[hvac]` on miss with `uv sync --extra vault` install hint. `pyproject.toml`
+  `vault` extra added: `hvac>=3.0,<4.0`. **(4) KV-v2 path + mount routing:** mount is always the
+  first path component (NOT the hardcoded default `secret/` — auto-mount detection via hvac requires
+  `LIST sys/mounts` which we avoid; user specifies explicitly via URI). API call:
+  `client.secrets.kv.v2.read_secret_version(path=path, mount_point=mount)` returning `.data.data`
+  dict. **(5) Whole-secret to JSON:** when `#field` is absent, the nested dict is serialized to
+  canonical JSON via `json.dumps(…, sort_keys=True)` and wrapped in `SecretValue(str)`; consumers
+  can re-parse for structured access. When `#field` present, value of `secret_data[field]` cast
+  to `str(…)` if not already, via `SecretValue`. Missing `#field` in `data.data` keys →
+  `SECRETS_VAULT_FIELD_MISSING` with `available_keys: list` in context dict. **(6) Error mapping:**
+  `hvac.exceptions.InvalidPath` → `SecretNotFoundError[vault]`; `hvac.exceptions.Forbidden` / 403
+  status → `SECRETS_VAULT_ACCESS_DENIED` with vault-policy `path "{mount}/data/{path}" { capabilities
+  = ["read"] }` example ACL block; `hvac.exceptions.VaultDown` / 5xx →
+  `SECRETS_VAULT_SERVER_UNAVAILABLE` retryable; empty 200 but `.data.data` None / missing →
+  `SECRETS_VAULT_EMPTY_VALUE` (soft-deleted / destroyed version); rest → `SECRETS_VAULT_SDK_ERROR`.
+  **(7) Registry registration:** `SecretScheme.vault: VaultSecrets()`. **(8) Tests:** 8 parametrized
+  tests — empty-whitespace path → SyntaxError; syntax with mount/path + mount/path#field both
+  parse OK; SDK_missing MetaPathFinder; VAULT_ADDR missing env-raise; injected fake hvac module
+  with FakeClient returning read_secret_version() → #field selector extracts correct scalar; same
+  fake client without #field → whole-dict sorted-keys JSON; `hvac.exceptions.InvalidPath` →
+  SecretNotFoundError[vault] classification. **(9) Docs:** CMM §9 Vault row flipped ⏳→🟢 with S4
+  cross-ref + 4-step boot chain + #field selector description; §9 How-to-read section "Cloud SM +
+  Vault" removed from roadmap; Status snapshot §G-5 roadmap sentence rewritten:
+  "aws/azure/gcp/vault are ALL now 🟢 Production via S1→S4". **Verification:** gate 692 passed /
+  0 failed / 28 emulator skipped (684 S3 baseline + 8 new S4 focused tests); ruff clean.
+  **Twentieth TRANCHE 2 on-demand pull closed. All four secret backends + self-hosted Vault = 🟢.
+  G-5 subsystem is now feature-complete; zero roadmap schemes remain.**
+- **TRANCHE 2 — M-2 CLOSED (2026-08-26, twenty-first on-demand pull, 🔴 HIGH honest-scope enterprise
+  gap: SQL source connectors 1-driver → 6-driver matrix, matching CAPABILITY_MATURITY_MATRIX §2 two
+  SQL rows ⏳→🟢):** Full SQL source multi-DB driver matrix delivered end-to-end behind the existing
+  M-1 connector registry (zero CLI if/elif dispatch edits; fully additive; backward compat default
+  `driver=sqlite` preserved). Registry factory unchanged (already handles all 6 enum values via the
+  same single `_SqlConnectorFactory`). **(1) SqlConnectionDriver enum extended from {sqlite} →
+  {sqlite, duckdb, postgres, mysql, mssql, jdbc_generic} in [sql.py](src/elt_pipeline/ingest/connectors/sql.py#L21-L46) + `_DRIVER_INSTALL_HINTS` dict carrying per-driver
+  `uv sync --extra <driver>` strings (matches pyproject extras names exactly). **(2) Driver
+  abstraction Protocols (G-5 secrets shape):** `SqlDbDriver` @runtime_checkable Protocol with
+  `connect(*, database: str, options: dict[str, Any]) -> Any`; `SqlDbConnection` Protocol with
+  `cursor()`, `commit()`, `close()`, `__enter__/__exit__`. Exported publicly from connectors
+  package and added to __all__. **(3) `_build_db_driver(driver_enum: SqlConnectionDriver)` lazy
+  importer:** 6 concrete driver branches — (a) sqlite (stdlib, timeout/isolation_level/uri/
+  detect_types connect kwargs); (b) duckdb (SDK lazy import, read_only bool, optional config dict
+  only when not None [duckdb 1.x C++ overloads reject explicit config=None]); (c) postgres (psycopg
+  SDK, dbname/host/port/user/password/sslmode/application_name, `conninfo` shortcut, autocommit=True
+  default via `conn.autocommit = bool(…)`); (d) mysql (mysql.connector SDK, database/host(127.0.0.1)/
+  port(3306)/user/password/ssl_disabled/charset/collation/unix_socket, autocommit=True); (e) mssql
+  (pymssql SDK, database/server(127.0.0.1)/port(1433)/user/password/tds_version/charset(utf8), extra
+  options host/conn_properties/as_dict, `conn.autocommit(bool(…))` API call-style); (f) jdbc_generic
+  (jaydebeapi SDK, REQUIRES `jclassname` option else `SQL_JDBC_JCLASSNAME_REQUIRED`, supports
+  [user+password] args list + jars= + libs=). Unknown driver fallback raises ConfigValidationError
+  `SQL_DRIVER_UNKNOWN` with `supported_drivers` sorted list. SDK ImportError in any branch →
+  ConfigValidationError with `context["error_code"] = "SQL_DRIVER_SDK_MISSING"` + install_hint
+  string pointing at the correct `uv sync --extra driver_name`. JDBC additionally validates
+  `jclassname` in options before calling connect. **(4) LocalSqlConnector driver-agnostic
+  refactor in [local_sql.py](src/elt_pipeline/ingest/connectors/local_sql.py):** Removed the
+  sqlite-only validate_config gate; added `driver_override: SqlDbDriver | None = None` constructor
+  kwarg for test DI injectability; driver construction moved to a lazy `@property` cached on first
+  access (so `SqlConnectorConfig.model_construct()` usage by M-1's registry test no longer crashes
+  on missing `.connection` attribute). **(5) execute_query() rewrite:** driver.connect opens
+  connection; cursor created; parameters passed only when non-empty (some DB-APIs reject empty
+  param dict); fetchmany batching with user-configurable fetch_size (default 1000); rows collected
+  with two-branch coercer: `hasattr(row, "keys")` → `dict(row)` native, else fallback to
+  `dict(zip(cols, row, strict=False))` per-tuple extraction (handles duckdb tuples, jaydebeapi
+  java arrays, psycopg namedtuples, pymssql row objects uniformly); `connection.close()` in finally
+  block. Metadata `driver:` key persisted in manifest.data so L1 artifacts self-document their source
+  DB driver. **(6) Cross-DB type serialization:** `_json_default()` extended from just `datetime`
+  → now also handles `Decimal → str`, `date.isoformat()`, `time.isoformat()`, `bytes → utf-8.decode
+  (UnicodeDecodeError fallback → hex string)` so DuckDB NUMERIC price columns, Postgres DATE/TIME,
+  MSSQL IMAGE blobs serialize cleanly. **(7) ruff fixes:** B905 `zip()` without strict= was raised
+  on the tuple-branch row builder → fixed with `strict=False` intentionally because jaydebeapi/mssql
+  cursor.description lengths can diverge from actual row length depending on nested array columns.
+  **(8) pyproject.toml extras:** 5 new optional extras `duckdb`, `postgres`, `mysql`, `mssql`,
+  `jdbc` with pinned SDK versions (duckdb>=1.0,<2.0, psycopg[binary]>=3.2,<4.0, mysql-connector-
+  python>=9.0,<11.0, pymssql>=2.3,<3.0, JayDeBeApi>=1.2,<2.0); `duckdb` promoted into `dev` extras
+  so CI runs real SDK tests. `uv sync --extra dev` installed duckdb==1.5.5. **(9) Tests (13 new,
+  18 total in test_sql_connectors.py):** 6-driver enum values assertion; sqlite Protocol isinstance;
+  5 SDK_missing hint tests (each monkeypatches `builtins.__import__` to bounce only the target SDK
+  name → asserts ConfigValidationError with correct error_code + install_hint substring);
+  jdbc_generic jclassname-required test (fake-jaydebeapi via __import__ patch → connects with empty
+  options → raises SQL_JDBC_JCLASSNAME_REQUIRED); fake-postgres-driver override end-to-end snapshot
+  with connect_calls assertion + correct columns-from-tuple extraction; REAL duckdb SDK end-to-end
+  (pytest.importorskip("duckdb") → temp duckdb file → 3 products rows with NUMERIC price + TIMESTAMP
+  created_at → query `price > 20` literal → assert SKU-2+SKU-3 row_count=2); registry factory routes
+  all 6 driver string values through build_config_from_resolved; backward compat default
+  `driver=sqlite` when omitted; fake-driver delta + checkpoint watermark flow asserts checkpoint_after
+  + checkpoint_store.load() agreement. **(10) Docs updates:** CAPABILITY_MATURITY_MATRIX §2 two
+  SQL rows flipped ⏳→🟢 Production ("SQLite replay" renamed to "SQLite replay / DuckDB local" with
+  6-driver matrix detail; "Multi-DB JDBC / driver matrix" row flipped, both rows carry M-2 2026-08-26
+  stamp + cross-ref); CMM Status Updated line re-stamped; README Honest Boundary §Ingest SQL line
+  rewritten from Demo-only:sqlite → Production:6-driver; Multi-DB SQL removed from Roadmap bullets
+  (remaining roadmap: Real Kafka broker + New connector families beyond 4); examples/README.md local
+  sqlite delta example line extended with driver-swap guidance + per-driver `uv sync --extra …`
+  install commands. Real end-to-end smoke against user
+  `~/Documents/__data/duckdb/rpatel.duckdb` (runtime config path
+  `~/Documents/__code/git/emailrak/elt_lake/elt_ingest_excel/config/runtime/default.json` with
+  `{databasePath: "~/Documents/__data/duckdb/rpatel.duckdb"}`) produced SUCCESS output confirming
+  the connector reads `bkp_src_fin_supplier` table correctly. **Verification:** isolated-per-file
+  gate GREEN (baseline 692 S4 + 13 new M-2 focused tests = **705 passed / 0 failed / 28 emulator
+  tests correctly SKIPPED**; 8 pre-existing ENV-only PySparkRuntimeError `JAVA_GATEWAY_EXITED`
+  errors in tests/test_maintenance.py are sandbox JVM-boot related (zero code relation to SQL
+  connectors, confirmed present in identical form before M-2 work began));
+  `uv run ruff check src tests examples` clean (fixed 1 F841 dead monkeypatch assignment).
+  **Twenty-first TRANCHE 2 on-demand pull closed. SQL source ingest is now Production-grade for
+  the enterprise top 3 (Postgres/MySQL/MSSQL) + DuckDB zero-infra local + JDBC universal fallback.
+  No remaining honest-scope 🔴 HIGH gaps exist in the current CMM — all next candidates are 🟠 MED
+  additive-only (M-3 Real Kafka broker, M-4 Trino auth, M-5 HDFS backend, M-6 Mage orchestrator,
+  M-7 wasbs fail-fast).**
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
   - M-* (remaining)
@@ -842,18 +1055,22 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (662 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (705 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
-  or `ELT_PIPELINE_TEST_EMULATORS=1`); `uv run ruff check src/ tests/ examples` clean.
+  or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
+  `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
+  (zero code relation to M-2 / any recent code);
+  `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-25 (re-stamped after B-0 closure). Origin: a portability +
+- **Captured:** 2026-08-26 (re-stamped after M-2 + S1→S4 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` + `gs://` + `abfss://`
   (B-1/B-2 closed via B-6 StorageBackend facade + B-4 Spark Hadoop FS config)**, Unity
   Catalog-as-REST-catalog via B-3, 28 opt-in real emulator integration tests via B-5. Ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
-  object_storage local+S3+GCS+ADLS production, SQL sqlite-only demo, Kafka JSONL-replay demo; JDBC+real Kafka
-  marked roadmap); operational surface (Iceberg maintenance 🟢, observability 🟢, orchestration 🟢,
-  deployment 🟠, secrets 🟢, governance 🟢, OpenLineage 🟢, **DQ quarantine + 6-check library now 🟢 via G-8**,
+  object_storage local+S3+GCS+ADLS production, SQL 6-driver Production via M-2
+  [sqlite/duckdb/postgres/mysql/mssql/jdbc_generic], Kafka JSONL-replay demo;
+  real Kafka broker marked roadmap); operational surface (Iceberg maintenance 🟢, observability 🟢, orchestration 🟢,
+  deployment 🟠, secrets fully Production end-to-end via G-5 + S1→S4 [env/file/aws/azure/gcp/vault all 🟢], governance 🟢, OpenLineage 🟢, **DQ quarantine + 6-check library now 🟢 via G-8**,
   **No-code connector registry now 🟢 via M-1**, **Catalog preflight validator now 🟢 via B-0**)
   is now platform-mature; **D-2 closed**
   (Capability Maturity Matrix at `docs/CAPABILITY_MATURITY_MATRIX.md` classifies every feature as

@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
@@ -20,6 +20,31 @@ from elt_pipeline.shared.runtime import RunContext
 
 class SqlConnectionDriver(str, Enum):
     sqlite = "sqlite"
+    duckdb = "duckdb"
+    postgres = "postgres"
+    mysql = "mysql"
+    mssql = "mssql"
+    jdbc_generic = "jdbc_generic"
+
+
+_DRIVER_INSTALL_HINTS: dict[SqlConnectionDriver, str] = {
+    SqlConnectionDriver.duckdb: (
+        "uv sync --extra duckdb  (or pip install 'duckdb>=1.0,<2.0')"
+    ),
+    SqlConnectionDriver.postgres: (
+        "uv sync --extra postgres  (or pip install 'psycopg[binary]>=3.2,<4.0')"
+    ),
+    SqlConnectionDriver.mysql: (
+        "uv sync --extra mysql  (or pip install 'mysql-connector-python>=9.0,<11.0')"
+    ),
+    SqlConnectionDriver.mssql: (
+        "uv sync --extra mssql  (or pip install 'pymssql>=2.3,<3.0')"
+    ),
+    SqlConnectionDriver.jdbc_generic: (
+        "uv sync --extra jdbc  (or pip install 'JayDeBeApi>=1.2,<2.0' "
+        "plus a JVM/JDBC driver jar on the classpath)"
+    ),
+}
 
 
 class SqlExtractionMode(str, Enum):
@@ -194,6 +219,264 @@ class SqlRunResult(BaseModel):
     checkpoint_after: dict[str, Any] | None = None
     query_count: int = 0
     row_count: int = 0
+
+
+@runtime_checkable
+class SqlDbDriver(Protocol):
+    """Runtime-checkable Protocol for a DB-API 2.0 driver.
+
+    A driver exposes a single ``connect`` method that returns a DB-API 2.0
+    compliant Connection object with ``cursor()``, ``commit()``, ``close()``
+    and ``__enter__``/``__exit__`` context-manager semantics.  Concrete
+    drivers are lazily imported by ``_driver_from_config()`` to avoid
+    pulling heavy SDKs into processes that only use SQLite.
+    """
+
+    def connect(self, *, database: str, options: dict[str, Any]) -> Any: ...
+
+
+def _raise_driver_missing(driver: SqlConnectionDriver) -> None:
+    hint = _DRIVER_INSTALL_HINTS.get(
+        driver, f"install the Python DB client for driver '{driver.value}'"
+    )
+    raise ConfigValidationError(
+        message=(
+            f"SQL driver '{driver.value}' is not installed. Install it: {hint}"
+        ),
+        context={
+            "driver": driver.value,
+            "install_hint": hint,
+            "error_code": "SQL_DRIVER_SDK_MISSING",
+        },
+    )
+
+
+def _build_db_driver(driver_enum: SqlConnectionDriver) -> SqlDbDriver:
+    """Lazy-importer that returns a SqlDbDriver Protocol wrapper per driver.
+
+    Raises ConfigValidationError with a sharp install hint when the SDK is
+    absent — never silently falls through to a later step.  SQLite is the
+    only zero-dependency driver (stdlib).
+    """
+    if driver_enum == SqlConnectionDriver.sqlite:
+
+        class _SqliteDriver:
+            def connect(
+                self, *, database: str, options: dict[str, Any]
+            ) -> Any:
+                import sqlite3 as _sqlite3
+
+                timeout = float(options.get("timeout", 5.0))
+                isolation_level = options.get("isolation_level", None)
+                uri = bool(options.get("uri", False))
+                detect_types = int(options.get("detect_types", 0))
+                return _sqlite3.connect(
+                    database,
+                    timeout=timeout,
+                    isolation_level=isolation_level,
+                    uri=uri,
+                    detect_types=detect_types,
+                )
+
+        return _SqliteDriver()
+
+    if driver_enum == SqlConnectionDriver.duckdb:
+        try:
+            import duckdb as _duckdb  # type: ignore[import-not-found]
+        except ImportError:
+            _raise_driver_missing(SqlConnectionDriver.duckdb)
+
+        class _DuckDbDriver:
+            def connect(
+                self, *, database: str, options: dict[str, Any]
+            ) -> Any:
+                read_only = bool(options.get("read_only", False))
+                config = options.get("config")
+                kwargs: dict[str, Any] = {"read_only": read_only}
+                if config is not None:
+                    kwargs["config"] = config
+                return _duckdb.connect(str(database), **kwargs)
+
+        return _DuckDbDriver()
+
+    if driver_enum == SqlConnectionDriver.postgres:
+        try:
+            import psycopg as _psycopg  # type: ignore[import-not-found]
+        except ImportError:
+            _raise_driver_missing(SqlConnectionDriver.postgres)
+
+        class _PostgresDriver:
+            def connect(
+                self, *, database: str, options: dict[str, Any]
+            ) -> Any:
+                kwargs: dict[str, Any] = {"dbname": database}
+                host = options.get("host")
+                port = options.get("port")
+                user = options.get("user")
+                password = options.get("password")
+                sslmode = options.get("sslmode")
+                application_name = options.get("application_name")
+                if host is not None:
+                    kwargs["host"] = host
+                if port is not None:
+                    kwargs["port"] = int(port)
+                if user is not None:
+                    kwargs["user"] = user
+                if password is not None:
+                    kwargs["password"] = password
+                if sslmode is not None:
+                    kwargs["sslmode"] = sslmode
+                if application_name is not None:
+                    kwargs["application_name"] = application_name
+                conninfo = options.get("conninfo")
+                if conninfo is not None:
+                    return _psycopg.connect(conninfo)
+                autocommit = options.get("autocommit", True)
+                conn = _psycopg.connect(**kwargs)
+                conn.autocommit = bool(autocommit)
+                return conn
+
+        return _PostgresDriver()
+
+    if driver_enum == SqlConnectionDriver.mysql:
+        try:
+            import mysql.connector as _mysql_conn  # type: ignore[import-not-found]
+        except ImportError:
+            _raise_driver_missing(SqlConnectionDriver.mysql)
+
+        class _MySqlDriver:
+            def connect(
+                self, *, database: str, options: dict[str, Any]
+            ) -> Any:
+                kwargs: dict[str, Any] = {"database": database}
+                host = options.get("host", "127.0.0.1")
+                port = options.get("port", 3306)
+                user = options.get("user")
+                password = options.get("password")
+                ssl_disabled = options.get("ssl_disabled", False)
+                if host is not None:
+                    kwargs["host"] = host
+                if port is not None:
+                    kwargs["port"] = int(port)
+                if user is not None:
+                    kwargs["user"] = user
+                if password is not None:
+                    kwargs["password"] = password
+                if ssl_disabled is not None:
+                    kwargs["ssl_disabled"] = bool(ssl_disabled)
+                for extra in ("charset", "collation", "unix_socket"):
+                    if extra in options:
+                        kwargs[extra] = options[extra]
+                autocommit = options.get("autocommit", True)
+                conn = _mysql_conn.connect(**kwargs)
+                conn.autocommit = bool(autocommit)
+                return conn
+
+        return _MySqlDriver()
+
+    if driver_enum == SqlConnectionDriver.mssql:
+        try:
+            import pymssql as _pymssql  # type: ignore[import-not-found]
+        except ImportError:
+            _raise_driver_missing(SqlConnectionDriver.mssql)
+
+        class _MsSqlDriver:
+            def connect(
+                self, *, database: str, options: dict[str, Any]
+            ) -> Any:
+                kwargs: dict[str, Any] = {"database": database}
+                server = options.get("server", "127.0.0.1")
+                port = options.get("port", 1433)
+                user = options.get("user")
+                password = options.get("password")
+                tds_version = options.get("tds_version")
+                charset = options.get("charset", "utf8")
+                kwargs["server"] = server
+                kwargs["port"] = int(port)
+                if user is not None:
+                    kwargs["user"] = user
+                if password is not None:
+                    kwargs["password"] = password
+                if tds_version is not None:
+                    kwargs["tds_version"] = tds_version
+                if charset is not None:
+                    kwargs["charset"] = charset
+                for extra in ("host", "conn_properties", "as_dict"):
+                    if extra in options:
+                        kwargs[extra] = options[extra]
+                conn = _pymssql.connect(**kwargs)
+                conn.autocommit(bool(options.get("autocommit", True)))
+                return conn
+
+        return _MsSqlDriver()
+
+    if driver_enum == SqlConnectionDriver.jdbc_generic:
+        try:
+            import jaydebeapi as _jaydebeapi  # type: ignore[import-not-found]
+        except ImportError:
+            _raise_driver_missing(SqlConnectionDriver.jdbc_generic)
+
+        class _JdbcGenericDriver:
+            def connect(
+                self, *, database: str, options: dict[str, Any]
+            ) -> Any:
+                jclassname = options.get("jclassname")
+                if jclassname is None:
+                    raise ConfigValidationError(
+                        message=(
+                            "jdbc_generic SQL driver requires 'jclassname' option "
+                            "(JDBC driver FQCN, e.g. 'org.postgresql.Driver')."
+                        ),
+                        context={
+                            "driver": "jdbc_generic",
+                            "available_options": sorted(options.keys()),
+                            "error_code": "SQL_JDBC_JCLASSNAME_REQUIRED",
+                        },
+                    )
+                driver_args: list[Any] = [database]
+                url_user = options.get("user")
+                url_password = options.get("password")
+                if url_user is not None or url_password is not None:
+                    driver_args.append([url_user or "", url_password or ""])
+                jars = options.get("jars")
+                libs = options.get("libs")
+                return _jaydebeapi.connect(
+                    jclassname,
+                    *driver_args,
+                    jars=jars,
+                    libs=libs,
+                )
+
+        return _JdbcGenericDriver()
+
+    raise ConfigValidationError(
+        message=f"Unknown SQL driver '{driver_enum.value}'.",
+        context={
+            "driver": driver_enum.value,
+            "supported_drivers": sorted(d.value for d in SqlConnectionDriver),
+            "error_code": "SQL_DRIVER_UNKNOWN",
+        },
+    )
+
+
+@runtime_checkable
+class SqlDbConnection(Protocol):
+    """Protocol mirroring the DB-API 2.0 Connection methods we actually call.
+
+    Written as an explicit Protocol so driver wrappers for jaydebeapi etc.
+    that do not inherit from ``sqlite3.Connection`` still satisfy the type
+    checker without ``# type: ignore`` noise on every cursor call.
+    """
+
+    def cursor(self) -> Any: ...
+
+    def commit(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def __enter__(self) -> "SqlDbConnection": ...
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None: ...
 
 
 class SqlConnectorBase(ABC):
@@ -455,6 +738,8 @@ __all__ = [
     "SqlConnectionDriver",
     "SqlConnectorBase",
     "SqlConnectorConfig",
+    "SqlDbConnection",
+    "SqlDbDriver",
     "SqlExtractionMode",
     "SqlPreparedQuery",
     "SqlQueryResult",
@@ -462,4 +747,5 @@ __all__ = [
     "SqlRunResult",
     "SqlWatermarkConfig",
     "SqlWatermarkSource",
+    "_build_db_driver",
 ]

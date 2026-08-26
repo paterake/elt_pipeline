@@ -6,7 +6,7 @@ Run all example commands from the repository root so relative paths resolve corr
 
 - `examples/configs/local_object_storage_orders.yaml`: object storage ingest using bundled JSON sample data
 - `examples/configs/local_object_storage_orders_csv_bypass.yaml`: object storage ingest with CSV payloads and `bypass_level2`
-- `examples/configs/local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `.ignore/example-source.db`
+- `examples/configs/local_sqlite_orders_delta.yaml`: sqlite delta ingest after seeding `.ignore/example-source.db`. Swap `connection.driver` to `duckdb` / `postgres` / `mysql` / `mssql` / `jdbc_generic` per the 6-driver matrix (closed M-2). Each optional driver installs via `uv sync --extra duckdb|postgres|mysql|mssql|jdbc`.
 - `examples/configs/local_kafka_orders_replay.yaml`: Kafka replay ingest from a bundled JSONL log
 - `examples/configs/local_rest_orders.yaml`: REST ingest against a local static HTTP endpoint
 - `examples/configs/databricks_unity_adls.yaml`: **Databricks + Unity Catalog (B-3)** — reference deployment using Unity as an Iceberg REST catalog (catalog_type=rest) with your cloud's native object store (Azure ADLS Gen2 / AWS S3 / GCP GCS). All three backing stores are commented selectable. No `dbfs://` scheme required (and intentionally not supported): Databricks storage is S3/GCS/ADLS underneath.
