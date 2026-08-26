@@ -314,3 +314,519 @@ class FakeKafkaConnector(KafkaConnectorBase):
             recorded_at=self.run_context.started_at,
             manifest_paths=[manifest.manifest_path for manifest in manifests],
         )
+
+
+def test_kafka_connector_config_builds_with_bootstrap_servers_string() -> None:
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        connector_type="kafka",
+        trigger_mode="micro_batch",
+        extraction={
+            "topic": "orders-events",
+            "bootstrap_servers": "broker1:9092,broker2:9092",
+            "consumer_group_id": "elt-pipeline-group",
+        },
+    )
+
+    connector_config = KafkaConnectorConfig.from_resolved_entity_config(resolved_config)
+
+    assert connector_config.bootstrap_servers == "broker1:9092,broker2:9092"
+    assert connector_config.consumer_group_id == "elt-pipeline-group"
+
+
+def test_kafka_connector_config_builds_with_bootstrap_servers_list() -> None:
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        connector_type="kafka",
+        trigger_mode="micro_batch",
+        extraction={
+            "topic": "orders-events",
+            "bootstrap_servers": ["broker1:9092", "broker2:9092"],
+        },
+    )
+
+    connector_config = KafkaConnectorConfig.from_resolved_entity_config(resolved_config)
+
+    assert connector_config.bootstrap_servers == ["broker1:9092", "broker2:9092"]
+
+
+def test_kafka_connector_config_default_bootstrap_servers_none() -> None:
+    resolved_config = ResolvedEntityConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        connector_type="kafka",
+        trigger_mode="micro_batch",
+        extraction={"topic": "orders-events"},
+    )
+
+    connector_config = KafkaConnectorConfig.from_resolved_entity_config(resolved_config)
+
+    assert connector_config.bootstrap_servers is None
+
+
+def test_kafka_connector_config_rejects_empty_bootstrap_servers() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="bootstrap_servers string must not be empty"):
+        KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            bootstrap_servers="   ",
+        )
+
+    with pytest.raises(ValidationError, match="bootstrap_servers list must not be empty"):
+        KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            bootstrap_servers=[],
+        )
+
+
+def test_broker_connector_factory_routes_when_bootstrap_servers_set(tmp_path: Path) -> None:
+    from elt_pipeline.ingest.connectors.broker_kafka import BrokerKafkaConnector
+    from elt_pipeline.ingest.connectors.registry import _KafkaConnectorFactory
+
+    factory = _KafkaConnectorFactory()
+    run_context = new_run_context(
+        stage=StageName.ingest,
+        job_name="kafka-ingest",
+        trigger_type="micro_batch",
+    )
+    config = KafkaConnectorConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        execution_mode="micro_batch",
+        topic="orders-events",
+        bootstrap_servers="broker:9092",
+    )
+
+    connector = factory.build_connector(
+        config=config,
+        run_context=run_context,
+        root_path=str(tmp_path),
+    )
+
+    assert isinstance(connector, BrokerKafkaConnector)
+
+
+def test_local_connector_factory_routes_when_bootstrap_servers_missing(tmp_path: Path) -> None:
+    from elt_pipeline.ingest.connectors.registry import _KafkaConnectorFactory
+
+    factory = _KafkaConnectorFactory()
+    run_context = new_run_context(
+        stage=StageName.ingest,
+        job_name="kafka-ingest",
+        trigger_type="micro_batch",
+    )
+    config = KafkaConnectorConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        execution_mode="micro_batch",
+        topic="orders-events",
+    )
+
+    connector = factory.build_connector(
+        config=config,
+        run_context=run_context,
+        root_path=str(tmp_path),
+        log_path=str(tmp_path / "log.jsonl"),
+    )
+
+    assert isinstance(connector, LocalKafkaConnector)
+
+
+def test_local_connector_factory_raises_without_log_path_when_no_bootstrap(tmp_path: Path) -> None:
+    from elt_pipeline.ingest.connectors.registry import _KafkaConnectorFactory
+
+    factory = _KafkaConnectorFactory()
+    run_context = new_run_context(
+        stage=StageName.ingest,
+        job_name="kafka-ingest",
+        trigger_type="micro_batch",
+    )
+    config = KafkaConnectorConfig(
+        schema_version="v1",
+        environment="dev",
+        source_name="events",
+        entity_name="orders",
+        execution_mode="micro_batch",
+        topic="orders-events",
+    )
+
+    with pytest.raises(ConfigValidationError, match="log_path="):
+        factory.build_connector(
+            config=config,
+            run_context=run_context,
+            root_path=str(tmp_path),
+        )
+
+
+def test_broker_connector_sdk_missing_raises_install_hint(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+
+    real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name == "kafka":
+            raise ImportError("No module named 'kafka'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", blocked_import)
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            bootstrap_servers="broker:9092",
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+
+    with pytest.raises(ConfigValidationError, match="uv sync --extra kafka") as exc_info:
+        connector.consume_messages(start_offset=0, max_messages=10)
+
+    assert exc_info.value.context["error_code"] == "KAFKA_SDK_MISSING"
+    assert "kafka-python" in exc_info.value.context["missing_package"]
+
+
+def test_broker_connector_validate_config_passes_with_servers(tmp_path: Path) -> None:
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            bootstrap_servers=["broker1:9092", "broker2:9092"],
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+
+    validated = connector.validate_config()
+    assert validated.bootstrap_servers == ["broker1:9092", "broker2:9092"]
+
+
+def test_broker_connector_consume_uses_injected_fake_kafka_module(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from datetime import UTC
+
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+
+    class FakeTopicPartition:
+        def __init__(self, topic, partition):
+            self.topic = topic
+            self.partition = partition
+
+    class FakeConsumerRecord:
+        def __init__(self, topic, partition, offset, value, timestamp_ms, key=None, headers=None):
+            self.topic = topic
+            self.partition = partition
+            self.offset = offset
+            self.key = key
+            self.value = value
+            self.timestamp = timestamp_ms
+            self.timestamp_type = 0
+            self.headers = headers or []
+
+    class FakeConsumer:
+        assigned = []
+        seek_calls = []
+        closed = False
+        _call_count = 0
+
+        def __init__(self, **kwargs):
+            self._kwargs = kwargs
+
+        def assign(self, tps):
+            FakeConsumer.assigned = list(tps)
+
+        def seek(self, tp, offset):
+            FakeConsumer.seek_calls.append((tp.topic, tp.partition, offset))
+
+        def poll(self, timeout_ms=None, max_records=None):
+            FakeConsumer._call_count += 1
+            if FakeConsumer._call_count > 1:
+                return {}
+            tp = FakeTopicPartition("orders-events", 0)
+            return {
+                tp: [
+                    FakeConsumerRecord(
+                        topic="orders-events",
+                        partition=0,
+                        offset=5,
+                        value=b'{"id": 1, "sku": "A"}',
+                        timestamp_ms=1704067200000,
+                        key=b"key1",
+                        headers=[("h1", b"v1")],
+                    ),
+                    FakeConsumerRecord(
+                        topic="orders-events",
+                        partition=0,
+                        offset=6,
+                        value=b'{"id": 2, "sku": "B"}',
+                        timestamp_ms=1704070800000,
+                    ),
+                ]
+            }
+
+        def close(self):
+            FakeConsumer.closed = True
+
+    class FakeKafkaModule:
+        TopicPartition = FakeTopicPartition
+
+        def KafkaConsumer(self, **kwargs):
+            return FakeConsumer(**kwargs)
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            partition=0,
+            bootstrap_servers="broker:9092",
+            consumer_group_id="test-group",
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+    connector._kafka_module = FakeKafkaModule()
+
+    messages = connector.consume_messages(start_offset=5, max_messages=10)
+
+    assert len(messages) == 2
+    assert messages[0].offset == 5
+    assert messages[0].key == b"key1"
+    assert messages[0].value == b'{"id": 1, "sku": "A"}'
+    assert messages[0].headers == {"h1": "v1"}
+    assert messages[0].timestamp == datetime(2024, 1, 1, 0, 0, tzinfo=UTC)
+    assert messages[1].offset == 6
+    assert FakeConsumer.seek_calls[0] == ("orders-events", 0, 5)
+    assert FakeConsumer.closed is True
+
+
+def test_broker_connector_build_checkpoint_from_messages(tmp_path: Path) -> None:
+
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+    from elt_pipeline.ingest.connectors.kafka import KafkaMessage
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            partition=2,
+            bootstrap_servers="broker:9092",
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+
+    messages = [
+        KafkaMessage(topic="orders-events", partition=2, offset=100),
+        KafkaMessage(topic="orders-events", partition=2, offset=101),
+        KafkaMessage(topic="orders-events", partition=2, offset=102),
+    ]
+    result = connector.build_checkpoint_after(
+        checkpoint_before=None,
+        messages=messages,
+        manifests=[],
+    )
+
+    assert result is not None
+    assert result["topic"] == "orders-events"
+    assert result["partition"] == 2
+    assert result["offset"] == 103
+
+
+def test_broker_connector_resolve_start_offset_earliest(tmp_path: Path) -> None:
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+    from elt_pipeline.ingest.connectors.kafka import KafkaStartingPosition
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            starting_position=KafkaStartingPosition.earliest,
+            bootstrap_servers="broker:9092",
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+
+    assert connector.resolve_start_offset(checkpoint_before=None) == 0
+
+
+def test_broker_connector_resolve_start_offset_from_checkpoint(tmp_path: Path) -> None:
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            bootstrap_servers="broker:9092",
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+
+    assert (
+        connector.resolve_start_offset(
+            checkpoint_before={"topic": "orders-events", "partition": 0, "offset": 42}
+        )
+        == 42
+    )
+
+
+def test_broker_connector_end_to_end_run_with_fake_consumer(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.ingest.connectors import BrokerKafkaConnector
+
+    class FakeTopicPartition:
+        def __init__(self, topic, partition):
+            self.topic = topic
+            self.partition = partition
+
+    class FakeConsumerRecord:
+        def __init__(self, topic, partition, offset, value):
+            self.topic = topic
+            self.partition = partition
+            self.offset = offset
+            self.key = None
+            self.value = value
+            self.timestamp = 1704067200000
+            self.timestamp_type = 0
+            self.headers = []
+
+    class FakeConsumer:
+        _poll_count = 0
+
+        def __init__(self, **kwargs):
+            pass
+
+        def assign(self, tps):
+            pass
+
+        def seek(self, tp, offset):
+            pass
+
+        def poll(self, timeout_ms=None, max_records=None):
+            FakeConsumer._poll_count += 1
+            if FakeConsumer._poll_count > 1:
+                return {}
+            tp = FakeTopicPartition("orders-events", 0)
+            return {
+                tp: [
+                    FakeConsumerRecord("orders-events", 0, 0, b'{"id": 1}'),
+                    FakeConsumerRecord("orders-events", 0, 1, b'{"id": 2}'),
+                ]
+            }
+
+        def close(self):
+            pass
+
+    class FakeKafkaModule:
+        TopicPartition = FakeTopicPartition
+
+        def KafkaConsumer(self, **kwargs):
+            return FakeConsumer(**kwargs)
+
+    connector = BrokerKafkaConnector(
+        config=KafkaConnectorConfig(
+            schema_version="v1",
+            environment="dev",
+            source_name="events",
+            entity_name="orders",
+            execution_mode="micro_batch",
+            topic="orders-events",
+            starting_position="earliest",
+            max_messages=100,
+            bootstrap_servers="broker:9092",
+        ),
+        run_context=new_run_context(
+            stage=StageName.ingest,
+            job_name="kafka-ingest",
+            trigger_type="micro_batch",
+        ),
+        root_path=str(tmp_path),
+    )
+    connector._kafka_module = FakeKafkaModule()
+
+    result = connector.run()
+
+    assert result.message_count == 2
+    assert len(result.manifests) == 2
+    assert result.checkpoint_after is not None
+    assert result.checkpoint_after["offset"] == 2
+    checkpoint = connector.checkpoint_store.load(
+        environment="dev", source_name="events", entity_name="orders"
+    )
+    assert checkpoint.current_checkpoint["offset"] == 2
+

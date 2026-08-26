@@ -21,6 +21,7 @@ from elt_pipeline.config.loader import (
 from elt_pipeline.config.models import Level2Mode, PipelineConfig, ResolvedEntityConfig
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.ingest import (
+    BrokerKafkaConnector,
     ConnectorFamily,
     ConnectorRegistryError,
     KafkaConnectorConfig,
@@ -3261,17 +3262,26 @@ def _run_ingest_entity(
         elif connector_type == "kafka":
             factory = get_connector_factory("kafka")
             validated_config = factory.build_config_from_resolved(resolved_config=resolved_config)
-            result = _CliLocalKafkaConnector(
-                config=validated_config,
-                run_context=run_context,
-                root_path=root_path,
-                log_path=_resolve_kafka_log_path(
-                    resolved_config=resolved_config,
-                    explicit_log_path=kafka_log_path,
-                ),
-                checkpoint_override=checkpoint_override,
-                window=cli_window,
-            ).run()
+            if validated_config.bootstrap_servers is not None:
+                result = _CliBrokerKafkaConnector(
+                    config=validated_config,
+                    run_context=run_context,
+                    root_path=root_path,
+                    checkpoint_override=checkpoint_override,
+                    window=cli_window,
+                ).run()
+            else:
+                result = _CliLocalKafkaConnector(
+                    config=validated_config,
+                    run_context=run_context,
+                    root_path=root_path,
+                    log_path=_resolve_kafka_log_path(
+                        resolved_config=resolved_config,
+                        explicit_log_path=kafka_log_path,
+                    ),
+                    checkpoint_override=checkpoint_override,
+                    window=cli_window,
+                ).run()
         else:
             raise ConfigValidationError(
                 message=(
@@ -3483,15 +3493,23 @@ def _resolve_kafka_log_path(
         or resolved_config.settings.get("log_path")
         or resolved_config.state.get("log_path")
     )
-    if not candidate:
-        raise ConfigValidationError(
-            message="Kafka local ingest requires log_path in config or --kafka-log-path",
-            context={
-                "source_name": resolved_config.source_name,
-                "entity_name": resolved_config.entity_name,
-            },
-        )
-    return path_normalize(str(candidate))
+    if candidate:
+        return path_normalize(str(candidate))
+    if (
+        resolved_config.extraction.get("bootstrap_servers") is not None
+        or resolved_config.settings.get("bootstrap_servers") is not None
+    ):
+        return ""
+    raise ConfigValidationError(
+        message=(
+            "Kafka local ingest requires log_path in config or --kafka-log-path. "
+            "Set bootstrap_servers= in extraction config to use the real broker connector."
+        ),
+        context={
+            "source_name": resolved_config.source_name,
+            "entity_name": resolved_config.entity_name,
+        },
+    )
 
 
 def _select_level1_manifests(
@@ -4283,5 +4301,53 @@ class _CliLocalKafkaConnector(_CliCheckpointOverrideMixin, LocalKafkaConnector):
             window_label=self._cli_window.label,
             manifest_paths=[manifest.manifest_path for manifest in manifests],
             metadata={"connector_type": "kafka"},
+        )
+        return None
+
+
+class _CliBrokerKafkaConnector(_CliCheckpointOverrideMixin, BrokerKafkaConnector):
+    def __init__(
+        self,
+        *,
+        config: KafkaConnectorConfig,
+        run_context,
+        root_path: str,
+        checkpoint_override: _CheckpointOverride,
+        window: ExecutionWindow,
+    ) -> None:
+        BrokerKafkaConnector.__init__(
+            self,
+            config=config,
+            run_context=run_context,
+            root_path=root_path,
+        )
+        _CliCheckpointOverrideMixin.__init__(
+            self,
+            checkpoint_override=checkpoint_override,
+            window=window,
+        )
+
+    def update_checkpoint(
+        self,
+        *,
+        checkpoint_before: dict[str, Any] | None,
+        checkpoint_after: dict[str, Any] | None,
+        manifests: list[Level1ArtifactManifest],
+    ) -> None:
+        if checkpoint_after is None or checkpoint_after == checkpoint_before:
+            return None
+        self.checkpoint_store.commit(
+            environment=self.config.environment,
+            source_name=self.config.source_name,
+            entity_name=self.config.entity_name,
+            run_id=self.run_context.run_id,
+            checkpoint_before=checkpoint_before,
+            checkpoint_after=checkpoint_after,
+            recorded_at=self.run_context.started_at,
+            window_start=self._cli_window.start,
+            window_end=self._cli_window.end,
+            window_label=self._cli_window.label,
+            manifest_paths=[manifest.manifest_path for manifest in manifests],
+            metadata={"connector_type": "kafka_broker"},
         )
         return None

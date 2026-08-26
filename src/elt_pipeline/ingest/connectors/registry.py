@@ -25,6 +25,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field, ValidationError
 
 from elt_pipeline.config.models import ResolvedEntityConfig
+from elt_pipeline.ingest.connectors.broker_kafka import BrokerKafkaConnector
 from elt_pipeline.ingest.connectors.kafka import (
     KafkaConnectorConfig,
 )
@@ -307,16 +308,25 @@ class _KafkaConnectorFactory:
         run_context: RunContext,
         root_path: str,
         **kwargs: Any,
-    ) -> LocalKafkaConnector:
+    ) -> LocalKafkaConnector | BrokerKafkaConnector:
         if not isinstance(config, KafkaConnectorConfig):
             raise ConfigValidationError(
                 message="Kafka connector factory requires KafkaConnectorConfig",
                 context={"config_type": type(config).__name__},
             )
+        if config.bootstrap_servers is not None:
+            return BrokerKafkaConnector(
+                config=config,
+                run_context=run_context,
+                root_path=root_path,
+            )
         log_path = kwargs.get("log_path")
         if log_path is None:
             raise ConfigValidationError(
-                message="Kafka connector factory requires log_path= kwarg",
+                message=(
+                    "Kafka local (JSONL replay) connector requires log_path= kwarg. "
+                    "Set bootstrap_servers= in extraction config to use the real broker connector."
+                ),
                 context={
                     "source_name": config.source_name,
                     "entity_name": config.entity_name,

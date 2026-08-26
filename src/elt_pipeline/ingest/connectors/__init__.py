@@ -1,5 +1,6 @@
 """Connector families for ingestion runtimes."""
 
+from elt_pipeline.ingest.connectors.broker_kafka import BrokerKafkaConnector
 from elt_pipeline.ingest.connectors.kafka import (
     KafkaConnectorBase,
     KafkaConnectorConfig,
@@ -65,6 +66,7 @@ from elt_pipeline.ingest.connectors.sql import (
 )
 
 __all__ = [
+    "BrokerKafkaConnector",
     "KafkaConnectorBase",
     "KafkaConnectorConfig",
     "KafkaMessage",

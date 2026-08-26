@@ -30,6 +30,11 @@ class KafkaMessage(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+_KAFKA_DRIVER_INSTALL_HINTS: dict[str, str] = {
+    "broker": "uv sync --extra kafka",
+}
+
+
 class KafkaConnectorConfig(BaseModel):
     schema_version: str
     environment: str
@@ -42,10 +47,34 @@ class KafkaConnectorConfig(BaseModel):
     start_offset: int | None = Field(default=None, ge=0)
     max_messages: int = Field(default=1000, ge=1)
     payload_format: str = "json"
+    bootstrap_servers: str | list[str] | None = Field(default=None)
+    consumer_group_id: str | None = Field(default=None)
     persistence: dict[str, Any] = Field(default_factory=dict)
     state: dict[str, Any] = Field(default_factory=dict)
     settings: dict[str, Any] = Field(default_factory=dict)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("bootstrap_servers")
+    @classmethod
+    def _validate_bootstrap_servers(cls, value: Any) -> str | list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("bootstrap_servers string must not be empty")
+            return stripped
+        if isinstance(value, list):
+            if not value:
+                raise ValueError("bootstrap_servers list must not be empty")
+            normalized: list[str] = []
+            for entry in value:
+                s = str(entry).strip()
+                if not s:
+                    raise ValueError("bootstrap_servers list entries must not be empty")
+                normalized.append(s)
+            return normalized
+        raise ValueError("bootstrap_servers must be a string or list of strings")
 
     @field_validator("topic")
     @classmethod
@@ -95,6 +124,8 @@ class KafkaConnectorConfig(BaseModel):
             "start_offset": extraction.get("start_offset"),
             "max_messages": extraction.get("max_messages", 1000),
             "payload_format": extraction.get("payload_format", "json"),
+            "bootstrap_servers": extraction.get("bootstrap_servers"),
+            "consumer_group_id": extraction.get("consumer_group_id"),
             "persistence": resolved_config.persistence,
             "state": resolved_config.state,
             "settings": resolved_config.settings,

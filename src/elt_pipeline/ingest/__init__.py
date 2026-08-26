@@ -1,6 +1,7 @@
 """Ingestion stage package."""
 
 from elt_pipeline.ingest.connectors import (
+    BrokerKafkaConnector,
     ConnectorFactory,
     ConnectorFamily,
     ConnectorFamilyUnsupportedError,
@@ -60,6 +61,7 @@ from elt_pipeline.ingest.state import LocalCheckpointStore
 from elt_pipeline.ingest.storage import LocalArtifactStore, LocalLevel1Writer
 
 __all__ = [
+    "BrokerKafkaConnector",
     "KafkaConnectorBase",
     "KafkaConnectorConfig",
     "KafkaMessage",
