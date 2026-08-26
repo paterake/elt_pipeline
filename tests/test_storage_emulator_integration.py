@@ -172,7 +172,7 @@ class TestS3EmulatorLeafOps:
         self,
     ) -> None:
         joined = pu.join_paths(S3_ROOT, "seg1", "seg2", "table=abc/")
-        assert joined == f"{S3_ROOT}/seg1/seg2/table=abc/"
+        assert joined == f"{S3_ROOT}/seg1/seg2/table=abc"
         parent = pu.path_parent(f"{S3_ROOT}/a/b/c.bin")
         assert parent == f"{S3_ROOT}/a/b"
         base = pu.path_basename(f"{S3_ROOT}/a/b/c.bin")

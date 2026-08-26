@@ -737,7 +737,11 @@ class S3Backend:
                     suffix = (
                         k[len(prefix):] if k.startswith(prefix) else None
                     )
-                    if suffix is not None and fnmatch.fnmatch(suffix, pattern):
+                    if (
+                        suffix is not None
+                        and "/" not in suffix
+                        and fnmatch.fnmatch(suffix, pattern)
+                    ):
                         matches.append(f"s3://{bucket}/{k}")
             return matches
         except s3.exceptions.ClientError as exc:  # type: ignore[attr-defined]
