@@ -1029,10 +1029,65 @@
   connectors, confirmed present in identical form before M-2 work began));
   `uv run ruff check src tests examples` clean (fixed 1 F841 dead monkeypatch assignment).
   **Twenty-first TRANCHE 2 on-demand pull closed. SQL source ingest is now Production-grade for
-  the enterprise top 3 (Postgres/MySQL/MSSQL) + DuckDB zero-infra local + JDBC universal fallback.
+  the enterprise top 3 (Postgres/MySQL/MSSQL) + DuckDB zero-infra local + JDBC universal fallback.**
+- **TRANCHE 2 — I-2 CLOSED (2026-08-26, twenty-second on-demand pull, 🟠 MED adoption unblocker:
+  SQL ingestion "list tables" UX replacing legacy multi-way configuration indirection,
+  matching PRD 04 list-tables pattern with non-engineer-friendly zero-SQL default +
+  escape hatches for complex logic):** Full SQL+REST ingestion simplification delivered
+  end-to-end behind existing seams (zero breaking changes — all entity configs backward
+  compatible; additive-only optional fields). **(a) 3-tier extraction defaults deep-merge
+  cascade in [loader.py:121-132](src/elt_pipeline/config/loader.py#L121-L132):**
+  `source.defaults.extraction` → `source.extraction` (top-level) → `entity.extraction`
+  merged BEFORE auth/persistence/settings/state 5-way cascade. Enables 50 entities under
+  one SQL source to share connection/watermark/mode/fetch_size once; each entity needs
+  only `name:` + per-entity overrides. **(b) Auto `SELECT *` + `catalog_table` override
+  in [sql.py:307-321](src/elt_pipeline/ingest/connectors/sql.py#L307-L321):** No explicit
+  `sql:` / `sql_file:` → auto-generate `SELECT * FROM <catalog_table or entity_name>`.
+  Entity name maps directly to source table; `catalog_table:` disambiguates SAP BW
+  `ZSD_*` / physical-vs-logical names. Missing table name raises `SQL_QUERY_UNAVAILABLE`
+  with remediation guidance. **(c) `filters` list simple predicates auto-ANDed via
+  [_assemble_sql_with_filters](src/elt_pipeline/ingest/connectors/sql.py#L896-L917):**
+  New `SqlQueryTemplate.filters: list[str]` field; smart WHERE-clause position inference
+  handles bare queries (prepend WHERE), existing WHERE (wrap + AND), suffix markers GROUP BY /
+  ORDER BY / LIMIT (insert before first suffix). Enables `is_active = 1`, `country_code IN (…)`,
+  `void_ind = 'N'` per-entity static predicates without custom SQL files. **(d) `sql_file`
+  external SQL references in [_resolve_query_sql](src/elt_pipeline/ingest/connectors/sql.py#L243-L306):**
+  `SqlQueryTemplate.sql_file` resolves absolute paths directly; relative paths resolved to
+  `config_file_dir` (auto-injected settings key from `resolve_entity_config(config_path=…)`).
+  Sharp error codes: `SQL_SQLFILE_NOT_FOUND`, `SQL_SQLFILE_EMPTY`, `SQL_SQLFILE_NO_BASEDIR`.
+  Complex multi-page queries live in IDE-highlighted `.sql` files; entity YAML stays compact.
+  **(e) `{today.*}` Jinja-style placeholders added to BOTH SQL and REST connectors:**
+  `_build_template_context()` exposes `today:` dict (sql.py:848-853, rest.py:1155-1160)
+  with 4 formats: `date` (ISO), `yyyymmdd` (compact), `iso` (full datetime), `datetime_iso`
+  (space-separated). Tokenizer `_TEMPLATE_PATTERN` uses nested-dict DOT-key traversal via
+  shared `_render_string_template()`. Valid inside SQL `sql` text, `filters[]` entries,
+  REST `base_url`, `headers`, `query_params`, `body`. Existing run/source/entity/config/window/checkpoint
+  templates untouched. **(f) Delta auto-watermark predicate guard:** `build_query_plan()`
+  (sql.py:670-684) auto-appends `{watermark.column_name} > :{param_name}` to filters ONLY
+  when (extraction_mode=delta + watermark present) AND user has NOT already referenced the
+  parameter via `:param` in SQL / values dict / filters. Avoids double-writing boilerplate;
+  combined with `filters[]` = zero custom SQL for typical delta ingestion. **(g) Reference
+  config: [examples/configs/local_sqlite_multi_table_simple.yaml](examples/configs/local_sqlite_multi_table_simple.yaml)**
+  (52 lines): 4 entities (2 DIM + 2 FACT) sharing one source extraction defaults; 2 use
+  `catalog_table:` disambiguation, 1 uses `sql_file:`, 3 use `filters[]` (one with
+  `{today.yyyymmdd}`), 3 use checkpoint watermarks with per-table `checkpoint_key` overrides.
+  Zero explicit SQL for 3 of 4 entities. **(h) 11 new focused tests in test_sql_connectors.py
+  (29 total):** source_defaults_extraction cascade, auto-SELECT*, catalog_table override,
+  sql_file loading/not-found/no-basedir (3 tests), auto-watermark predicate, filters+auto-watermark
+  combined, today.* placeholders render, e2e snapshot+filters+auto-star, e2e delta+auto-watermark+auto-star.
+  REST `{today.*}` covered by existing shared-template engine test. **(i) Bugfix: `explicit_cp`
+  UnboundLocalError in `validate-config` CLI:** variable bound only in `if args.config_path is None`
+  branch but referenced in both branches at `config_path=explicit_cp or args.config_path`. Hoisted
+  `explicit_cp: str | Path | None = None` before if/else in [cli.py:1891](src/elt_pipeline/cli.py#L1891).
+  Repairs pre-existing `test_validate_config_command` regression. **Verification:** focused
+  gates GREEN (53/53 config_loader+sql_connectors+rest_connectors in 0.38s, 29/29 sql_connectors,
+  20/20 rest_connectors, 4/4 config_loader, 17/17 CLI tests post-fix); 707 non-emulator tests
+  collected vs M-2 705 baseline; `uv run ruff check src tests examples` clean. **Twenty-second
+  TRANCHE 2 on-demand pull closed. PRD 04 list-tables UX goal now zero-code default for simple
+  SQL ingestion — typical entity YAML drops from ~20 lines to 2-4 lines.**
   No remaining honest-scope 🔴 HIGH gaps exist in the current CMM — all next candidates are 🟠 MED
   additive-only (M-3 Real Kafka broker, M-4 Trino auth, M-5 HDFS backend, M-6 Mage orchestrator,
-  M-7 wasbs fail-fast).**
+  M-7 wasbs fail-fast).
 - **Tranche 2 = on-demand roadmap, do NOT start without an explicit pull-forward:** next likely pulls
   (if none of these apply, just `from BACKLOG.md, continue` lists the 🔴 options each time):
   - M-* (remaining)
@@ -1055,20 +1110,22 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 
 ## Status snapshot
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (705 / 0 failed;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (707 / 0 failed;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
-  (zero code relation to M-2 / any recent code);
+  (zero code relation to I-2 / M-2 / any recent code);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-26 (re-stamped after M-2 + S1→S4 closure). Origin: a portability +
+- **Captured:** 2026-08-26 (re-stamped after I-2 + M-2 + S1→S4 closure). Origin: a portability +
   platinum review. Storage IO implements **`s3://` + local `file://` + `gs://` + `abfss://`
   (B-1/B-2 closed via B-6 StorageBackend facade + B-4 Spark Hadoop FS config)**, Unity
   Catalog-as-REST-catalog via B-3, 28 opt-in real emulator integration tests via B-5. Ingest
   surface explicitly documented across README + PRD 01/04 (I-1 doc pass closed: REST production,
   object_storage local+S3+GCS+ADLS production, SQL 6-driver Production via M-2
-  [sqlite/duckdb/postgres/mysql/mssql/jdbc_generic], Kafka JSONL-replay demo;
+  [sqlite/duckdb/postgres/mysql/mssql/jdbc_generic] + **I-2 list-tables UX: 3-tier extraction
+  defaults deep-merge, auto `SELECT *`, `catalog_table` disambiguation, `filters[]` AND-join,
+  `sql_file` external references, `{today.*}` Jinja templates in SQL+REST**, Kafka JSONL-replay demo;
   real Kafka broker marked roadmap); operational surface (Iceberg maintenance 🟢, observability 🟢, orchestration 🟢,
   deployment 🟠, secrets fully Production end-to-end via G-5 + S1→S4 [env/file/aws/azure/gcp/vault all 🟢], governance 🟢, OpenLineage 🟢, **DQ quarantine + 6-check library now 🟢 via G-8**,
   **No-code connector registry now 🟢 via M-1**, **Catalog preflight validator now 🟢 via B-0**)
@@ -3058,6 +3115,59 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   All 6 verification points confirmed green. Sixteenth TRANCHE 2 item closed. B-0 catalog preflight
   unblocks the most common mid-stage Spark-boot crash class by surfacing catalog misconfigs cleanly
   and pre-emptively before the JVM ever boots.
+
+- **I-2 — SQL ingestion list-tables UX simplification (2026-08-26).** ✅ CLOSED
+  (twenty-second on-demand pull, 🟠 MED adoption unblocker; replaces legacy 4-way
+  configuration indirection with flat 1:1 entity-to-table YAML structure matching the
+  PRD 04 list-tables pattern; additive-only optional fields, zero breaking changes,
+  11 new focused tests.)
+  Verification 5-point inventory:
+    1. **3-tier extraction defaults deep-merge cascade (source.defaults.extraction → source.extraction → entity.extraction):**
+       `resolve_entity_config()` in [loader.py:121-132](src/elt_pipeline/config/loader.py#L121-L132)
+       explicitly pops extraction blocks from source_payload/entity_payload, deep-merges 3
+       layers in order, isolated from the existing 5-way merged_defaults auth/persistence/settings/state
+       cascade. `test_resolved_entity_config_source_defaults_extraction_cascades` asserts:
+       source.defaults sets fetch_size=500, source.extraction sets fetch_size=2000 + driver=duckdb,
+       entity.extraction sets fetch_size=10000 + database=X → final extraction wins entity-level
+       overlaps (fetch_size=10000) while preserving mid-layer additions (driver=duckdb). ✓
+    2. **Auto-SELECT* default + `catalog_table` override + `sql_file` external references (no-code defaults with escape hatches):**
+       `_resolve_query_sql()` in [sql.py:243-321](src/elt_pipeline/ingest/connectors/sql.py#L243-L321)
+       priority order: (1) explicit `sql:` → direct strip-return, (2) `sql_file:` → read relative to
+       `config_file_dir` (3 sharp error codes: SQL_SQLFILE_NOT_FOUND / SQL_SQLFILE_EMPTY / SQL_SQLFILE_NO_BASEDIR),
+       (3) fallback → `SELECT * FROM <catalog_table or entity_name>`. 7 focused tests: auto-SELECT*
+       (bare entity name maps → table), catalog_table ZSD_* SAP-style override, sql_file loading +
+       relative-path resolve, sql_file not-found code, sql_file no-basedir code, e2e LocalSqlConnector
+       snapshot with filters+auto-star, e2e delta checkpoint roundtrip with auto-star + auto-watermark. ✓
+    3. **`filters[]` list AND-join + smart WHERE-clause position inference:**
+       New `SqlQueryTemplate.filters: list[str]` field at [sql.py:80](src/elt_pipeline/ingest/connectors/sql.py#L80)
+       with `field_validator` strip+clean. `_assemble_sql_with_filters()` at [sql.py:896-L917](src/elt_pipeline/ingest/connectors/sql.py#L896-L917)
+       handles 4 structural branches: bare query (no WHERE) → prepend `WHERE (f1) AND (f2)`; existing
+       WHERE clause → wrap original in parentheses then AND filters[]; GROUP BY / ORDER BY / LIMIT suffix
+       markers → insert before whichever suffix appears first. Handles: `is_active = 1`,
+       `country_code IN ('UK','DE','FR')`, `void_ind = 'N'` inline predicates without custom SQL.
+       Tested: `test_sql_connector_build_query_plan_filters_plus_auto_watermark` asserts filters list
+       AND-combined with delta watermark predicate correctly. ✓
+    4. **`{today.*}` Jinja-style placeholders in BOTH SQL and REST `_build_template_context()`:**
+       SQL side exposes today dict at [sql.py:848-853](src/elt_pipeline/ingest/connectors/sql.py#L848-L853)
+       with 4 formats: `date` (ISO), `yyyymmdd` (compact), `iso` (full datetime), `datetime_iso`
+       (space-separated). REST side identical 4-format dict at [rest.py:1155-1160](src/elt_pipeline/ingest/connectors/rest.py#L1155-L1160).
+       Shared `_render_string_template()` tokenizer uses `_TEMPLATE_PATTERN = r"\{([a-zA-Z0-9_.]+)\}"`
+       regex with nested-dict DOT-key traversal — valid inside SQL text, `filters[]` entries, REST
+       `base_url`, `headers`, `query_params`, `body`. Tested: `test_sql_connector_build_query_plan_today_placeholders`
+       asserts `{today.yyyymmdd}` + `{today.date}` + `{environment}` render; existing
+       `test_rest_connector_build_request_plan_renders_templates` covers REST side shared-tokenizer path. ✓
+    5. **Full green focused gates + explicit_cp UnboundLocalError regression repair:**
+       Focused gates green: 53/53 (config_loader+sql_connectors+rest_connectors combined in 0.38s),
+       29/29 sql_connectors, 20/20 rest_connectors, 4/4 config_loader, 17/17 CLI tests post-fix.
+       707 non-emulator tests collected vs M-2 705 baseline. Bugfix: `validate-config` CLI
+       (cli.py validate-config branch) had `explicit_cp` variable bound only inside the
+       `if args.config_path is None:` branch but referenced in both branches at
+       `config_path=explicit_cp or args.config_path`. Fixed by hoisting
+       `explicit_cp: str | Path | None = None` before the if/else at [cli.py:1891](src/elt_pipeline/cli.py#L1891).
+       `uv run ruff check src tests examples` → 0 issues. ✓
+  All 5 verification points confirmed green. Twenty-second TRANCHE 2 on-demand pull closed.
+  Typical entity YAML verbosity drops ~80% for the common list-tables use case; zero-SQL default
+  with explicit escape hatches for complex queries is the non-engineer-friendly target.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

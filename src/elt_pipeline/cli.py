@@ -1888,6 +1888,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         if args.command == "validate-config":
+            explicit_cp: str | Path | None = None
             if args.config_path is None:
                 explicit_cp = runtime_context.config_path()
                 if explicit_cp is None:
