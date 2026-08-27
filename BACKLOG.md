@@ -361,6 +361,20 @@ trade any of these away for a gap fix. When in doubt, protect this list.
    - **Out of scope**: dynamic plugin auto-discovery via setuptools entrypoints, `sys.path`
      scanning, `importlib.metadata` plugins, `pkg_resources.iter_entry_points`, any HTTP/ConfigMap
      scheme discovery, reflection over third-party packages. Registration is static in-code only.
+9. **Gap triage source-of-truth (zero-pre-scoped policy enforcement).** All identified
+   industry/benchmark capability gaps, implementation-path recommendations, severity
+   classifications (P0 strategic / P1 moderate / P2 ergonomic / niche), and effort×impact
+   roadmap ordering live canonically in `docs/INDUSTRY_GAP_ANALYSIS.md`. No gap becomes a
+   `§Work items → §Still Todo` entry here except on **concrete signed-off consumer demand**
+   (per the zero-pre-scoped backlog policy declared at TRANCHE 2 close on 2026-08-26).
+   Pull-forward procedure on consumer demand: (a) copy the relevant GAP-ID's design,
+   rationale, and Verification block from `docs/INDUSTRY_GAP_ANALYSIS.md` into `§Still Todo`
+   as a single `#### GAP-X — Title` item; (b) work one-per-session per the standard
+   continuity playbook; (c) on close, leave the 1-line `#### GAP-X — Title  ✅ CLOSED
+   (YYYY-MM-DD, archive: WORK_ITEMS_CLOSED.md)` summary here and move the full body
+   (design, tradeoffs, verification output with counts) to `docs/todo/archive/WORK_ITEMS_CLOSED.md`
+   per the rule at `§Work items` lines 374–377; (d) re-stamp `§Resume` and `§Status snapshot`
+   before ending the session.
 
 ---
 
