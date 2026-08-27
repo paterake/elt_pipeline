@@ -777,6 +777,397 @@ def test_schedule_plan_bounds_retries_and_delay(tmp_path: Path) -> None:
         assert "validation failed" in exc.message.lower() or exc.context
 
 
+def test_schedule_wait_for_path_exists_satisfied(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    target_file = tmp_path / "landing" / "ready.json"
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    target_file.write_text("{}", encoding="utf-8")
+
+    call_count: dict[str, int] = {"n": 0}
+
+    def _fake_invoke(_argv):
+        call_count["n"] += 1
+        return (0, json.dumps({"command": "ok", "runner": "path-exists-job"}), "")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "after-file-ready",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "pe"],
+                    "wait_for": {
+                        "path_exists": str(target_file),
+                        "poll_sec": 0.1,
+                        "timeout_sec": 2.0,
+                    },
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_path_exists",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    assert payload["success"] is True
+    assert payload["jobs"][0]["status"] == "success"
+    assert payload["jobs"][0]["wait_for"]["kind"] == "path_exists"
+    assert payload["jobs"][0]["wait_for"]["satisfied"] is True
+    sensor_events = [
+        e
+        for e in payload["sensor_events"]
+        if e["details"]["job"] == "after-file-ready"
+    ]
+    assert any(e["details"]["state"] == "satisfied" for e in sensor_events)
+    metric_points = [
+        m
+        for m in payload["sensor_metric_points"]
+        if m["labels"].get("job") == "after-file-ready"
+    ]
+    assert any(m["labels"].get("state") == "satisfied" for m in metric_points)
+    assert call_count["n"] == 1
+
+
+def test_schedule_wait_for_path_glob_satisfied(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    base_dir = tmp_path / "inbound" / "batch"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(3):
+        (base_dir / f"part-{i:04d}.parquet").write_bytes(b"PAR1")
+
+    def _fake_invoke(_argv):
+        return (0, json.dumps({"command": "ok"}), "")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "after-glob",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "pg"],
+                    "wait_for": {
+                        "path_glob": {"base": str(base_dir), "pattern": "part-*.parquet"},
+                        "poll_sec": 0.1,
+                        "timeout_sec": 2.0,
+                    },
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_path_glob",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    assert payload["success"] is True
+    wf = payload["jobs"][0]["wait_for"]
+    assert wf["kind"] == "path_glob"
+    assert wf["satisfied"] is True
+    assert "matches" in wf["reason"]
+
+
+def test_schedule_wait_for_timeout_marks_failed(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    missing_path = tmp_path / "never" / "appears" / "signal.json"
+
+    call_count: dict[str, int] = {"n": 0}
+
+    def _fake_invoke(_argv):
+        call_count["n"] += 1
+        return (0, json.dumps({"command": "oops-ran"}), "")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "stuck-waiting",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "to"],
+                    "wait_for": {
+                        "path_exists": str(missing_path),
+                        "poll_sec": 0.1,
+                        "timeout_sec": 0.35,
+                    },
+                },
+                {
+                    "name": "downstream",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "ds"],
+                    "depends_on": ["stuck-waiting"],
+                },
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_timeout",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 5
+    assert payload["success"] is False
+    assert payload["jobs"][0]["status"] == "failed_sensor"
+    assert payload["jobs"][0]["wait_for"]["satisfied"] is False
+    assert "timeout" in payload["jobs"][0]["wait_for"]["reason"]
+    assert call_count["n"] == 0
+    assert len(payload["skipped_jobs"]) == 1
+    assert payload["skipped_jobs"][0]["name"] == "downstream"
+    timeout_events = [
+        e
+        for e in payload["sensor_events"]
+        if e["details"]["job"] == "stuck-waiting" and e["details"]["state"] == "timeout"
+    ]
+    assert len(timeout_events) >= 1
+
+
+def test_schedule_wait_for_http_2xx_satisfied(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    call_count: dict[str, int] = {"http": 0, "cli": 0}
+
+    def _fake_http(url: str, timeout: float) -> int:
+        call_count["http"] += 1
+        if call_count["http"] < 2:
+            return 503
+        return 200
+
+    def _fake_invoke(_argv):
+        call_count["cli"] += 1
+        return (0, json.dumps({"command": "ok", "after": "http"}), "")
+
+    import elt_pipeline._cli_main as _cm
+
+    monkeypatch.setattr(_cm, "_http_get_status", _fake_http)
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "http-waiter",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "hw"],
+                    "wait_for": {
+                        "http_url": "https://example.com/healthz",
+                        "poll_sec": 0.05,
+                        "timeout_sec": 2.0,
+                    },
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_http",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    assert payload["success"] is True
+    assert call_count["http"] >= 2
+    assert call_count["cli"] == 1
+    wf = payload["jobs"][0]["wait_for"]
+    assert wf["kind"] == "http_url"
+    assert wf["satisfied"] is True
+    polling_events = [
+        e
+        for e in payload["sensor_events"]
+        if e["details"]["job"] == "http-waiter" and e["details"]["state"] == "polling"
+    ]
+    satisfied_events = [
+        e
+        for e in payload["sensor_events"]
+        if e["details"]["job"] == "http-waiter" and e["details"]["state"] == "satisfied"
+    ]
+    assert len(polling_events) >= 1
+    assert len(satisfied_events) >= 1
+
+
+def test_schedule_sla_breach_emits_alert(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    def _fake_invoke(_argv):
+        import time as _t
+
+        _t.sleep(0.2)
+        return (0, json.dumps({"command": "slow-ok"}), "")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "slow-job",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "sla"],
+                    "sla_seconds": 0.05,
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_sla_breach",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    assert payload["jobs"][0]["status"] == "success"
+    assert payload["jobs"][0]["sla_seconds"] == 0.05
+    assert payload["jobs"][0]["sla_breached"] is True
+    assert payload["jobs"][0]["elapsed_seconds"] > 0.05
+    assert len(payload["sla_alerts"]) >= 1
+    alert = payload["sla_alerts"][0]
+    assert alert["severity"] == "warning"
+    assert "SLA breached" in alert["message"]
+    assert alert["labels"]["job"] == "slow-job"
+    assert alert["run_id"] == "schedule_run_UT_sla_breach"
+
+
+def test_schedule_sla_ok_no_alert(tmp_path: Path, monkeypatch) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    def _fake_invoke(_argv):
+        return (0, json.dumps({"command": "fast-ok"}), "")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "fast-job",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "fast"],
+                    "sla_seconds": 300,
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_sla_ok",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    assert payload["jobs"][0]["status"] == "success"
+    assert payload["jobs"][0]["sla_seconds"] == 300
+    assert payload["jobs"][0]["sla_breached"] is False
+    assert len(payload["sla_alerts"]) == 0
+
+
+def test_schedule_sensor_poll_event_count_and_metric_labels(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from elt_pipeline.cli import _run_schedule_plan
+    from elt_pipeline.shared.scheduler import SchedulePlan
+
+    call_count: dict[str, int] = {"pe": 0}
+
+    import elt_pipeline._cli_main as _cm
+
+    def _fake_path_exists(path: str) -> bool:
+        call_count["pe"] += 1
+        return call_count["pe"] >= 3
+
+    monkeypatch.setattr(_cm, "path_exists", _fake_path_exists)
+
+    def _fake_invoke(_argv):
+        return (0, json.dumps({"command": "ok"}), "")
+
+    monkeypatch.setattr("elt_pipeline.cli._invoke_cli_job", _fake_invoke)
+    plan = SchedulePlan.model_validate(
+        {
+            "jobs": [
+                {
+                    "name": "counted-job",
+                    "argv": ["show-run-context", "--stage", "ingest", "--job-name", "cj"],
+                    "wait_for": {
+                        "path_exists": str(tmp_path / "delayed.touch"),
+                        "poll_sec": 0.05,
+                        "timeout_sec": 5.0,
+                    },
+                }
+            ],
+            "continue_on_error": False,
+        }
+    )
+    payload, exit_code = _run_schedule_plan(
+        plan=plan,
+        plan_path=str(tmp_path / "plan.yaml"),
+        continue_on_error=False,
+        run_id="schedule_run_UT_count",
+        started_at_iso="2026-08-27T00:00:00+00:00",
+    )
+    assert exit_code == 0
+    events = [e for e in payload["sensor_events"] if e["details"]["job"] == "counted-job"]
+    polling_count = sum(1 for e in events if e["details"]["state"] == "polling")
+    satisfied_count = sum(1 for e in events if e["details"]["state"] == "satisfied")
+    assert polling_count == 2
+    assert satisfied_count == 1
+    assert len(events) == 3
+
+    points = [
+        m
+        for m in payload["sensor_metric_points"]
+        if m["labels"].get("job") == "counted-job"
+    ]
+    by_state = {m["labels"]["state"]: m["value"] for m in points}
+    assert by_state["polling"] == 2
+    assert by_state["satisfied"] == 1
+    assert all(m["metric_name"] == "elt_sensor_poll_count" for m in points)
+    assert all(m["metric_type"] == "gauge" for m in points)
+    assert all(m["run_id"] == "schedule_run_UT_count" for m in points)
+
+
+def test_schedule_wait_for_validation_rejects_multiple_kinds(tmp_path: Path) -> None:
+    from elt_pipeline.shared.errors import ConfigValidationError
+    from elt_pipeline.shared.scheduler import load_schedule_plan
+
+    bad = tmp_path / "bad_wf.yaml"
+    bad.write_text(
+        dedent(
+            """
+        jobs:
+          - name: multi-kind
+            argv: ["show-run-context", "--stage", "ingest", "--job-name", "mk"]
+            wait_for:
+              path_exists: /tmp/a
+              http_url: https://example.com
+              poll_sec: 1
+              timeout_sec: 10
+        """
+        ).strip(),
+        encoding="utf-8",
+    )
+    try:
+        load_schedule_plan(bad)
+        raise AssertionError("expected ConfigValidationError")
+    except ConfigValidationError as exc:
+        assert "validation failed" in exc.message.lower() or exc.context
+
+
 def test_sql_compile_command(tmp_path: Path) -> None:
     package_root = write_sql_package(tmp_path)
     result = subprocess.run(

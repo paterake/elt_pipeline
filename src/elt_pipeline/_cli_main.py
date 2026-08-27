@@ -4,8 +4,11 @@ import argparse
 import hashlib
 import json
 import os
+import random
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -80,11 +83,18 @@ from elt_pipeline.shared.errors import (
 )
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
+from elt_pipeline.shared.observability import (
+    AlertEvent,
+    AlertSeverity,
+    MetricPoint,
+    MetricType,
+)
 from elt_pipeline.shared.path_utils import (
     _StorageScheme,
     detect_scheme,
     join_paths,
     path_exists,
+    path_glob,
     path_mkdir,
     path_normalize,
     path_read_text,
@@ -99,6 +109,7 @@ from elt_pipeline.shared.runtime import (
 )
 from elt_pipeline.shared.scheduler import (
     SchedulePlan,
+    WaitForSpec,
     load_schedule_plan,
     parse_schedule_payload,
     topological_sort_schedule_jobs,
@@ -1089,6 +1100,408 @@ def _new_schedule_run_id_and_start() -> tuple[str, str]:
     return (f"schedule_run_{stamp}_{salt}", now.isoformat())
 
 
+def _build_schedule_run_context(run_id: str, started_at_iso: str):
+    from elt_pipeline.shared.runtime import RunContext, StageName
+
+    try:
+        start_dt = datetime.fromisoformat(started_at_iso)
+    except ValueError:
+        start_dt = datetime.now(UTC)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=UTC)
+    return RunContext(
+        run_id=run_id,
+        stage=StageName.ingest,
+        job_name="schedule_run",
+        trigger_type="scheduled",
+        started_at=start_dt,
+        attributes={},
+    )
+
+
+def _emit_sensor_poll_log(
+    *,
+    run_id: str,
+    started_at_iso: str,
+    job_name: str,
+    poll_index: int,
+    state: str,
+    wait_kind: str,
+    wait_target: str,
+    elapsed_seconds: float,
+    detail: str = "",
+) -> dict[str, Any]:
+    event = {
+        "run_id": run_id,
+        "severity": "INFO" if state != "error" else "WARNING",
+        "component": "schedule.sensor",
+        "event_type": "sensor_poll",
+        "message": (
+            f"sensor poll job={job_name} index={poll_index} state={state} "
+            f"kind={wait_kind} elapsed={elapsed_seconds:.2f}s"
+        ),
+        "timestamp": started_at_iso,
+        "details": {
+            "job": job_name,
+            "poll_index": poll_index,
+            "state": state,
+            "wait_kind": wait_kind,
+            "wait_target": wait_target,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+        },
+    }
+    if detail:
+        event["details"]["detail"] = detail
+    print(json.dumps(event, sort_keys=True, default=str), file=sys.stderr)
+    return event
+
+
+def _wait_for_path_exists(
+    *,
+    path: str,
+    poll_sec: float,
+    timeout_sec: float,
+    run_id: str,
+    started_at_iso: str,
+    job_name: str,
+    sensor_events: list[dict[str, Any]],
+    poll_gauge: dict[tuple[str, str], int],
+) -> tuple[bool, str]:
+    start = time.monotonic()
+    poll_index = 0
+    while True:
+        poll_index += 1
+        elapsed = time.monotonic() - start
+        try:
+            satisfied = path_exists(path)
+        except Exception as exc:
+            state = "error"
+            detail = f"path_exists raised: {type(exc).__name__}: {exc}"
+            poll_gauge[(job_name, "error")] = poll_gauge.get((job_name, "error"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state=state,
+                wait_kind="path_exists",
+                wait_target=path,
+                elapsed_seconds=elapsed,
+                detail=detail,
+            )
+            sensor_events.append(evt)
+        else:
+            if satisfied:
+                state = "satisfied"
+                poll_gauge[(job_name, "satisfied")] = (
+                    poll_gauge.get((job_name, "satisfied"), 0) + 1
+                )
+                evt = _emit_sensor_poll_log(
+                    run_id=run_id,
+                    started_at_iso=started_at_iso,
+                    job_name=job_name,
+                    poll_index=poll_index,
+                    state=state,
+                    wait_kind="path_exists",
+                    wait_target=path,
+                    elapsed_seconds=elapsed,
+                    detail="path found",
+                )
+                sensor_events.append(evt)
+                return True, "path_exists satisfied"
+            state = "polling"
+            poll_gauge[(job_name, "polling")] = poll_gauge.get((job_name, "polling"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state=state,
+                wait_kind="path_exists",
+                wait_target=path,
+                elapsed_seconds=elapsed,
+                detail="path not yet present",
+            )
+            sensor_events.append(evt)
+        if elapsed >= timeout_sec:
+            poll_gauge[(job_name, "timeout")] = poll_gauge.get((job_name, "timeout"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state="timeout",
+                wait_kind="path_exists",
+                wait_target=path,
+                elapsed_seconds=elapsed,
+                detail=f"timeout after {timeout_sec}s",
+            )
+            sensor_events.append(evt)
+            return False, f"path_exists timeout after {timeout_sec}s"
+        time.sleep(poll_sec)
+
+
+def _wait_for_path_glob(
+    *,
+    base: str,
+    pattern: str,
+    poll_sec: float,
+    timeout_sec: float,
+    run_id: str,
+    started_at_iso: str,
+    job_name: str,
+    sensor_events: list[dict[str, Any]],
+    poll_gauge: dict[tuple[str, str], int],
+) -> tuple[bool, str]:
+    start = time.monotonic()
+    poll_index = 0
+    target_repr = f"base={base} pattern={pattern}"
+    while True:
+        poll_index += 1
+        elapsed = time.monotonic() - start
+        try:
+            matches = path_glob(base, pattern)
+        except Exception as exc:
+            state = "error"
+            detail = f"path_glob raised: {type(exc).__name__}: {exc}"
+            poll_gauge[(job_name, "error")] = poll_gauge.get((job_name, "error"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state=state,
+                wait_kind="path_glob",
+                wait_target=target_repr,
+                elapsed_seconds=elapsed,
+                detail=detail,
+            )
+            sensor_events.append(evt)
+        else:
+            if matches:
+                state = "satisfied"
+                poll_gauge[(job_name, "satisfied")] = (
+                    poll_gauge.get((job_name, "satisfied"), 0) + 1
+                )
+                evt = _emit_sensor_poll_log(
+                    run_id=run_id,
+                    started_at_iso=started_at_iso,
+                    job_name=job_name,
+                    poll_index=poll_index,
+                    state=state,
+                    wait_kind="path_glob",
+                    wait_target=target_repr,
+                    elapsed_seconds=elapsed,
+                    detail=f"{len(matches)} matches found",
+                )
+                sensor_events.append(evt)
+                return True, f"path_glob satisfied ({len(matches)} matches)"
+            state = "polling"
+            poll_gauge[(job_name, "polling")] = poll_gauge.get((job_name, "polling"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state=state,
+                wait_kind="path_glob",
+                wait_target=target_repr,
+                elapsed_seconds=elapsed,
+                detail="no matches yet",
+            )
+            sensor_events.append(evt)
+        if elapsed >= timeout_sec:
+            poll_gauge[(job_name, "timeout")] = poll_gauge.get((job_name, "timeout"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state="timeout",
+                wait_kind="path_glob",
+                wait_target=target_repr,
+                elapsed_seconds=elapsed,
+                detail=f"timeout after {timeout_sec}s",
+            )
+            sensor_events.append(evt)
+            return False, f"path_glob timeout after {timeout_sec}s"
+        time.sleep(poll_sec)
+
+
+def _http_get_status(url: str, timeout: float) -> int:
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status
+
+
+def _wait_for_http_2xx(
+    *,
+    url: str,
+    poll_sec: float,
+    timeout_sec: float,
+    run_id: str,
+    started_at_iso: str,
+    job_name: str,
+    sensor_events: list[dict[str, Any]],
+    poll_gauge: dict[tuple[str, str], int],
+) -> tuple[bool, str]:
+    start = time.monotonic()
+    poll_index = 0
+    backoff_base = poll_sec
+    attempt_for_backoff = 0
+    while True:
+        poll_index += 1
+        attempt_for_backoff += 1
+        elapsed = time.monotonic() - start
+        status = -1
+        try:
+            req_timeout = min(30.0, max(5.0, poll_sec * 2))
+            status = _http_get_status(url, req_timeout)
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except Exception as exc:
+            state = "error"
+            detail = f"HTTP raised: {type(exc).__name__}: {exc}"
+            poll_gauge[(job_name, "error")] = poll_gauge.get((job_name, "error"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state=state,
+                wait_kind="http_url",
+                wait_target=url,
+                elapsed_seconds=elapsed,
+                detail=detail,
+            )
+            sensor_events.append(evt)
+        if status != -1:
+            if 200 <= status < 300:
+                state = "satisfied"
+                poll_gauge[(job_name, "satisfied")] = (
+                    poll_gauge.get((job_name, "satisfied"), 0) + 1
+                )
+                evt = _emit_sensor_poll_log(
+                    run_id=run_id,
+                    started_at_iso=started_at_iso,
+                    job_name=job_name,
+                    poll_index=poll_index,
+                    state=state,
+                    wait_kind="http_url",
+                    wait_target=url,
+                    elapsed_seconds=elapsed,
+                    detail=f"HTTP {status}",
+                )
+                sensor_events.append(evt)
+                return True, f"HTTP 2xx satisfied (status={status})"
+            state = "polling"
+            poll_gauge[(job_name, "polling")] = poll_gauge.get((job_name, "polling"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state=state,
+                wait_kind="http_url",
+                wait_target=url,
+                elapsed_seconds=elapsed,
+                detail=f"HTTP {status} (not 2xx)",
+            )
+            sensor_events.append(evt)
+        if elapsed >= timeout_sec:
+            poll_gauge[(job_name, "timeout")] = poll_gauge.get((job_name, "timeout"), 0) + 1
+            evt = _emit_sensor_poll_log(
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                job_name=job_name,
+                poll_index=poll_index,
+                state="timeout",
+                wait_kind="http_url",
+                wait_target=url,
+                elapsed_seconds=elapsed,
+                detail=f"timeout after {timeout_sec}s",
+            )
+            sensor_events.append(evt)
+            return False, f"http_url timeout after {timeout_sec}s"
+        jitter = random.uniform(0.0, 0.5 * backoff_base)
+        sleep_s = min(poll_sec * 30.0, backoff_base * (2 ** (attempt_for_backoff - 1))) + jitter
+        sleep_s = min(sleep_s, max(0.1, timeout_sec - elapsed - 0.001))
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+
+
+def _run_schedule_sensor_wait(
+    *,
+    job_name: str,
+    wait_for: WaitForSpec,
+    run_id: str,
+    started_at_iso: str,
+    sensor_events: list[dict[str, Any]],
+    poll_gauge: dict[tuple[str, str], int],
+) -> tuple[bool, str, str, str]:
+    if wait_for.path_exists is not None:
+        ok, reason = _wait_for_path_exists(
+            path=wait_for.path_exists,
+            poll_sec=wait_for.poll_sec,
+            timeout_sec=wait_for.timeout_sec,
+            run_id=run_id,
+            started_at_iso=started_at_iso,
+            job_name=job_name,
+            sensor_events=sensor_events,
+            poll_gauge=poll_gauge,
+        )
+        return ok, "path_exists", wait_for.path_exists, reason
+    if wait_for.path_glob is not None:
+        ok, reason = _wait_for_path_glob(
+            base=wait_for.path_glob["base"],
+            pattern=wait_for.path_glob["pattern"],
+            poll_sec=wait_for.poll_sec,
+            timeout_sec=wait_for.timeout_sec,
+            run_id=run_id,
+            started_at_iso=started_at_iso,
+            job_name=job_name,
+            sensor_events=sensor_events,
+            poll_gauge=poll_gauge,
+        )
+        target_repr = f"base={wait_for.path_glob['base']} pattern={wait_for.path_glob['pattern']}"
+        return ok, "path_glob", target_repr, reason
+    if wait_for.http_url is not None:
+        ok, reason = _wait_for_http_2xx(
+            url=wait_for.http_url,
+            poll_sec=wait_for.poll_sec,
+            timeout_sec=wait_for.timeout_sec,
+            run_id=run_id,
+            started_at_iso=started_at_iso,
+            job_name=job_name,
+            sensor_events=sensor_events,
+            poll_gauge=poll_gauge,
+        )
+        return ok, "http_url", wait_for.http_url, reason
+    return False, "unknown", "", "wait_for kind not set"
+
+
+def _build_sensor_metric_points(
+    *,
+    poll_gauge: dict[tuple[str, str], int],
+    run_id: str,
+) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for (job, state), count in poll_gauge.items():
+        if count <= 0:
+            continue
+        mp = MetricPoint(
+            metric_name="elt_sensor_poll_count",
+            metric_type=MetricType.gauge,
+            value=count,
+            labels={"job": job, "state": state},
+            run_id=run_id,
+            stage="schedule",
+            job_name=job,
+        )
+        points.append(mp.model_dump(mode="json"))
+    return points
+
+
 def _run_schedule_plan(
     *,
     plan: SchedulePlan,
@@ -1107,6 +1520,13 @@ def _run_schedule_plan(
     skipped_jobs: list[dict[str, Any]] = []
     overall_exit_code = 0
     stop_after_this_job: str | None = None
+
+    sensor_events: list[dict[str, Any]] = []
+    poll_gauge: dict[tuple[str, str], int] = {}
+    sla_alerts: list[dict[str, Any]] = []
+    plan_start_dt = datetime.fromisoformat(started_at_iso)
+    if plan_start_dt.tzinfo is None:
+        plan_start_dt = plan_start_dt.replace(tzinfo=UTC)
 
     for name in ordered_names:
         job = by_name[name]
@@ -1150,6 +1570,52 @@ def _run_schedule_plan(
             )
             continue
 
+        wait_ok = True
+        wait_kind = ""
+        wait_target = ""
+        wait_reason = ""
+        if job.wait_for is not None:
+            wait_ok, wait_kind, wait_target, wait_reason = _run_schedule_sensor_wait(
+                job_name=job.name,
+                wait_for=job.wait_for,
+                run_id=run_id,
+                started_at_iso=started_at_iso,
+                sensor_events=sensor_events,
+                poll_gauge=poll_gauge,
+            )
+            if not wait_ok:
+                failed.add(job.name)
+                status = "failed_sensor"
+                if overall_exit_code == 0:
+                    overall_exit_code = 5
+                if not continue_on_error:
+                    stop_after_this_job = job.name
+                job_results.append(
+                    {
+                        "name": job.name,
+                        "position": position,
+                        "argv": job.argv,
+                        "status": status,
+                        "exit_code": 5,
+                        "attempts": [],
+                        "attempt_count": 0,
+                        "retries_requested": job.retries,
+                        "retry_delay_seconds": job.retry_delay_seconds,
+                        "depends_on": list(job.depends_on),
+                        "wait_for": {
+                            "kind": wait_kind,
+                            "target": wait_target,
+                            "poll_sec": job.wait_for.poll_sec,
+                            "timeout_sec": job.wait_for.timeout_sec,
+                            "satisfied": False,
+                            "reason": wait_reason,
+                        },
+                        "output": None,
+                        "error": {"sensor_failure": wait_reason},
+                    }
+                )
+                continue
+
         attempts: list[dict[str, Any]] = []
         final_exit_code: int = 1
         final_stdout_text = ""
@@ -1157,6 +1623,9 @@ def _run_schedule_plan(
         max_attempts = 1 + max(0, job.retries)
 
         import elt_pipeline.cli as _cli_facade
+
+        job_start_mono = time.monotonic()
+        job_start_wall = datetime.now(UTC)
 
         for attempt in range(1, max_attempts + 1):
             if attempt > 1 and job.retry_delay_seconds > 0:
@@ -1176,6 +1645,49 @@ def _run_schedule_plan(
             if exit_code == 0:
                 break
 
+        job_end_mono = time.monotonic()
+        job_elapsed = job_end_mono - job_start_mono
+
+        sla_breached = False
+        if job.sla_seconds is not None and job_elapsed > float(job.sla_seconds):
+            sla_breached = True
+            labels = {
+                "job": job.name,
+                "sla_seconds": str(job.sla_seconds),
+                "elapsed_seconds": f"{job_elapsed:.2f}",
+                "stage": "schedule",
+            }
+            alert = AlertEvent(
+                severity=AlertSeverity.warning,
+                message=(
+                    f"Schedule job SLA breached: job={job.name} "
+                    f"elapsed={job_elapsed:.2f}s > sla={job.sla_seconds}s"
+                ),
+                labels=labels,
+                run_id=run_id,
+                stage="schedule",
+                job_name=job.name,
+            )
+            sla_alerts.append(alert.model_dump(mode="json"))
+            alert_log = {
+                "run_id": run_id,
+                "severity": "WARNING",
+                "component": "schedule.sla",
+                "event_type": "sla_breached",
+                "message": (
+                    f"SLA breached job={job.name} elapsed={job_elapsed:.2f}s "
+                    f"> sla={job.sla_seconds}s"
+                ),
+                "timestamp": datetime.now(UTC).isoformat(),
+                "details": {
+                    "job": job.name,
+                    "elapsed_seconds": round(job_elapsed, 3),
+                    "sla_seconds": job.sla_seconds,
+                    "sla_breached": True,
+                },
+            }
+            print(json.dumps(alert_log, sort_keys=True, default=str), file=sys.stderr)
+
         if final_exit_code == 0:
             completed.add(job.name)
             status = "success"
@@ -1187,26 +1699,47 @@ def _run_schedule_plan(
             if not continue_on_error:
                 stop_after_this_job = job.name
 
-        job_results.append(
-            {
-                "name": job.name,
-                "position": position,
-                "argv": job.argv,
-                "status": status,
-                "exit_code": final_exit_code,
-                "attempts": attempts,
-                "attempt_count": len(attempts),
-                "retries_requested": job.retries,
-                "retry_delay_seconds": job.retry_delay_seconds,
-                "depends_on": list(job.depends_on),
-                "output": parse_schedule_payload(final_stdout_text),
-                "error": parse_schedule_payload(final_stderr_text),
+        result_row: dict[str, Any] = {
+            "name": job.name,
+            "position": position,
+            "argv": job.argv,
+            "status": status,
+            "exit_code": final_exit_code,
+            "attempts": attempts,
+            "attempt_count": len(attempts),
+            "retries_requested": job.retries,
+            "retry_delay_seconds": job.retry_delay_seconds,
+            "depends_on": list(job.depends_on),
+            "elapsed_seconds": round(job_elapsed, 3),
+            "started_at_iso": job_start_wall.isoformat(),
+            "finished_at_iso": datetime.now(UTC).isoformat(),
+            "output": parse_schedule_payload(final_stdout_text),
+            "error": parse_schedule_payload(final_stderr_text),
+        }
+        if job.sla_seconds is not None:
+            result_row["sla_seconds"] = job.sla_seconds
+            result_row["sla_breached"] = sla_breached
+        if job.wait_for is not None:
+            result_row["wait_for"] = {
+                "kind": wait_kind,
+                "target": wait_target,
+                "poll_sec": job.wait_for.poll_sec,
+                "timeout_sec": job.wait_for.timeout_sec,
+                "satisfied": wait_ok,
+                "reason": wait_reason,
             }
-        )
+        job_results.append(result_row)
+
+    sensor_metric_points = _build_sensor_metric_points(
+        poll_gauge=poll_gauge,
+        run_id=run_id,
+    )
 
     finished_at_iso = datetime.now(UTC).isoformat()
     success_count = sum(1 for jr in job_results if jr["status"] == "success")
-    failed_count = sum(1 for jr in job_results if jr["status"] == "failed")
+    failed_count = sum(
+        1 for jr in job_results if jr["status"] in {"failed", "failed_sensor"}
+    )
     skipped_count = len(skipped_jobs)
     return (
         {
@@ -1225,6 +1758,9 @@ def _run_schedule_plan(
             "success": overall_exit_code == 0,
             "jobs": job_results,
             "skipped_jobs": skipped_jobs,
+            "sensor_events": sensor_events,
+            "sensor_metric_points": sensor_metric_points,
+            "sla_alerts": sla_alerts,
         },
         overall_exit_code,
     )

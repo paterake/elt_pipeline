@@ -208,6 +208,7 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
   previously ran pre-split and were simply re-verified post-split unchanged.
   `uv run ruff check src/ tests/ examples` → All checks passed.
 - **Session 2026-08-27 — closed:** **GAP-7 ✅ CLOSED** Data Contract enforcement (strict/warn/off). Pulled forward on concrete signed-off consumer demand per Active Constraint 9. Full spec, 10-point verified checklist with test counts, architecture decision log, gate result 830/0/28, and 3 pre-production bugs fixed archived in [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Delta vs prior gate: baseline 807 → 830 (+23 new tests: 22 in test_data_contracts.py + 1 in test_data_contracts_iceberg.py). ruff src/tests/examples clean, 0 issues.
+- **Session 2026-08-27 — closed (on-demand operator pull, Active Constraint 9):** **QW-1/TD-1 ✅ CLOSED + QW-3/GAP-11 ✅ CLOSED.** QW-1: pyproject.toml Development Status reaffirmed at **4 — Beta** (classifier already stamped pre-session; Alpha → Beta rationale: 830/0 green gate, zero CMM roadmap rows remaining, all rows Production or DEFUNCT — Alpha misrepresented maturity, zero test impact). QW-3/GAP-11: additive per-job `wait_for` sensors (path_exists / path_glob / http_url 3-kind mutual-exclusivity, poll/timeout bounds) + `sla_seconds` SLA alerts in `elt schedule` runner. Sensor polling reuses B-6 StorageBackend `path_exists` / `path_glob` for scheme-agnostic local/S3/GCS/ADLS dispatch. HTTP wait: GET 2xx poll with jittered exponential backoff capped at poll_sec×30. Per-poll emits structured `sensor_poll` JSON events to stderr (job, poll_index, state, kind, elapsed, detail) + aggregates `elt_sensor_poll_count` Prometheus gauge with labels `{job,state}`. Sensor timeout → job status `failed_sensor`, exit_code=5, downstream `stop_after_this_job` cascade same as CLI failure. SLA measured per-job from CLI body start→end elapsed; breach → G-2 `AlertEvent(severity=warning)` labels `{job, sla_seconds, elapsed_seconds, stage=schedule}` + audit `sla_breached=true` + top-level `sla_alerts[]` array in payload; under-SLA emits zero alerts. Insertion point: YAML schema extended in `shared/scheduler.py` (WaitForSpec Pydantic model + mutual-exclusivity validator + SLA fields) + execution in `_cli_main.py` `_run_schedule_plan()` (same function M-8 hardened). 11 original schedule tests stay GREEN unmodified. Gate delta 830 → **838 passed (+8 new tests: 3 wait_for happy paths + 1 timeout failure cascade + 1 HTTP 2xx progression + 1 SLA breach alert + 1 SLA ok silent + 1 sensor event/metric label counts + 1 YAML multi-kind validation reject).** `uv run ruff check src/ tests/ examples` clean, 0 issues.
 - **Next work:** No further pre-scoped items. Pull additional gaps forward only on concrete consumer demand (zero-pre-scoped policy per §Work items rule, 2026-08-26 backlog deflation).
 
 ## Session start prompt
@@ -225,23 +226,23 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
 doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**830 / 0 failed**;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**838 / 0 failed**;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
   (zero code relation to recent work);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-27 (re-stamped POST GAP-7 data contracts tranche closed:
-  Gate bumped 807 → **830 tests** (delta +23: 22 in test_data_contracts.py
-  manifest Literal validation / pure diff correctness / compiler roundtrip / off-mode
-  strict 3 mismatch variants + match + parquet-catalog / warn-df + warn-catalog +
-  runtime full emit; 1 Iceberg catalog mismatch in isolated test_data_contracts_iceberg.py
-  dedicated Iceberg-ON process, avoids JVM classpath cross-contamination with shared
-  spark_session Iceberg-OFF default). Actual gate result:
-  Non-Spark 579 passed 28 skipped + 14 isolated Spark/Iceberg file processes
-  26/9/34/25/1/14/7/9/8/8/27/5/25 = 228 → + 22 new data_contracts.py + 1 iceberg_contract
-  → total 579+228+23 = **830 passed, 0 failed, 28 skipped.**
+- **Captured:** 2026-08-27 (re-stamped POST QW-1/TD-1 Beta classifier reaffirm +
+  QW-3/GAP-11 schedule wait_for sensors + SLA alerts tranche closed:
+  Gate bumped 830 → **838 tests** (delta +8: 8 new schedule tests appended to
+  existing 11 schedule tests inside isolated test_cli.py, matching M-8 test
+  pattern). QW-1 pyproject classifier recheck: `pyproject.toml:24` already
+  reads `"Development Status :: 4 - Beta"` — no edit needed (no test impact).
+  Actual gate result:
+  Non-Spark 579 passed 28 skipped + 16 isolated Spark/Iceberg file processes
+  34/22/1/9/34/25/1/14/7/9/8/8/27/5/25 = 231 → + 8 new schedule test_cli.py tests
+  → total 579+231+28 = **838 passed, 0 failed, 28 skipped.**
   Full exit 0; ruff clean.
   **GAP-7 TRANCHE (1 internal module + 2 test files = 23 new tests):** contract manifest
   field (strict/warn/off) default off, opt-in per-column SqlColumnSpec.type/nullable
@@ -252,6 +253,47 @@ doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/
   existing tables (parquet + Iceberg), preventing drift between declared schema and
   already-written catalog. 2 new test files match S-0 per-file Spark isolation pattern;
   Iceberg-only tests in own file. Ruff clean, publication scrub zero hits.
+  **QW-3/GAP-11 SCHEDULE SENSOR TRANCHE (2 source files + 1 test file = +8 new tests):**
+  WaitForSpec Pydantic model enforces 3-kind mutual exclusivity at YAML parse time
+  (path_exists string / path_glob {base, pattern} object / http_url string — exactly
+  one present), with poll_sec ∈ [0.01, 3600] seconds and timeout_sec ∈ [0.1, 604800]
+  seconds (one week upper bound); path_glob sub-object enforces exact {base,pattern}
+  keys + non-empty strings at model validator. Runtime sensor dispatch in
+  `_run_schedule_plan()` runs BEFORE job attempt loop, so CLI never spawns on
+  sensor failure. Path-based sensors dispatch through `path_utils.path_exists` /
+  `path_utils.path_glob` thin facades → B-6 StorageBackend registry, preserving
+  scheme-agnostic behavior (local POSIX / `s3://` / `gs://` / `abfss://` all route
+  through registry without per-scheme branching). HTTP sensor uses
+  `urllib.request.urlopen` GET call, bounded to `min(30, max(5, 2*poll_sec))`
+  per-request socket timeout, returning integer status code on any non-exceptional
+  response; backoff is jittered exponential `base*2^(n-1) + uniform(0, 0.5*base)`,
+  per-poll sleep capped at `poll_sec * 30` and clamped to remaining timeout budget
+  so final poll always lands inside timeout window. Both sensor helpers emit
+  `sensor_poll` structured JSON events on every iteration with unique
+  `poll_index` (1-based monotonic per job) and state machine states `{polling,
+  satisfied, error, timeout}`. Count dictionary keyed by `(job, state)` builds
+  gauge increment table, post-loop serialized as `MetricPoint` list with gauge
+  type `elt_sensor_poll_count` labels `{job,state}`. Sensor timeout triggers job
+  status=`failed_sensor` exit_code=5 `error.error_code=sensor_timeout` +
+  `stop_after_this_job=True` downstream skip cascade identical to regular CLI
+  failure semantics. SLA captures `time.monotonic()` at attempt-loop start/end →
+  raw seconds delta → `elapsed_seconds` always present in every job row paired
+  with ISO-8601 `started_at_iso`/`finished_at_iso`. If `sla_seconds` configured
+  AND `elapsed_seconds > sla_seconds`: (1) append AlertEvent severity=warning
+  with message, labels `{job,sla_seconds,elapsed_seconds,stage=schedule}`,
+  run_id/stage/job_name filled; (2) emit structured WARN `sla_breached` event
+  to stderr with same fields; (3) audit row flags `sla_seconds=<configured
+  float> + sla_breached=True`; (4) AlertEvent also pushed to top-level
+  `sla_alerts[]` array for downstream aggregation by observability adapter.
+  If elapsed within SLA, only `sla_seconds` audit row is populated,
+  `sla_breached=False`, zero AlertEvent emitted. Backward compat: all 11
+  pre-existing schedule tests (through `test_schedule_plan_bounds_retries_and_delay`)
+  pass UNMODIFIED byte-for-byte — fields are optional with default=None, only
+  additive top-level payload arrays present (`sensor_events[]`,
+  `sensor_metric_points[]`, `sla_alerts[]`) — legacy assertions reference
+  subset keys and still resolve. Full backoff math and label generation
+  covered by dedicated tests so future refactors cannot regress observability
+  signal correctness.
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -399,6 +441,8 @@ work it one-per-session, then on close move the body to the archive file and lea
 ### Still Todo
 
 *None pre-scoped (zero-pre-scoped policy, post-Tranche-2 post-GAP-7). Pull forward only on concrete signed-off consumer demand per Active Constraint 9 procedure.*
+
+#### QW-1/TD-1 + QW-3/GAP-11 — Alpha→Beta bump + schedule wait_for sensors + SLA alerts  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 
 #### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 

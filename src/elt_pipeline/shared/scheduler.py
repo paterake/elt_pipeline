@@ -10,12 +10,49 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from elt_pipeline.shared.errors import ConfigValidationError
 
 
+class WaitForSpec(BaseModel):
+    path_exists: str | None = Field(default=None, min_length=1)
+    path_glob: dict[str, str] | None = Field(default=None)
+    http_url: str | None = Field(default=None, min_length=1)
+    poll_sec: float = Field(ge=0.01, le=3600.0)
+    timeout_sec: float = Field(ge=0.1, le=86400.0 * 7)
+
+    @model_validator(mode="after")
+    def validate_one_kind(self) -> "WaitForSpec":
+        kinds_present = sum(
+            1
+            for v in (self.path_exists, self.path_glob, self.http_url)
+            if v is not None
+        )
+        if kinds_present == 0:
+            raise ValueError(
+                "wait_for must specify exactly one of: path_exists, path_glob, http_url"
+            )
+        if kinds_present > 1:
+            raise ValueError(
+                "wait_for must specify exactly one of: path_exists, path_glob, http_url "
+                + f"(got {kinds_present})"
+            )
+        if self.path_glob is not None:
+            if set(self.path_glob.keys()) != {"base", "pattern"}:
+                raise ValueError(
+                    "wait_for.path_glob must be {base: <uri>, pattern: <glob>}"
+                )
+            if not self.path_glob["base"].strip():
+                raise ValueError("wait_for.path_glob.base must not be empty")
+            if not self.path_glob["pattern"].strip():
+                raise ValueError("wait_for.path_glob.pattern must not be empty")
+        return self
+
+
 class ScheduledCliJob(BaseModel):
     name: str = Field(min_length=1)
     argv: list[str] = Field(min_length=1)
     retries: int = Field(default=0, ge=0, le=100)
     retry_delay_seconds: float = Field(default=0.0, ge=0.0, le=3600.0)
     depends_on: list[str] = Field(default_factory=list)
+    wait_for: WaitForSpec | None = Field(default=None)
+    sla_seconds: float | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_argv(self) -> "ScheduledCliJob":

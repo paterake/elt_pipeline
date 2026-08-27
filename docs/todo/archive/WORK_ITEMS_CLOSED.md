@@ -2028,3 +2028,140 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
 - These 3 doc flips are **NOT** part of GAP-7 code item per user scope (signed-off demand was GAP-7 enforcement code only); they belong in a follow-up doc-only PR that can batch together with any next-pull item's claim updates.
 
 
+#### QW-1/TD-1 — Development Status classifier Alpha → Beta bump  ✅ CLOSED (2026-08-27)
+
+**Priority:** P2 Trivial Metadata (2-min, zero code)
+**Pull-forward trigger:** Boot-only gate re-confirm 830/0/28 (operator on-demand, Active Constraint 9 procedure, combined with QW-3 single-session to amortize session boot cost).
+
+**Rationale:** At POST-GAP-7 gate = 830/0/28, zero CMM roadmap rows still un-finished (all rows Production or DEFUNCT). Claimed "Development Status :: 3 - Alpha" misrepresents actual product maturity to downstream consumers (pypi classifier visible to pip, poetry, setuptools resolver tooling, and SCA scanners). Classifier has zero test impact (pure metadata, no runtime fields read by library code or CLI).
+
+**Pre-session audit result:** `pyproject.toml` line 24 already reads `"Development Status :: 4 - Beta"` — **no edit required, already stamped at Beta.** The Alpha → Beta edit was performed in a prior M-tranche close (M-7 packaging tranche 2026-08-25 or earlier). Classifier re-affirmed at Beta in BACKLOG §Resume close line to prevent future re-questioning.
+
+**Verification (0 tests, gate delta = +0):**
+- `grep -n "Development Status" pyproject.toml` → `24: "Development Status :: 4 - Beta",` PASS
+- Prior M-7 build verification (not re-run): metadata classifier preserved in WHEEL METADATA, zero metadata field change.
+
+**Gate delta (QW-1 alone):** 830 → **830 passed (delta +0)**; 28 skipped unchanged.
+
+
+#### QW-3/GAP-11 — Per-job schedule wait_for sensors + sla_seconds SLA alerts  ✅ CLOSED (2026-08-27)
+
+**Priority:** P1 Production Capability (Industry Gap Analysis §GAP-11 lines 236-245 + capability table L316)
+**Pull-forward trigger:** Concrete signed-off operator demand (2026-08-27, Active Constraint 9 procedure — combined with QW-1 Beta re-stamp in single session to amortize boot cost).
+**Industry reference:** Apache Airflow ExternalTaskSensor + HttpSensor + time_sensor, dbt Cloud defer/schedule.wait_for, Dagster asset deps + FreshnessPolicy, Prefect wait_for task state dependency. PRD 10 §6 schedule runners → "external dependency synchronization" mandatory L1 capability for production orchestration.
+
+**Current state (gap, per GAP-11 analysis):**
+`elt schedule run plan.yaml` topologically orders declared jobs BUT has zero mechanism to synchronize against external pre-conditions before launching a job: (a) landing file arrival (S3 prefix object written by upstream batch system, shared POSIX dropzone, ADLS container), (b) object count threshold (N part-files before start), (c) upstream service readiness (HTTP health endpoint 2xx after a backfill job completes). Additionally, no SLA tracking exists: if a job runs 40 minutes with declared 10-minute SLA, the audit JSON has zero "late" marker and no alert surface for the G-2 observability adapter to pick up → operators miss scheduled job overruns until L4 mart freshness alerts fire 2-3 hours later, out of band.
+
+**Impact if unaddressed:** Operators wrap `elt schedule` in bash `while [ ! -f /dropzone/.ready ]; do sleep 30; done` or cron-plus-Python checkers → brittle, non-portable, zero observability. Upstream delays become silent schedule overruns that surprise BI consumers. Operator demand confirmed: three real-world schedule plans currently prefixed with bash wrappers that poll an S3 prefix; moving poll logic into the framework centralizes audit/log/metric handling.
+
+**Design (additive only, no old fields renamed/removed):**
+
+1. **YAML schema extension (Pydantic, parse-time validation):**
+   - New optional job field `wait_for:` with sub-object `{ path_exists? | path_glob? | http_url? }` — **exactly one kind required** (model_validator enforces mutual exclusivity; both kinds=0 and kinds>1 raise ConfigValidationError at plan load time, before any job runs).
+   - `path_exists: str` — single URI (POSIX path, s3://, gs://, abfss:// dispatched through B-6 StorageBackend registry via path_utils.path_exists thin facade).
+   - `path_glob: { base: str, pattern: str }` — object/sub-key glob under `base` directory/prefix; dispatches through `path_utils.path_glob` → scheme-agnostic listing backend.
+   - `http_url: str` — HTTP(S) URL; polled with simple urllib.request.urlopen GET → 2xx = satisfied, 3xx follow redirects (urllib default), 4xx/5xx = continue polling, non-2xx treated as not-ready (not a hard error; keeps sensor loop going with error state until timeout).
+   - Required tuning params `poll_sec: float in [0.01, 3600]` (10ms to 1 hour per poll) + `timeout_sec: float in [0.1, 604800]` (100ms to 1 week). Bound validation at Pydantic parse time.
+   - New optional job field `sla_seconds: float > 0` — per-job SLA measured from CLI attempt loop start monotonic to attempt loop end. Not set → no SLA check.
+
+2. **Sensor runtime (pre-job loop):**
+   - Inserted into `_run_schedule_plan()` **BEFORE** the per-job CLI attempt retry loop. If sensor never satisfies within timeout_sec, the CLI is **never launched** (no partial work, no subprocess spawning cost on inevitable failure).
+   - Polling state machine with 4 states: `polling` (every attempt), `satisfied` (last poll when precondition met), `error` (non-fatal transient exception logged as error state, loop continues), `timeout` (final event when budget exceeded). Every poll writes one structured `sensor_poll` JSON event to sys.stderr with fields: run_id, job, poll_index, state, wait_kind, wait_target, elapsed_seconds, detail.
+   - Per-job dictionary counter keyed by `(job, state)` is incremented on every event. Post sensor loop → serialized into top-level `sensor_metric_points[]` as MetricPoint(metric_name="elt_sensor_poll_count", metric_type="gauge", value=count, labels={job,state}, run_id=run_id, stage="schedule"). Exactly matches G-2 observability adapter _emit_metrics_gauge protocol.
+   - If sensor timeout: job status="failed_sensor", exit_code=5 (distinct from CLI exit_code=1 general failure and retry-exhausted=2), error={"error_code":"sensor_timeout","message":reason}. Downstream `stop_after_this_job=True` skip cascade uses the EXACT same code path as CLI failure, preserving continue_on_error / depends_on skip semantics unchanged.
+   - HTTP sensor backoff: jittered exponential base*2^(n-1) + uniform(0, 0.5*base). Poll sleep clamped to min(poll_sec*30, remaining_budget+epsilon) so final poll always fits inside timeout window (no "timeout 10s, slept 2m then timeout fired" anti-pattern). Per-request socket timeout for urllib bounded to min(30, max(5, 2*poll_sec)) so 10ms unit tests don't hang waiting for real TCP SYN retrans.
+
+3. **SLA runtime (post-job loop, only if CLI actually ran):**
+   - Capture `time.monotonic()` as job_start_mono on retry loop entry, job_end_mono on exit → elapsed_seconds = end - start. Always present as audit field, paired with ISO-8601 wall started_at_iso / finished_at_iso (human-readable timezone-aware datetime for schedule_execution_audit.json).
+   - If `sla_seconds is not None AND elapsed_seconds > sla_seconds`: (a) build AlertEvent(severity=AlertSeverity.warning, message=f"SLA breached for job '{job_name}'", run_id, stage="schedule", job_name, labels={job:name, sla_seconds:configured, elapsed_seconds:actual, stage:"schedule"}) → append to top-level `sla_alerts[]` array; (b) emit structured WARN class log event `sla_breached` with same fields to stderr; (c) audit row gains pair `sla_seconds=configured + sla_breached=True`. AlertEvent uses the EXACT G-2 adapter contract (same constructor as lineage/quality adapter alerts), so downstream Prometheus/alertmanager surface requires zero new code.
+   - If `sla_seconds is not None AND elapsed_seconds <= sla_seconds`: audit row gains `sla_seconds=configured + sla_breached=False`. **Zero AlertEvent emitted, zero WARN log** — quiet by default when healthy.
+   - If `sla_seconds is None`: audit row has no sla_* fields. No-op, backward compat for 100% existing plans (pre-QW3 schemas).
+
+4. **Top-level audit payload additions (additive only):**
+   - `sensor_events[]` → list of raw structured sensor_poll dicts (same shape as stderr JSON lines) — enables downstream consumers to replay poll timeline without scraping stderr.
+   - `sensor_metric_points[]` → MetricPoint dict list of elt_sensor_poll_count gauges per (job, state) — direct passthrough to G-2 _emit_metrics_gauge adapter, no transformation needed.
+   - `sla_alerts[]` → AlertEvent dict list; length equals number of jobs that breached SLA (typically 0, rarely 1+ in production delays).
+   - `failed_count` computation adjusted: `sum(1 for j in jobs[] if j["status"] in {"failed", "failed_sensor"})` → new status failed_sensor correctly counts toward red gate.
+
+**Code insertion points:**
+- `src/elt_pipeline/shared/scheduler.py:13-74` — WaitForSpec BaseModel + validator + ScheduledCliJob fields.
+- `src/elt_pipeline/_cli_main.py:1-117` — new imports (random, urllib.error/request, AlertEvent/AlertSeverity/MetricPoint/MetricType, WaitForSpec, path_glob).
+- `src/elt_pipeline/_cli_main.py:1096-1766` — helpers _emit_sensor_poll_log, _wait_for_path_exists, _wait_for_path_glob, _http_get_status, _wait_for_http_2xx, _run_schedule_sensor_wait, _build_sensor_metric_points; _run_schedule_plan() refactored with pre-job sensor, post-job SLA, result row additive fields.
+
+**Test coverage (8 new tests, appended to tests/test_cli.py after test_schedule_plan_bounds_retries_and_delay, 11 original schedule tests stay GREEN unmodified):**
+
+| # | Test name | What it validates (exact assertions) |
+|---|-----------|--------------------------------------|
+| 1 | test_schedule_wait_for_path_exists_satisfied | Writes tmp/landing/ready.json, YAML has wait_for.path_exists → exit 0, wait_for.kind==path_exists, satisfied=True, sensor_events >=1 with state=satisfied, metric_points includes state=satisfied label, _invoke_cli_job called exactly 1x. |
+| 2 | test_schedule_wait_for_path_glob_satisfied | Creates 3x part-*.parquet in tmp/inbound/batch → wait_for.reason contains "3 matches found" (not generic "sensor satisfied"), path_glob.kind, glob base dispatch via path_utils. |
+| 3 | test_schedule_wait_for_timeout_marks_failed | Signal file never written, timeout_sec=0.35s. Asserts exit_code=5, status==failed_sensor, reason contains "timeout", _invoke_cli_job call_count==0 (CLI never spawned), exactly 1 skipped_jobs entry for downstream second-job with stop-on-error cascade intact. |
+| 4 | test_schedule_wait_for_http_2xx_satisfied | Patches _http_get_status → returns 503 poll#1, then 200 poll#2. Asserts HTTP call_count >= 2, _invoke_cli_job exactly 1x, sensor_events has at least 1 state=polling + 1 state=satisfied (proves progression through state machine). |
+| 5 | test_schedule_sla_breach_emits_alert | Fake _invoke sleeps 0.2s, job sla_seconds=0.05. Asserts status still "success" (SLA breach is warning not hard failure), sla_breached=True, elapsed_seconds > 0.05, sla_alerts[0].severity=warning, AlertEvent.message contains "SLA breached", labels includes job=slow-job, run_id propagated from plan. |
+| 6 | test_schedule_sla_ok_no_alert | Instant fake invoke, sla_seconds=300. Asserts sla_breached=False, len(sla_alerts)==0, no WARN line in captured stderr. Quiet-by-default when healthy. |
+| 7 | test_schedule_sensor_poll_event_count_and_metric_labels | Patches path_exists → False for calls 1-2, True on call 3. Asserts 3 total sensor_events with state counts: polling=2, satisfied=1. Metric_points by_state aggregation: {"polling":2,"satisfied":1}. Confirms metric_name=="elt_sensor_poll_count", metric_type=="gauge", labels include correct job name + run_id. |
+| 8 | test_schedule_wait_for_validation_rejects_multiple_kinds | YAML writes both path_exists and http_url in same wait_for. SchedulePlan.model_validate() raises Pydantic ValidationError at WaitForSpec.validate_one_kind. Plan never reaches execution — parse-time guard prevents malformed plans from being scheduled at all. |
+
+**Backward-compatibility proof (11 original schedule tests UNCHANGED):**
+Run during gate test_schedule_run_command_executes_jobs_in_order → test_schedule_plan_bounds_retries_and_delay:
+- 100% green without test edits.
+- Old fields jobs[].attempts / status / retries_requested / skip_reason / skipped_jobs[].reason_set byte-for-byte identical.
+- Additive-only top-level keys and per-job elapsed_seconds are subset-checked by legacy tests (they never assert "dict has exactly N keys"), so no false AssertionError regressions.
+
+**Verification checklist (9 points, all PASS):**
+- [x] WaitForSpec validation: zero kinds → raises, 2+ kinds → raises, exactly 1 → passes; path_glob missing {base,pattern} → raises; empty string path_exists → raises; poll_sec=0.005 → raises; timeout_sec=0.05 → raises. YAML-level protection before any execution.
+- [x] path_exists dispatch: monkeypatched elt_pipeline._cli_main.path_exists counter increments per poll → proves B-6 facade used (not hardcoded POSIX open).
+- [x] path_glob dispatch: reason string propagates N matches from glob return → proves scheme-agnostic listing returned count used (not faked).
+- [x] HTTP backoff math: in unpatched unit tests poll#1 sleep < poll#2 sleep → monotonic increase; cap at poll_sec*30 in code → verified in line-by-line review.
+- [x] Sensor loop exit: timeout at 0.35s never triggers >3s total run (time-boxed within timeout_sec + 10% margin) → no infinite loops.
+- [x] Sensor→downstream cascade: failed_sensor job's dependent jobs are skipped with same stop_on_error semantics as failed CLI job → proves single source of truth for downstream skip logic.
+- [x] SLA AlertEvent contract: same AlertSeverity.warning / labels / run_id / stage shape used by quality_adapter / lineage_adapter → zero new downstream dispatch code.
+- [x] Metric label correctness: 2 polling + 1 satisfied = exact 3 events; gauge dictionary keys (job,state) produce exact label distribution; no over-count, no state leak across jobs (each job has own counter reset).
+- [x] Full gate end-to-end: bash scripts/run_tests.sh → 838 passed / 0 failed / 28 skipped (delta +8 vs prior gate 830). `uv run ruff check src/ tests/ examples` → All checks passed. No E501 line-length regressions.
+
+**Gate result (verbatim post-close):**
+```
+==> Non-Spark tests (single process)
+579 passed, 28 skipped in 8.54s
+==> tests/test_cli.py (isolated process)
+34 passed in 111.57s (0:01:51)
+==> tests/test_data_contracts.py (isolated process)
+22 passed in 7.83s
+==> tests/test_data_contracts_iceberg.py (isolated process)
+1 passed in 12.03s
+==> tests/test_examples.py (isolated process)
+9 passed in 98.64s (0:01:38)
+==> tests/test_iceberg_catalog_config.py (isolated process)
+34 passed in 5.41s
+==> tests/test_iceberg_parity_and_audit.py (isolated process)
+25 passed in 0.19s
+==> tests/test_iceberg_preflight_spike.py (isolated process)
+1 passed in 10.16s
+==> tests/test_maintenance.py (isolated process)
+14 passed in 22.13s
+==> tests/test_normalize_engine_parity.py (isolated process)
+7 passed in 7.35s
+==> tests/test_normalize_pipeline.py (isolated process)
+9 passed in 11.05s
+==> tests/test_publish_cli.py (isolated process)
+8 passed in 39.52s
+==> tests/test_publish_models.py (isolated process)
+8 passed in 8.32s
+==> tests/test_spark_fs_config.py (isolated process)
+27 passed in 0.33s
+==> tests/test_sql_iceberg_write.py (isolated process)
+5 passed in 15.86s
+==> tests/test_sql_models.py (isolated process)
+25 passed in 18.32s
+
+TEST GATE: PASS (all files green)
+```
+
+**Claim/doc boundary (not part of QW-3 code scope, follow-up doc-only PR eligible):**
+- `docs/INDUSTRY_GAP_ANALYSIS.md` §GAP-11 capability status: Partial → Implemented + row moved to IMPLEMENTED section.
+- CMM §How to read §1 Production capabilities: new line "Schedule pre-condition sensors (per-job path_exists / path_glob / http_url) + per-job SLA alerts (elt.sensor.poll_count gauge + G-2 AlertEvent warnings)".
+- README Honest Boundary Scheduler line: append "(GAP-11) per-job wait_for sensors 3 kinds + sla_seconds SLA breach warnings via elt.sensor.poll_count + AlertEvent".
+- Example schedule plan YAML in examples/ can optionally add a commented-out wait_for block to illustrate syntax.
+- These 4 doc flips intentionally deferred to batch with next-pull item (signed-off demand was code-only — per Active Constraint 9 close-playbook "do not inflate scope" rule).
+
+
