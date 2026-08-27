@@ -526,8 +526,27 @@ class TestCliPublishIcebergFlagParity:
             assert sql_a.choices == pub_a.choices, f"choices mismatch: {dest}"
             assert sql_a.default == pub_a.default, f"default mismatch: {dest}"
 
+    @staticmethod
+    def _cli_source_with_parser_and_main() -> str:
+        """Concatenate parser definition + CLI main handler source for source introspection.
+
+        After the PCO facade split, ``cli.py`` is a thin re-export facade only. The
+        argparse parser definitions live in ``_cli_parser.py`` and the handler code
+        (which invokes ``_validate_iceberg_catalog_binding`` /
+        ``_resolve_iceberg_session_kwargs``) lives in ``_cli_main.py``. Concatenating
+        the two preserves the original "parser then handler" text ordering used by
+        ``src.find()``-based callsite guards without weakening the audit intent.
+        """
+        import inspect
+
+        return (
+            inspect.getsource(__import__("elt_pipeline._cli_parser", fromlist=[""]))
+            + "\n"
+            + inspect.getsource(__import__("elt_pipeline._cli_main", fromlist=[""]))
+        )
+
     def test_publish_run_invokes_catalog_binding_validation(self):
-        src = inspect.getsource(__import__("elt_pipeline.cli", fromlist=[""]))
+        src = self._cli_source_with_parser_and_main()
         publish_run_block_start = src.find("publish_run_parser = ")
         validation_callsite = src.find(
             "_validate_iceberg_catalog_binding(",
@@ -538,7 +557,7 @@ class TestCliPublishIcebergFlagParity:
         )
 
     def test_publish_run_uses_resolve_iceberg_session_kwargs(self):
-        src = inspect.getsource(__import__("elt_pipeline.cli", fromlist=[""]))
+        src = self._cli_source_with_parser_and_main()
         publish_run_block_start = src.find("publish_run_parser = ")
         resolver_callsite = src.find(
             "_resolve_iceberg_session_kwargs(",
