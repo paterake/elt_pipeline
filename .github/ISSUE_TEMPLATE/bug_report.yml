@@ -1,0 +1,154 @@
+---
+name: Bug Report
+description: File a bug report — something that worked in a documented path does not work.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Before you submit
+
+        1. **Is this a security issue (RCE, secret leak, auth bypass, path traversal)?**
+           STOP — do NOT file a public issue. Follow the 90-day disclosure process in [SECURITY.md](../../../SECURITY.md) instead.
+        2. **Is this a request for a new capability that is currently 🔴/⏳ in the Capability Maturity Matrix?**
+           Use the **RFC / Build a new Capability** template instead. This template is for things that are IN SCOPE but broken.
+        3. **Can you reproduce it with the latest commit on `main`?**
+           If not, try a `uv sync` + fresh run first — 50% of reports are stale lockfiles.
+
+        Thanks for taking the time to file a proper bug report. Bugs with full reproduction steps AND the commands below get triaged first.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence description of what went wrong.
+      placeholder: e.g., "elt-pipeline sql compile --with-sql-refs exits 2 ConfigValidationError on a valid query_ref that I can successfully run as sql materialize."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Sub-system affected
+      multiple: false
+      options:
+        - CLI (elt-pipeline ... parse / help / exit codes)
+        - Ingest (connectors: object_storage / sql / kafka / rest + level1 output)
+        - Normalize (L1 → L2 MappingCatalog, parquet write, bypass)
+        - SQL Compile (sql compile, YAML manifest validation, token resolution)
+        - SQL Run (sql run, Spark Iceberg materialize, Trino view, governance column checks)
+        - Metric (metric compile, metric run modes: materialize/view/prometheus, guardrail, audit)
+        - Publish (L4 → L5 exports: csv/jsonl/tsv/zip)
+        - Maintain (compact/expire/orphan/rewrite, retention policies)
+        - Schedule (schedule run, dependency order, checkpointing)
+        - Trino Serving (start-foreground, column masking, SECURITY DEFINER VIEWs)
+        - Observability (metrics, lineage, Prometheus gauge, OpenLineage events)
+        - Pluggable Protocols (StorageBackend, SecretsProvider, ConnectorFactory, QualityHookBackend, SqlDbDriver, MetricAggregation)
+        - Docs / README / examples / tutorials
+        - Other (please specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Exact reproduction steps
+      description: Copy-pasteable from scratch. If the bug needs YAML, paste the YAML. If it needs data, paste the CSV rows (3–5 rows minimum).
+      value: |
+        1. `cd <repo-root>`
+        2. Checkout commit SHA: _______________
+        3. `uv sync --extra dev --extra spark ; export JAVA_HOME=...`
+        4. Create this test file: `cat > /tmp/example.yaml << 'EOF'
+           # paste minimal reproducing YAML here
+           EOF`
+        5. Run this command: `uv run elt-pipeline <subcommand> ... <args>`
+        6. See error — paste the full error block with traceback in the section below.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "Exit code 0 with a summary line showing the metric compiled with --with-sql-refs, because the L4 column exists in SqlModelGovernance."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior + full traceback / CLI output
+      description: Paste verbatim output from `uv run elt-pipeline ...` or `bash scripts/run_tests.sh` — NOT a screenshot. Include the exit code line.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: gate_status
+    attributes:
+      label: Gate status on your machine
+      description: Helps us rule out environment drift. Paste the output of these 4 commands.
+      value: |
+        ```
+        uv run ruff check src/ tests/ examples/ 2>&1 | tail -5
+        # paste output here
+        ```
+
+        ```
+        # If your bug is in Spark/Iceberg or Trino path, paste the full gate (long)
+        bash scripts/run_tests.sh 2>&1 | tail -20
+        # paste output here
+        ```
+
+        ```
+        # If your bug is in a non-Spark module, paste the per-file gate
+        uv run pytest tests/<relevant_test_file>.py -v 2>&1 | tail -30
+        # paste output here
+        ```
+
+        ```
+        java -version 2>&1 | head -5
+        # paste output here
+        ```
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      multiple: false
+      options:
+        - macOS (Apple Silicon / arm64)
+        - macOS (Intel / x86_64)
+        - Linux (x86_64, any distro)
+        - Linux (arm64 / Graviton)
+        - Windows / WSL
+        - CI (GitHub Actions runner — link the failing run)
+        - Other (please specify)
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit SHA or version
+      placeholder: e.g., "c6f7fd94 (elt166 / Semantic Metrics)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: This bug is **not** a security issue (if it is, I emailed security@ via SECURITY.md).
+          required: true
+        - label: This bug is **not** a new capability request (if it is, I used the RFC template).
+          required: true
+        - label: The reproduction steps above can be run from scratch by a maintainer without guessing.
+          required: true
+        - label: I have pasted the full verbatim CLI traceback, not a screenshot or truncated summary.
+          required: true
+        - label: I have confirmed the bug reproduces on the latest `main` with a fresh `uv sync`.
+          required: false

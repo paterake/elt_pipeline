@@ -644,3 +644,17 @@ continue_on_error: false
 ```
 
 Each job omits the program name and passes the same arguments you would provide after `elt-pipeline`.
+
+## Contributing, Issues & Capability Requests
+
+All PRs need **ruff 0 errors + `bash scripts/run_tests.sh` green**. The full contribution guide (environment setup, pCO package layout, 6 extension APIs you can use WITHOUT touching core code, PR checklist) lives in [CONTRIBUTING.md](CONTRIBUTING.md). Start there.
+
+For bug reports, feature requests, or **requests for a new platform capability that currently shows as 🔴/⏳ in the [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md)**, open a GitHub issue using one of the provided templates.
+
+**Specific rule for new capabilities:** This project operates with **zero-pre-scoped capability expansion** ([BACKLOG.md §Scoping Policy](BACKLOG.md) Active Constraints 10–13). In practice this means: **do not open a cold PR against a gap currently documented as 🔴/⏳/Out of Scope in the matrix**. Instead, first open an RFC-type issue describing (a) the concrete use case, (b) the *measurable* operator toil it removes (3+ hours per week is the default acceptance threshold), and (c) why none of the 6 pluggable Protocol/registry extension APIs listed in §5 of [CONTRIBUTING.md](CONTRIBUTING.md) can already express it. Once maintainers sign off + a signed-off strategic-posture exception exists for that gap, the code PR is welcome. This keeps the framework lean and avoids abandoned sub-systems.
+
+For security vulnerabilities, **DO NOT open a public issue** — follow the 90-day disclosure process documented in [SECURITY.md](SECURITY.md) instead.
+
+## License
+
+MIT. See [LICENSE](LICENSE) for the full text.

@@ -1,0 +1,87 @@
+---
+name: Feature Request
+description: Request an incremental improvement to an EXISTING in-scope capability (new flag, new column type, new enum value, better error messages, new operator example). For capabilities currently 🔴/⏳ in the matrix, use the RFC template instead.
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## When to use this template vs the RFC template
+
+        ✅ Use this template when:
+        - You want a new CLI flag on an existing `elt-pipeline` subcommand (e.g., `--format csv` support on a command that currently only supports json/summary).
+        - You want to support an additional column type, data type alias, or semantic_type string on an existing level manifest.
+        - You want a better error message (e.g., current error says "validation failed" → you want it to say "model_id 'a.b.c' not found — did you mean 'a.b.cc'?").
+        - You want an additional built-in example / sample YAML / operator reference for an already-green capability.
+        - You want a new value on an existing Enum (e.g., new `MetricAggregation.count_distinct_approx`) — this is explicitly a feature request, NOT an RFC.
+
+        🔴 Use the **RFC / new Capability** template instead when:
+        - You want a new CLI subcommand family (e.g., `elt-pipeline cdc …`) that doesn't exist today.
+        - You want a new platform level (L0, L6) that doesn't exist today.
+        - You want to turn any 🔴/⏳/Out-of-Scope row in [Capability Maturity Matrix](../../docs/CAPABILITY_MATURITY_MATRIX.md) green. This needs an RFC + signed-off strategic-posture exception.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Feature summary
+      description: One paragraph. What existing in-scope capability are you improving? What concrete user does this help?
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_pain
+    attributes:
+      label: Current pain
+      description: What currently works, but is slow / cumbersome / has a workaround? Paste the current workaround commands you have to run today even though this feature should exist.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed behavior
+      description: Exact YAML sketch or CLI sketch of the new interface. Include default behavior (when flag is omitted) + edge cases (empty input, invalid value).
+      placeholder: |
+        CLI flag example:
+          Add `--format csv` to `elt-pipeline metric compile ...`.
+          * Default (no flag): unchanged current `summary` human-readable format.
+          * `--format csv`: one CSV row per metric with headers: id,aggregation,column,model_id,hash_12char.
+          * Invalid value: argparse exits 2 with error: "invalid choice: 'xml' (choose from 'summary', 'json', 'csv')"
+
+        Enum example:
+          Add `count_distinct_approx` to MetricAggregation enum.
+          SQL rendering: `approx_distinct(%(column)s)`.
+          Compile-time behavior: unchanged (validation still checks column existence).
+          Runtime hash: included in the SOURCE_TABLE normalization anchor; hash guardrail for 3-mode runs is byte-identical.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Impact assessment (tick all that apply)
+      options:
+        - label: "🚀 Operator UX: reduces time-to-run (clicks / manual shell steps) on an existing workflow."
+        - label: "📝 Docs / examples: makes the existing capability easier to discover for newcomers."
+        - label: "🔍 Debugging: error messages are more actionable; blame radius for a given failure shrinks."
+        - label: "🧪 Test-ability: new surface is well-covered by unit tests without Spark/JVM dependency."
+        - label: "🧩 Protocol / extension compatibility: preserves zero-core-edits extensibility (see §5 of CONTRIBUTING.md)."
+        - label: "🦺 Safety: new flags default to OFF; no silent behavior change for existing users."
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests
+    attributes:
+      label: Suggested tests
+      description: "Specific, not generic. e.g.: 'CLI parse test: `elt-pipeline metric compile --format csv examples/sql/local_demo` — asserts `csv.writer` header row; 2 actual metric rows; exit 0.'"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: offer
+    attributes:
+      label: Contribution offer
+      options:
+        - label: "I would like to implement this myself once maintainers confirm the design direction (I've read CONTRIBUTING.md §3 pCO pattern + §6 PR checklist)."
+        - label: "This is a feature request only — I would like the maintainers to implement it."

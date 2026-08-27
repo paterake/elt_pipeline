@@ -1,0 +1,87 @@
+### 👷 Build a new Capability / RFC (for new platform levels, sub-systems, or anything currently 🔴/⏳ in the Capability Maturity Matrix)
+
+Do NOT submit a cold-code PR for a new capability. This project operates with zero-pre-scoped capability expansion (see [BACKLOG.md §Scoping Policy](../../BACKLOG.md) — Active Constraints 10–13). Instead, file this RFC-type issue FIRST so maintainers can sign off before you spend time on implementation.
+
+Use the template below to file the issue, then wait for a maintainer to label the issue `accepted` + assign a GAP-ID. PRs opened against an accepted GAP-ID with a signed-off strategic-posture exception are merged normally.
+
+---
+
+## Summary
+
+**Requested capability name:** e.g., "Built-in CDC / Change Data Capture ingestion layer"
+
+**Concrete user it solves this for:** e.g., "A fintech team with 3 PostgreSQL OLTP databases needs nightly 1:1 replication before L3 canonicalization."
+
+**Measurable operator toil eliminated:** Approximate hours/week this saves if it existed today. e.g., "The team currently spends 4 hours/week writing and maintaining custom Debezium + Kafka Connect pipelines outside this framework; built-in CDC eliminates that and reduces incident MTTR for CDC lag."
+
+**Why none of the existing 6 extension APIs fit (§5 of CONTRIBUTING.md):**
+  1. `register_connector_factory` + a custom ConnectorFactory Protocol impl? (yes/no + explain)
+  2. `register_backend` StorageBackend? (yes/no + explain)
+  3. `register_provider` SecretsProvider? (yes/no + explain)
+  4. QualityHookBackend? (yes/no + explain)
+  5. SqlDbDriver? (yes/no + explain)
+  6. MetricAggregation enum extension? (yes/no + explain)
+
+If any of the 6 answers are "yes", this is probably NOT a new platform capability — please use that extension API (see [CONTRIBUTING.md §5](../../../CONTRIBUTING.md)) and open a standard feature request template or a PR directly instead.
+
+---
+
+## Proposal
+
+### User-facing shape (what the user writes in YAML / CLI flags)
+
+```yaml
+# Paste a realistic YAML sketch of what the pipeline-level config
+# OR manifest-level config looks like for this capability.
+connector:
+  type: postgres_cdc
+  name: my_pg_source
+  slot_name: elt_pipeline_repl
+  publication: elt_pipeline_pub
+```
+
+CLI surface (sketch):
+```bash
+elt-pipeline cdc run path/to/pipeline.yaml --source my_pg_source --window 2026-01-01:2026-01-31
+```
+
+### Internal architecture sketch
+
+Which of the 5 existing platform levels (L1…L5) does this touch? What goes into which new pCO underscore-prefixed submodule? Where is the compile-vs-runtime boundary? What new files, at package layout level, are being introduced?
+
+List:
+- **New files (pCO):** e.g., `src/elt_pipeline/cdc/__init__.py` (thin facade), `src/elt_pipeline/cdc/_models.py` (PgReplicationSlotSpec Pydantic model + validators), `src/elt_pipeline/cdc/_runtime.py` (logical slot bootstrap + pgoutput parser + L1 write).
+- **Modified existing files:** e.g., `_cli_parser.py` new `cdc` subcommand block, `_cli_main.py` new handler block, `StageName` enum new `cdc` entry, `ErrorCategory` enum new `cdc_consistency_error` entry.
+- **No modified existing files (preferred):** if this can live entirely as a Protocol-registration plugin in a separate PyPI package, say so and we'll link to it from the docs instead of merging core.
+
+### Test plan — minimum +16 tests
+
+What 16 specific tests? Name 16 categories (e.g., "manifest name regex validator ×2, CDC L1 write schema match, CDC slot creation idempotent, log truncation commit boundary, restart from checkpoint, parse 5 known pgoutput messages, error on unsupported pg version, L1 artifact audit line written, ConfigValidationError raised when publication not in source DB, etc.").
+
+Minimum test count for capability PRs is enforced in review, not CI. PRs without it get a review-blocker tag.
+
+### Compatibility & deprecations
+
+Any breaking changes to `__all__` lists, CLI flags, Protocol signatures, Enum value names? If so, describe the 2-release deprecation window plan (default rule: keep a shim with `DeprecationWarning` for ≥2 minor releases before removal).
+
+### Out of scope
+
+Be explicit about what this RFC does NOT propose — prevents scope creep in review. e.g., "Initial CDC is Postgres-only via pgoutput. MySQL / SQL Server / MongoDB CDC variants are explicitly NOT included; they are future capability requests with their own RFCs."
+
+---
+
+## Supporting evidence (optional but strongly encouraged)
+
+Attach or paste:
+- Work sample scripts / proof-of-concept code (if you've already built a prototype)
+- Real pipeline configs + run artifacts showing the toil (anonymized output is fine — just timestamps + failure volume)
+- Links to upstream docs for any third-party technology being integrated
+
+## Strategic Posture Check
+
+According to [docs/INDUSTRY_GAP_ANALYSIS.md §2 Posture](../../INDUSTRY_GAP_ANALYSIS.md), this framework intentionally delegates large sub-systems to mature external cloud/OSS products. Before maintainers sign off, they will assess:
+
+- Is this better solved by an external OSS project (e.g., Airbyte, Fivetran, Debezium, dbt Cloud) integrated via existing extension APIs instead of being re-implemented here?
+- If yes: is the effort of maintaining the in-house implementation over 5 years justified by a concrete use case where external integrations fail?
+
+If the answer to the first question is "yes, external exists" and to the second is "no", the RFC will be respectfully closed with a recommendation to use the external path. Please include any arguments on this dimension already in your write-up — it saves review rounds.
