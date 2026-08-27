@@ -207,7 +207,10 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
   test_observability.py/test_quality_adapter.py/test_lineage_adapter.py that
   previously ran pre-split and were simply re-verified post-split unchanged.
   `uv run ruff check src/ tests/ examples` → All checks passed.
-- **Next work:** None pre-scoped. Pull an item forward only on concrete consumer demand.
+- **Session 2026-08-27 — active work item:** **GAP-7** Data Contract enforcement (strict/warn/off).
+  Pulled forward on concrete signed-off consumer demand per Active Constraint 9 procedure.
+  Full spec pasted from INDUSTRY_GAP_ANALYSIS.md §ME-1 into §Still Todo #### GAP-7.
+- **Next work:** No further pre-scoped items. Pull additional gaps forward only on concrete consumer demand.
 
 ## Session start prompt
 
@@ -392,7 +395,42 @@ work it one-per-session, then on close move the body to the archive file and lea
 
 ### Still Todo
 
-*None pre-scoped. Pull forward on concrete consumer demand only.*
+#### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)
+
+**Priority:** 🟠 P1 Moderate Capability (Industry Gap Analysis §5, roadmap ME-1 — medium effort 1 week, highest correctness ROI per engineering hour)
+**Pull-forward trigger:** Concrete signed-off consumer demand (2026-08-27, Active Constraint 9 procedure)
+**Industry reference:** dbt contracts (1.7+), Soda Core contracts, Great Expectations Expectations, Monte Carlo automated contracts.
+
+**Current state (gap):** Quality hooks validate *data content* (not-null/uniqueness/range/RI/freshness/regex). But there is no explicit framework-level enforcement of: "This L3 canonical model MUST expose columns {order_id STRING, customer_id BIGINT, order_total DECIMAL(18,4), order_date DATE} and these columns may not be renamed, retyped, or dropped unless the contract version is incremented" — enforced *before* the write commits.
+
+**Impact if unaddressed:** An upstream L2 schema change (new `order_total_micros` instead of `order_total`) silently propagates through the L3 compile, passes DQ if no rule checks it, and breaks every L4 mart and downstream consumer. Right now detection relies on human review + DQ coverage — both are fallible.
+
+**Design (reuses 100% of existing Pydantic manifest model fields):**
+1. **Manifest field:** Add field `contract: strict | warn | off` to `SqlModelManifest` (default: `off` for backward compat; L3 canonical + L4 published marts recommended `strict`).
+2. **Enforcement interlock:** At `spark_executor.py` write time, just before commit: compare (a) declared `SqlColumnSpec` list from manifest with (b) actual `df.schema` StructType of the DataFrame being written + (c) the current Iceberg table schema read back from the catalog (if table exists). Compare name/nullable/type.
+3. **Three enforcement modes:**
+   - **Strict** → raise `CONTRACT_BROKEN` error with structured diff (`added/removed/changed columns`) before any write.
+   - **Warn** → emit WARN class `contract_broken` log event to `logs.jsonl` + Prometheus `elt.contract.broken` gauge counter + allow write.
+   - **Off** → no enforcement (default, backward compat).
+4. **Optional additive:** `contract_version: 1.2.3` field per manifest with monotonic increase enforcement (breaking change = major bump).
+
+**Code insertion point:** Write-time interlock in `spark_executor.py` right before the atomic staging-swap.
+
+**Verification checklist:**
+- [ ] `contract` field added to `SqlModelManifest` Pydantic model with Literal type; default `off`; validates strict/warn/off only.
+- [ ] Manifest-level YAML parsing works: `contract: strict` in a SQL model manifest is correctly roundtripped through the manifest loader. 1 test.
+- [ ] `off` mode (default): zero behavior change. Every existing SQL model test passes without modification. Gate count preserved ± delta of new tests.
+- [ ] **Strict mode — manifest vs df.schema mismatch:** New model with `contract: strict` whose declared `SqlColumnSpec` differs from actual `df.schema` (column dropped, type changed, column added not in spec) → raises `PipelineError` with error code `CONTRACT_BROKEN` and structured context: `{added_columns: [...], removed_columns: [...], changed_columns: [{col, expected_type, actual_type}]}`. 3 focused tests (drop, type, add).
+- [ ] **Strict mode — match:** Same declared spec as df.schema → no error, write proceeds normally. 1 test.
+- [ ] **Strict mode — existing Iceberg table mismatch:** Table already exists in catalog with different schema; manifest spec matches df.schema (Spark-side) but not Iceberg catalog → `CONTRACT_BROKEN` with catalog diff context. 1 test (mock Iceberg catalog readback).
+- [ ] **Warn mode — mismatch:** Same mismatch cases but write proceeds; `contract_broken` WARN event in `logs.jsonl`; Prometheus gauge `elt.contract.broken{mode="warn", model="..."}` incremented. 2 tests (df mismatch + catalog mismatch).
+- [ ] Structured diff fields (added/removed/changed) are correctly populated for every mismatch variant: column order must not matter, type comparison handles Decimal precision/scale, nullable mismatch is detected as a change. 1 focused diff-only unit test.
+- [ ] Backward compat: all pre-existing spark_executor tests + example end-to-end runs pass without touching any fixture; 78 existing non-Spark + 228 Spark tests = 807 baseline must stay ≥ 807 after adding new contract tests.
+- [ ] Gate: `bash scripts/run_tests.sh` → PASS (≥ 807 passed, 0 failed, 28 emulator skipped); `uv run ruff check src/ tests/ examples` clean.
+
+---
+
+*None further pre-scoped. Pull forward on concrete consumer demand only.*
 
 #### M-8 — `elt schedule` runner 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 #### M-9 — Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)

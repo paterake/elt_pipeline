@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from elt_pipeline.shared.governance import SqlModelGovernance
+
+DataContractMode = Literal["strict", "warn", "off"]
 
 
 class SqlModelStage(str, Enum):
@@ -67,6 +70,34 @@ class SqlModelSourceRef(BaseModel):
         return cleaned
 
 
+class DataContractBrokenChange(BaseModel):
+    column: str
+    expected_type: str | None = None
+    actual_type: str | None = None
+    expected_nullable: bool | None = None
+    actual_nullable: bool | None = None
+
+
+class DataContractDiff(BaseModel):
+    added_columns: list[str] = Field(default_factory=list)
+    removed_columns: list[str] = Field(default_factory=list)
+    changed_columns: list[DataContractBrokenChange] = Field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return (
+            not self.added_columns
+            and not self.removed_columns
+            and not self.changed_columns
+        )
+
+
+class DataContractWarningRecord(BaseModel):
+    model_id: str
+    mode: DataContractMode
+    comparison_target: Literal["dataframe_schema", "catalog_schema"]
+    diff: DataContractDiff
+
+
 class SqlModelManifest(BaseModel):
     manifest_version: str = "v1"
     name: str
@@ -83,6 +114,18 @@ class SqlModelManifest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     governance: SqlModelGovernance = Field(default_factory=SqlModelGovernance)
     staging_root: str | None = None
+    contract: DataContractMode = "off"
+    contract_version: str | None = None
+
+    @field_validator("contract_version")
+    @classmethod
+    def validate_contract_version(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("contract_version must not be empty if set")
+        return cleaned
 
     @field_validator("name", "domain")
     @classmethod
@@ -148,6 +191,8 @@ class CompiledSqlModel(BaseModel):
     quality: SqlQualityExpectations = Field(default_factory=SqlQualityExpectations)
     governance: SqlModelGovernance = Field(default_factory=SqlModelGovernance)
     staging_root: str | None = None
+    contract: DataContractMode = "off"
+    contract_version: str | None = None
 
 
 class SqlExecutionRecord(BaseModel):
@@ -194,6 +239,7 @@ class SqlExecutionResult(BaseModel):
     warehouse_root: str
     executed_models: list[SqlExecutionRecord] = Field(default_factory=list)
     model_validations: list[SqlModelValidationSummary] = Field(default_factory=list)
+    contract_warnings: list[DataContractWarningRecord] = Field(default_factory=list)
 
     @property
     def model_count(self) -> int:

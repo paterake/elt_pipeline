@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from pyspark.errors import PySparkException
 from pyspark.sql import DataFrame, SparkSession
@@ -9,7 +10,12 @@ from elt_pipeline.config import runtime_context
 from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.governance import build_governance_table_properties
-from elt_pipeline.shared.path_utils import join_paths
+from elt_pipeline.shared.path_utils import join_paths, path_exists
+from elt_pipeline.sql._contract_enforcement import (
+    enforce_data_contract_at_write,
+    extract_schema_fields,
+    try_read_existing_iceberg_table_schema,
+)
 from elt_pipeline.sql._staging_swap import (
     SwapMode,
     atomic_swap,
@@ -21,6 +27,7 @@ from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
 from elt_pipeline.sql.level2_source import Level2DatasetLocator
 from elt_pipeline.sql.models import (
     CompiledSqlModel,
+    DataContractWarningRecord,
     SqlExecutionRecord,
     SqlExecutionResult,
     SqlLoadMode,
@@ -112,6 +119,19 @@ class SparkSqlModelExecutor:
         self.run_id = run_id
         self.partition_values = partition_values or {}
         self._level2_locator = Level2DatasetLocator(root_path=self.root_path, spark=spark)
+        self._contract_warnings: list[DataContractWarningRecord] = []
+
+    def _try_read_parquet_catalog_schema(
+        self,
+        target_path: str,
+    ) -> dict[str, dict[str, Any]] | None:
+        if not path_exists(target_path):
+            return None
+        try:
+            existing_df = self.spark.read.parquet(target_path)
+            return extract_schema_fields(existing_df.schema)
+        except Exception:
+            return None
 
     def execute(
         self,
@@ -160,9 +180,11 @@ class SparkSqlModelExecutor:
                     for existing in execution_result.model_validations
                 ):
                     execution_result.model_validations.append(summary)
+            execution_result.contract_warnings = list(self._contract_warnings)
             if "execution_result" not in exc.context:
                 exc.context["execution_result"] = execution_result.model_dump(mode="json")
             raise
+        execution_result.contract_warnings = list(self._contract_warnings)
         return execution_result
 
     def plan(
@@ -260,6 +282,15 @@ class SparkSqlModelExecutor:
             )
 
         target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
+
+        if model.contract != "off":
+            catalog_columns = self._try_read_parquet_catalog_schema(target_path)
+            enforce_data_contract_at_write(
+                model=model,
+                dataframe_schema=dataframe.schema,
+                catalog_columns=catalog_columns,
+                execution_result_contract_warnings=self._contract_warnings,
+            )
 
         if model.load_mode == SqlLoadMode.append:
             writer = dataframe.write.mode("append")
@@ -433,6 +464,15 @@ class SparkSqlModelExecutor:
                     "underlying_error": str(exc),
                 },
             ) from exc
+
+        if model.contract != "off":
+            catalog_columns = try_read_existing_iceberg_table_schema(self.spark, fq_table)
+            enforce_data_contract_at_write(
+                model=model,
+                dataframe_schema=dataframe.schema,
+                catalog_columns=catalog_columns,
+                execution_result_contract_warnings=self._contract_warnings,
+            )
 
         if model.load_mode == SqlLoadMode.partition_overwrite:
             self._validate_partition_requirements(model=model)

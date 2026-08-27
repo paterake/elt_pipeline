@@ -24,6 +24,7 @@ from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
 from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
 from elt_pipeline.shared.logging import build_log_event
+from elt_pipeline.shared.observability import MetricPoint, MetricType
 from elt_pipeline.shared.path_utils import join_paths
 from elt_pipeline.shared.runtime import RunContext, StageName
 from elt_pipeline.sql.errors import SqlRuntimeErrorCode, build_sql_runtime_error
@@ -219,6 +220,57 @@ def run_sql_models_locally(
         if quality_summary is not None:
             for status_name, count in quality_summary.counts_by_status().items():
                 metrics.extra[f"quality.{status_name}"] = count
+        contract_warning_count = len(execution_result.contract_warnings)
+        metrics.extra["contract.broken_warnings"] = contract_warning_count
+        if contract_warning_count > 0:
+            contract_metrics: list[MetricPoint] = []
+            for warning in execution_result.contract_warnings:
+                artifacts.log_path = artifact_store.append_log_event(
+                    run_context=run_context,
+                    environment=environment,
+                    log_event=build_log_event(
+                        run_context=run_context,
+                        severity="WARN",
+                        component="contract",
+                        event_type="contract_broken",
+                        message=(
+                            f"Data contract broken for model '{warning.model_id}' "
+                            f"(mode=warn, target={warning.comparison_target}) — write allowed"
+                        ),
+                        details={
+                            "model_id": warning.model_id,
+                            "mode": warning.mode,
+                            "comparison_target": warning.comparison_target,
+                            "diff": {
+                                "added_columns": warning.diff.added_columns,
+                                "removed_columns": warning.diff.removed_columns,
+                                "changed_columns": [
+                                    c.model_dump() for c in warning.diff.changed_columns
+                                ],
+                            },
+                        },
+                    ),
+                )
+                contract_metrics.append(
+                    MetricPoint(
+                        metric_name="elt.contract.broken",
+                        metric_type=MetricType.counter,
+                        value=1,
+                        labels={
+                            "mode": warning.mode,
+                            "model_id": warning.model_id,
+                            "comparison_target": warning.comparison_target,
+                        },
+                        run_id=run_context.run_id,
+                        stage=run_context.stage.value,
+                        job_name=run_context.job_name,
+                    )
+                )
+            observability_adapter.record_metrics(
+                run_context=run_context,
+                environment=environment,
+                metrics=contract_metrics,
+            )
         for record in execution_result.executed_models:
             metrics.extra[f"model.{record.model_id}.row_count"] = record.row_count
 

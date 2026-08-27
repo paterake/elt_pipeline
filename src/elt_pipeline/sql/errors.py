@@ -20,6 +20,7 @@ class SqlRuntimeErrorCode(str, Enum):
     atomic_swap_failed = "SQL_ATOMIC_SWAP_FAILED"
     staging_scheme_unsupported = "SQL_STAGING_SCHEME_UNSUPPORTED"
     config_invalid = "SQL_CONFIG_INVALID"
+    contract_broken = "SQL_CONTRACT_BROKEN"
 
 
 _SQL_RUNTIME_ERROR_CATEGORIES = {
@@ -36,6 +37,7 @@ _SQL_RUNTIME_ERROR_CATEGORIES = {
     SqlRuntimeErrorCode.atomic_swap_failed: ErrorCategory.processing_error,
     SqlRuntimeErrorCode.staging_scheme_unsupported: ErrorCategory.config_error,
     SqlRuntimeErrorCode.config_invalid: ErrorCategory.config_error,
+    SqlRuntimeErrorCode.contract_broken: ErrorCategory.validation_error,
 }
 
 

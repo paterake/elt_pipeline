@@ -77,6 +77,8 @@ _CUSTOM_PROPERTY_PREFIX = f"{_TABLE_PROPERTY_PREFIX}custom."
 
 class SqlColumnSpec(BaseModel):
     name: str
+    type: str | None = None
+    nullable: bool | None = None
     description: str | None = None
     classification: DataClassification | None = None
     masking: MaskingStrategy | None = None
@@ -88,6 +90,16 @@ class SqlColumnSpec(BaseModel):
         cleaned = value.strip()
         if not cleaned:
             raise ValueError("column name must not be empty")
+        return cleaned
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("column type must not be empty if set")
         return cleaned
 
     @field_validator("masking")

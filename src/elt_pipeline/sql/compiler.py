@@ -54,6 +54,8 @@ def compile_sql_model(
         quality=model.manifest.quality,
         governance=model.manifest.governance,
         staging_root=model.manifest.staging_root,
+        contract=model.manifest.contract,
+        contract_version=model.manifest.contract_version,
     )
 
 
