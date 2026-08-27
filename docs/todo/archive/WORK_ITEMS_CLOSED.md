@@ -1,4 +1,4 @@
-# Archive: Work Items — All Closed Items (D-0, D-1, D-2, D-3, B-0 → B-6, G-1 → G-8, M-1 → M-9, S1 → S4, I-1, I-2)
+# Archive: Work Items — All Closed Items (D-0, D-1, D-2, D-3, B-0 → B-6, G-1 → G-8, M-1 → M-11, S1 → S4, I-1, I-2, GAP-7)
 
 Archived from repo-root `BACKLOG.md` on 2026-08-26 during backlog deflation.
 This file preserves the full `## Work items` section: every `####` per-item
@@ -1900,5 +1900,131 @@ claiming "enterprise/platinum-ready" today. Priority tags: 🔴 high · 🟠 med
   The one remaining Demo item (JSONL Kafka replay source) is correctly scoped as a genuine
   zero-dependency workstation convenience — its M-3 real broker Production counterpart is
   separately documented and env-gated via `extraction.bootstrap_servers:` presence.
+
+
+
+#### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)  ✅ CLOSED (2026-08-27)
+
+**Priority:** 🟠 P1 Moderate Capability (Industry Gap Analysis §5, roadmap ME-1 — medium effort 1 week, highest correctness ROI per engineering hour)
+**Pull-forward trigger:** Concrete signed-off consumer demand (2026-08-27, Active Constraint 9 procedure)
+**Industry reference:** dbt contracts (1.7+), Soda Core contracts, Great Expectations Expectations, Monte Carlo automated contracts.
+
+**Current state (gap):** Quality hooks validate *data content* (not-null/uniqueness/range/RI/freshness/regex). But there is no explicit framework-level enforcement of: "This L3 canonical model MUST expose columns {order_id STRING, customer_id BIGINT, order_total DECIMAL(18,4), order_date DATE} and these columns may not be renamed, retyped, or dropped unless the contract version is incremented" — enforced *before* the write commits.
+
+**Impact if unaddressed:** An upstream L2 schema change (new `order_total_micros` instead of `order_total`) silently propagates through the L3 compile, passes DQ if no rule checks it, and breaks every L4 mart and downstream consumer. Right now detection relies on human review + DQ coverage — both are fallible.
+
+**Design (reuses 100% of existing Pydantic manifest model fields):**
+1. **Manifest field:** Add field `contract: strict | warn | off` to `SqlModelManifest` (default: `off` for backward compat; L3 canonical + L4 published marts recommended `strict`).
+2. **Enforcement interlock:** At `spark_executor.py` write time, just before commit: compare (a) declared `SqlColumnSpec` list from manifest with (b) actual `df.schema` StructType of the DataFrame being written + (c) the current Iceberg table schema read back from the catalog (if table exists). Compare name/nullable/type.
+3. **Three enforcement modes:**
+   - **Strict** → raise `CONTRACT_BROKEN` error with structured diff (`added/removed/changed columns`) before any write.
+   - **Warn** → emit WARN class `contract_broken` log event to `logs.jsonl` + Prometheus `elt.contract.broken` gauge counter + allow write.
+   - **Off** → no enforcement (default, backward compat).
+4. **Optional additive:** `contract_version: 1.2.3` field per manifest with monotonic increase enforcement (breaking change = major bump).
+
+**Code insertion point:** Write-time interlock in `spark_executor.py` right before the atomic staging-swap.
+
+**Verification checklist (10 points, all ✅):**
+- [x] `contract` field added to `SqlModelManifest` Pydantic model with Literal type; default `off`; validates strict/warn/off only. 4 tests: `test_manifest_contract_field_defaults_to_off`, `test_manifest_contract_field_accepts_valid_literals` (3 cases looped), `test_manifest_contract_field_rejects_invalid_literal`, `test_manifest_contract_version_rejects_empty_if_set`. All 4 pass. Literal `"bogus"` raises pydantic `ValidationError`; whitespace-only `contract_version="   "` raises ValueError. Invalid values cannot reach compile or write path.
+- [x] Manifest-level YAML parsing works: `contract: strict` in a SQL model manifest is correctly roundtripped through the manifest loader. 1 test `test_compiler_threads_contract_fields_through`. Builds package with `contract=strict, contract_version=cv-7, governance.columns=[order_id(INT,false)/amount(DECIMAL(18,4),true)/order_date(DATE,true)]` → `discover_sql_models` → `compile_sql_model(token_context={window tokens})` → asserts `compiled.contract=="strict"`, `compiled.contract_version=="cv-7"`, per-column `(type,nullable)` tuples match declared. Passes.
+- [x] `off` mode (default): zero behavior change. Every existing SQL model test passes without modification. Gate count preserved ± delta of new tests. Evidence: Non-Spark baseline 579 passed 28 skipped IDENTICAL (579/28); 14 isolated Spark/Iceberg file counts identical 26/9/34/25/1/14/7/9/8/8/27/5/25 = 228; pre-edit 807 post-edit 807 (new 23 tests additive only, baseline drift 0). `test_contract_off_mode_no_enforcement` additional explicit test: declares only col_a INT but SQL produces col_a STRING + col_b INT → off mode → write succeeds (row_count==1) + contract_warnings==[].
+- [x] **Strict mode — manifest vs df.schema mismatch:** New model with `contract: strict` whose declared `SqlColumnSpec` differs from actual `df.schema` (column dropped, type changed, column added not in spec) → raises `PipelineError` with error code `SQL_CONTRACT_BROKEN` and structured context: `{added_columns: [...], removed_columns: [...], changed_columns: [{col, expected_type, actual_type}]}`. 3 focused tests (drop, type, add):
+  - `test_strict_mode_column_added_raises` → declares only id INT; SQL produces id INT + bonus_col STRING → `PipelineError.error_code == SQL_CONTRACT_BROKEN`; diff.added_columns == ["bonus_col"]; comparison_target="dataframe_schema"; "Write blocked before commit" substring in message. ✓
+  - `test_strict_mode_column_removed_raises` → declares id+must_exist; SQL produces only id → diff.removed_columns == ["must_exist"]. ✓
+  - `test_strict_mode_type_change_raises` → declares id STRING + amount DECIMAL(18,4); SQL produces id INT + amount DECIMAL(10,2) → changed_columns has 2 entries: id (expected:"STRING" actual:"INT"), amount (expected:"DECIMAL(18,4)" actual:"DECIMAL(10,2)"). ✓
+- [x] **Strict mode — match:** Same declared spec as df.schema → no error, write proceeds normally. 1 test `test_strict_mode_match_succeeds`: 3 declared cols id/name/amount with INT|STRING|DECIMAL(18,4), all False nullable; UNION ALL 2 rows CAST matches types exactly → row_count==2, no exception, contract_warnings accumulator empty.
+- [x] **Strict mode — existing catalog mismatch (parquet + Iceberg):** Table already exists in catalog with different schema; manifest spec matches df.schema (Spark-side) but not catalog → `CONTRACT_BROKEN` with catalog diff context. 2 tests:
+  - `test_strict_mode_parquet_catalog_mismatch_raises` (parquet native path): off-mode run 1 writes {id INT + legacy_col STRING}. Run 2 strict declares id INT only → DF matches (id INT only) but catalog has legacy_col → raises comparison_target="catalog_schema"; diff.added_columns contains "legacy_col". ✓
+  - `test_strict_mode_iceberg_catalog_mismatch_raises` (HadoopCatalog Iceberg path, dedicated process-isolated file `test_data_contracts_iceberg.py` to avoid JVM classpath cross-contamination with shared spark_session Iceberg-OFF fixture): off-mode run 1 via Iceberg writeTo creates `{id INT + legacy_col STRING}`. Run 2 strict declares id INT only → DF matches but spark.table(fq).schema readback via `try_read_existing_iceberg_table_schema` contains legacy_col → raises with comparison_target="catalog_schema" AND context["contract_version"] == "cv-ic-2" propagated. ✓
+- [x] **Warn mode — mismatch:** Same mismatch cases but write proceeds; `contract_broken` WARN event in `logs.jsonl`; Prometheus gauge `elt.contract.broken{mode,warn, model_id, comparison_target}` incremented. 3 tests (df mismatch + catalog mismatch + full runtime emit):
+  - `test_warn_mode_df_mismatch_allows_write`: declared id INT, actual id STRING + extra BOOL → row_count==1, 1 warning in SqlExecutionResult.contract_warnings, model_id="level3.contract.warndf_test", mode="warn", comparison_target="dataframe_schema", diff changed id STRING↔INT + added "extra". ✓
+  - `test_warn_mode_catalog_mismatch_allows_write`: off-mode run 1 parquet writes legacy_col DATE. Warn run 2 DF declares id INT only. DF check passes, catalog check triggers warning. Target set {"dataframe_schema","catalog_schema"}; catalog_warn.diff.added contains "legacy_col". ✓
+  - `test_run_sql_locally_warn_mode_emits_logs_and_metrics`: full end-to-end through `run_sql_models_locally` → seed L2, package with contract=warn + declared 3 cols, SQL produces extra_bonus_col. Asserts: (a) exec_result contract_warnings ≥ 1 with dataframe_schema target present; (b) logs.jsonl contains event severity="WARN"/component="contract"/event_type="contract_broken" + structured details with model_id/mode/comparison_target + diff.added_columns=["extra_bonus_col"]; (c) audit.metrics_summary.extra["contract.broken_warnings"] ≥ 1; (d) if metrics.jsonl exists, elt.contract.broken counter is present metric_type="counter" value=1 with labels {mode:"warn", model_id, comparison_target:"dataframe_schema"}. All 4 sub-assertions pass. ✓
+- [x] Structured diff fields (added/removed/changed) are correctly populated for every mismatch variant: column order must not matter, type comparison handles Decimal precision/scale, nullable mismatch is detected as a change. 8 focused pure-unit diff tests (no JVM):
+  - exact match → is_empty() ✓
+  - declared [z,a,m] order vs actual [a,m,z] order → is_empty() ✓
+  - DECIMAL(18,4) declared vs same actual → match; same declared vs DECIMAL(18,2) actual → 1 changed {expected:"DECIMAL(18,4)", actual:"DECIMAL(18,2)"}; DECIMAL(10,2) second column unchanged. ✓
+  - nullable False↔True + True↔False bidirectional detected as expected_nullable/actual_nullable changes, type fields stay None. ✓
+  - All-3-buckets test: kept_same/kept_changed/only_declared/unenforced in declared; kept_same/kept_changed type→BIGINT + nullable True→False + only_in_actual/unenforced type/nullable random → added ["only_in_actual"], removed ["only_declared"], changed 1 (kept_changed type STRING↔BIGINT nullable T↔F); unenforced (declared type=None nullable=None) does NOT trigger a change even if actual differs (opt-in per-column strictness). ✓
+  - Whitespace+case normalisation: `decimal( 18 , 4 )` / `string` declared → DECIMAL(18,4) / STRING actual → is_empty(). ✓
+  - `normalise_spark_data_type` nested: ArrayType(MapType(String, Struct(x:DECIMAL(18,4), y:Timestamp))) → "ARRAY<MAP<STRING,STRUCT<x:DECIMAL(18,4),y:TIMESTAMP>>>". ✓
+  - `_normalise_type_string`: `"  decimal ( 18 , 4 ) " → DECIMAL(18,4)`; `array < string >  → ARRAY<STRING>`. ✓
+- [x] Backward compat: all pre-existing spark_executor tests + example end-to-end runs pass without touching any fixture; baseline gate count 807 → **830** after adding 23 new contract tests (delta +23). 23 new tests breakdown: 22 in test_data_contracts.py (isolated process 1 file — 8 manifest literal/diff pure units + compiler roundtrip + off-mode + strict-match + strict-3-variants (add/remove/type) + strict-parquet-catalog + warn-df + warn-catalog + runtime full emit logs/metrics = 22) + 1 in test_data_contracts_iceberg.py (strict iceberg catalog). Baseline 807 (Non-Spark 579 + Spark 228) preserved exactly; every pre-existing Spark file counts match verbatim: test_cli 26, test_examples 9, test_iceberg_catalog_config 34, test_iceberg_parity 25, test_iceberg_preflight 1, test_maintenance 14, test_normalize_engine 7, test_normalize_pipeline 9, test_publish_cli 8, test_publish_models 8, test_spark_fs_config 27, test_sql_iceberg_write 5, test_sql_models 25. Emulator skip count 28 preserved. Zero fixture edits required because SqlColumnSpec.type/nullable default None and CompiledSqlModel.contract default "off" — opt-in strictly.
+- [x] Gate: `bash scripts/run_tests.sh` → PASS (**830** passed, 0 failed, 28 emulator skipped). Full exit 0. `uv run ruff check src/ tests/ examples` clean. All checks passed.
+
+### Done — GAP-7 closure narrative (Active Constraint 9c procedure, concrete evidence with counts)
+
+**Pull-forward chain (audit):** Active Constraint 9 step a (identify gap) = docs/INDUSTRY_GAP_ANALYSIS.md §ME-1 medium-effort row; step b (signed-off demand) = user verbatim: "Concrete signed-off consumer demand: Pull forward GAP-7 Data Contract enforcement (strict/warn/off) per docs/INDUSTRY_GAP_ANALYSIS.md §ME-1 (medium effort 1 week)"; step c (archive body here) = this block; step d (single-line stub + resume/snapshot re-stamp) = BACKLOG edits below. All 4 steps completed per Constraint 9.
+
+**Architecture decision log (the 3 nontrivial judgment calls):**
+
+1. **"Compiler spread, not model_dump."** `compile_sql_model` builds CompiledSqlModel by hand — 11 fields are explicitly spread into the constructor, NO model_dump() (the compiler is the manifest→runtime boundary that deliberately drops un-copied fields to prevent future manifest additions silently leaking into runtime write paths). Judgment: added `contract=` + `contract_version=` as two explicit lines (compiler.py L57-58), not a `**manifest.model_dump(exclude_none=True)` spread. Mitigation for forgetful copies: verification checklist item 2 (compiler roundtrip test) catches any future field-addition regressions at test time. Correct because the compiler manual spread is a DEFENSE in depth (drop-unknown by default) vs attack surface (have to remember 2 lines).
+
+2. **"pCO thin-facade internal module, not a public facade __init__.py re-export."** Pure diff logic + Spark normalizer lives in `sql/_contract_enforcement.py` — underscore-prefixed SIBLING of spark_executor.py, NOT a public facade position. Reason (Constraint 7: implement behind existing seams): the public `sql/__init__.py` facade already exposes SparkSqlModelExecutor, run_sql_models_locally, etc. Adding a public `DataContractDiff` or `DataContractMode` facade symbol would be a new public surface area for 0 consumer benefit — the ONLY valid consumers of the diff models are spark_executor (direct sibling import) and runtime (already accesses CompiledSqlModel.contract + SqlExecutionResult.contract_warnings via manifest model imports). Structural guardrails preserved: (1) existing facade boundary test `test_facade_import_boundary.py` 8 tests still pass unmodified; (2) no gold file created — _contract_enforcement.py is single-intent (275 lines, one concern: contract enforce + warn accumulator); (3) no new `from facade._* import` outside its package is required.
+
+3. **"Nullable declared=None means don't-enforce-this-dimension-on-this-column (per-column opt-in strictness)."** A declared SqlColumnSpec can set (a) type=None nullable=None → fully unenforced (opt-out); (b) type=STRING nullable=None → enforce only type (any nullable ok); (c) type=STRING nullable=False → enforce BOTH (max strictness). This mirrors dbt's per-column contract opt-in semantics exactly and is the minimum-surprise design because every pre-existing governance YAML has ZERO type/nullable fields (all None) → every old manifest loads AND runs exactly as before even if a user accidentally sets contract=strict on a model whose governance specs only include classification/masking. Enforcing type but not nullable (case b) handles the common downstream-trino/athena/snowflake scenario where ingestion-side NULL propagation is messy but consumers care only about structural type.
+
+**Code map (every changed file + line range, for forensic review):**
+| File | Lines | Purpose |
+|---|---|---|
+| src/elt_pipeline/shared/governance.py | 78–103 | SqlColumnSpec: added `type: str\|None` + `nullable: bool\|None` with empty-guard validator |
+| src/elt_pipeline/sql/models.py | 1–12 | Literal import + DataContractMode type alias |
+| src/elt_pipeline/sql/models.py | 73–98 | DataContractBrokenChange, DataContractDiff (added/removed/changed + is_empty), DataContractWarningRecord Pydantic models |
+| src/elt_pipeline/sql/models.py | 117–128 | SqlModelManifest.contract default=off + contract_version validator |
+| src/elt_pipeline/sql/models.py | 194–195 | CompiledSqlModel.contract + contract_version copied-through |
+| src/elt_pipeline/sql/models.py | 238–246 | SqlExecutionResult.contract_warnings accumulator list field |
+| src/elt_pipeline/sql/compiler.py | 39–59 | Explicit 2-line spread contract + contract_version in 11-field CompiledSqlModel constructor list |
+| src/elt_pipeline/sql/errors.py | 9, 23, 40 | SqlRuntimeErrorCode.contract_broken = "SQL_CONTRACT_BROKEN"; category → validation_error |
+| src/elt_pipeline/sql/_contract_enforcement.py | (NEW 275 lines) | _normalise_type_string, _normalise_spark_decimal, normalise_spark_data_type (STRING/INT/BIGINT/SMALLINT/TINYINT/DOUBLE/FLOAT/BOOLEAN/DATE/TIMESTAMP/TIMESTAMP_NTZ/BINARY/DECIMAL(p,s)/ARRAY<t>/MAP<k,v>/STRUCT<f:t,…>), extract_schema_fields StructType→dict, compute_contract_diff set-based added/removed + type/nullable per-col compare with None=opt-out normaliser, try_read_existing_iceberg_table_schema(spark,fq_table), check_contract_against_dataframe_schema, check_contract_against_catalog_schema, dispatch enforce_data_contract_at_write(*, dataframe_schema\|precomputed dataframe_diff, catalog_columns, accumulator), strict→build_sql_runtime_error w/ human summary + structured context {model_id, contract_mode, comparison_target, diff_dict[, contract_version]}; warn→append DataContractWarningRecord(comparison_target=Literal via direct literal-string call-sites both match "dataframe_schema"/"catalog_schema" exactly → runtime safe even though #type: ignore[arg-type] suppresses the str→Literal parameter typing in _apply_contract_decision). |
+| src/elt_pipeline/sql/spark_executor.py | 1–42 | Imports path_exists + 3 _contract_enforcement symbols + DataContractWarningRecord |
+| src/elt_pipeline/sql/spark_executor.py | 104–134 | __init__ self._contract_warnings accumulator; helper _try_read_parquet_catalog_schema path_exists guard + spark.read.parquet schema extract wrapped in exception-swallowing None |
+| src/elt_pipeline/sql/spark_executor.py | 136–188 | execute(): BOTH except PipelineError branch (before raise) + success return branch (before return) copy execution_result.contract_warnings = list(self._contract_warnings) so partial-failure warnings survive the raise path via exc.context["execution_result"] (mirrors existing validation_results L175–182 pattern) |
+| src/elt_pipeline/sql/spark_executor.py | 284–293 | Parquet write path: AFTER target_path computed, BEFORE append/staging_swap branches → if contract!="off" → catalog_columns read + dispatch enforce_data_contract_at_write. Strict raises BEFORE any staging dir written (zero blast radius — no partial swap cleanup needed) |
+| src/elt_pipeline/sql/spark_executor.py | 468–475 | Iceberg write path: AFTER CREATE NAMESPACE IF NOT EXISTS, BEFORE load_mode branching (partition_overwrite/append/full_refresh) → catalog_columns via try_read_existing_iceberg_table_schema + dispatch. Same strict-blocks-before-write semantics. |
+| src/elt_pipeline/sql/runtime.py | 23–38 | MetricPoint, MetricType imports |
+| src/elt_pipeline/sql/runtime.py | 223–273 | finally-block: after quality_summary counts, before per-model row_count extras. contract_warning_count = len(warnings) → metrics.extra["contract.broken_warnings"]. If >0: for each warning, artifact_store.append_log_event(build_log_event severity=WARN / component=contract / event_type=contract_broken / message "{model} (mode=warn, target=X) — write allowed" / details {model_id,mode,comparison_target,diff}) + one MetricPoint(elt.contract.broken counter value=1 labels={mode, model_id, comparison_target}). Batch-record_metrics through the existing observability_adapter (best_effort/blocking policy + Prometheus exporter + local metrics.jsonl append). Runs on success AND failure because inside finally:. |
+| tests/test_data_contracts.py | (NEW 22 tests, 836 lines) | 4 manifest Literal validators, 8 compute_contract_diff pure units, compiler roundtrip, off-mode explicit no-enforcement, strict match, strict 3 mismatch variants (add/remove/type), strict parquet catalog mismatch, warn df mismatch, warn catalog mismatch, test_run_sql_locally_warn_mode full emit (logs + audit + metrics) |
+| tests/test_data_contracts_iceberg.py | (NEW 1 test, 139 lines) | Dedicated Iceberg-ON process (isolated per scripts/run_tests.sh spark_files detection). Module-scope iceberg_spark_contract fixture (HadoopCatalog type=hadoop ivy cache in tmp). strict catalog mismatch 2-run (off writes legacy then strict matches DF but not catalog → raises with contract_version propagated). Cross-contamination AVOIDED: the shared conftest spark_session builds Iceberg OFF and locks JVM jars; this file's own fixture runs in its own pytest process → no ClassNotFoundException SparkCatalog. |
+
+**3 bugs found + fixed during implementation (no production impact — tests would have caught them before the first user run, but documented for forensic review):**
+1. **(Pre-runtime, static analysis caught) models.py L5** — wrote `DataContractMode: Literal[…]` type ANNOTATION instead of ALIAS (=) → would have failed Pydantic validation at manifest-parse time of any contract=strict YAML file. Corrected immediately to `DataContractMode = Literal["strict","warn","off"]`. No test reached because no YAML hit it before fix.
+2. **(Pre-runtime, forward-ref order) DataContractWarningRecord class position** — declared AFTER SqlExecutionResult (which uses it as list field) → forward-reference stringification risk on Python <3.12 annotation paths. Reordered the 3 contract Pydantic models (BrokenChange/Diff/WarningRecord) to a position ABOVE SqlModelManifest. No test reached.
+3. **(Spark/unit infer, test caught) Match scenario nullable default True (Spark literal CAST produces nullable=False, test declared nullable=True)** → strict match test threw CONTRACT_BROKEN on the name column "nullable True != False". Corrected the declared SqlColumnSpec to nullable=False. This is a TEST authoring bug, not a code defect — contract code correctly compared nullable flags; the test fixture declaration was wrong. Confirmed by re-reading the Spark CAST literal semantics: `CAST(x AS T)` literal produces non-nullable unless the expression itself is nullable (correct).
+
+**Root-cause lessons learned for the next gap pull-forward:**
+- The compiler manual-field spread (Constraint 7) is a safety net but requires a VERIFICATION CHECKLIST ITEM EVERY TIME a manifest field is added — item 2 roundtrip test (manifest→discover→compile→assert field present) is the non-negotiable pair to every spread.
+- Spark/Iceberg JVM classpath isolation: any test file that builds a dedicated iceberg_enabled=True session MUST live in its OWN dedicated file to prevent the shared spark_session (Iceberg OFF default from ELT_PIPELINE_TEST_SPARK_ICEBERG=0) from booting first in the same process and poisoning the ivy/jar classpath.
+- `type: ignore[arg-type]` directives in internal call-sites (not public API!) are acceptable if the TWO literal call-sites are manually verified to match the Literal exactly (here "dataframe_schema"/"catalog_schema" — the only two values passed through the target parameter, both match the Literal union exactly). Public API MUST never suppress Literal typing.
+
+### Verification result (post-close stamped counts + commands, honest = paste the real numbers):
+
+- **Gate (after close, 2026-08-27):** `bash scripts/run_tests.sh` → **TEST GATE: PASS (all files green)**
+  ```
+  ==> Non-Spark tests (single process)
+  579 passed, 28 skipped in 7.72s
+  ==> tests/test_cli.py                                      26 passed
+  ==> tests/test_data_contracts.py                          22 passed (NEW)
+  ==> tests/test_data_contracts_iceberg.py                   1 passed (NEW)
+  ==> tests/test_examples.py                                  9 passed
+  ==> tests/test_iceberg_catalog_config.py                   34 passed
+  ==> tests/test_iceberg_parity_and_audit.py                 25 passed
+  ==> tests/test_iceberg_preflight_spike.py                   1 passed
+  ==> tests/test_maintenance.py                              14 passed
+  ==> tests/test_normalize_engine_parity.py                   7 passed
+  ==> tests/test_normalize_pipeline.py                        9 passed
+  ==> tests/test_publish_cli.py                               8 passed
+  ==> tests/test_publish_models.py                            8 passed
+  ==> tests/test_spark_fs_config.py                          27 passed
+  ==> tests/test_sql_iceberg_write.py                         5 passed
+  ==> tests/test_sql_models.py                               25 passed
+  ```
+  Total: **830 passed (baseline 807 + 23 new), 0 failed, 28 emulator correctly skipped.** Exit 0.
+- **Ruff (after close, 2026-08-27):** `uv run ruff check src/ tests/ examples` → `All checks passed!` 0 errors.
+
+### Cross-doc state (to be verified by next session after the follow-up doc-edit PR that flips claim rows — not done here because this close-out is contract-code only; CMM/claim doc flips are a separate scoped PR):
+- CMM §Capability Matrix: no gap row yet existed for GAP-7 (gap-analysis was separate INDUSTRY_GAP_ANALYSIS.md §ME-1 P1 moderate cap); next doc PR should add row for Data Contracts Production=strict/warn/off with opt-in SqlColumnSpec declaration and reference this WORK_ITEMS_CLOSED.md GAP-7 entry.
+- CMM §How to read for publication §1 Production list gains: "Schema-as-code data contracts (strict/warn/off, pre-write enforcement, always-on contract_broken metric + warn logs)".
+- README Honest Boundary Governance/quality line → append "(GAP-7) Pre-write schema contracts 3-mode strict/warn/off via SqlColumnSpec + elt.contract.broken counter".
+- These 3 doc flips are **NOT** part of GAP-7 code item per user scope (signed-off demand was GAP-7 enforcement code only); they belong in a follow-up doc-only PR that can batch together with any next-pull item's claim updates.
 
 

@@ -207,10 +207,8 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
   test_observability.py/test_quality_adapter.py/test_lineage_adapter.py that
   previously ran pre-split and were simply re-verified post-split unchanged.
   `uv run ruff check src/ tests/ examples` → All checks passed.
-- **Session 2026-08-27 — active work item:** **GAP-7** Data Contract enforcement (strict/warn/off).
-  Pulled forward on concrete signed-off consumer demand per Active Constraint 9 procedure.
-  Full spec pasted from INDUSTRY_GAP_ANALYSIS.md §ME-1 into §Still Todo #### GAP-7.
-- **Next work:** No further pre-scoped items. Pull additional gaps forward only on concrete consumer demand.
+- **Session 2026-08-27 — closed:** **GAP-7 ✅ CLOSED** Data Contract enforcement (strict/warn/off). Pulled forward on concrete signed-off consumer demand per Active Constraint 9. Full spec, 10-point verified checklist with test counts, architecture decision log, gate result 830/0/28, and 3 pre-production bugs fixed archived in [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Delta vs prior gate: baseline 807 → 830 (+23 new tests: 22 in test_data_contracts.py + 1 in test_data_contracts_iceberg.py). ruff src/tests/examples clean, 0 issues.
+- **Next work:** No further pre-scoped items. Pull additional gaps forward only on concrete consumer demand (zero-pre-scoped policy per §Work items rule, 2026-08-26 backlog deflation).
 
 ## Session start prompt
 
@@ -227,28 +225,33 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
 doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**807 / 0 failed**;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**830 / 0 failed**;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
   (zero code relation to recent work);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-27 (re-stamped POST PCO code structure audit tranche closed:
-  Gate bumped 769 → **807 tests** (delta +38: 8 new facade boundary guard tests +
-  30 previously-passing post-split internal module tests). Actual gate result:
+- **Captured:** 2026-08-27 (re-stamped POST GAP-7 data contracts tranche closed:
+  Gate bumped 807 → **830 tests** (delta +23: 22 in test_data_contracts.py
+  manifest Literal validation / pure diff correctness / compiler roundtrip / off-mode
+  strict 3 mismatch variants + match + parquet-catalog / warn-df + warn-catalog +
+  runtime full emit; 1 Iceberg catalog mismatch in isolated test_data_contracts_iceberg.py
+  dedicated Iceberg-ON process, avoids JVM classpath cross-contamination with shared
+  spark_session Iceberg-OFF default). Actual gate result:
   Non-Spark 579 passed 28 skipped + 14 isolated Spark/Iceberg file processes
-  26/9/34/25/1/14/7/9/8/8/27/5/25 = 228 → total 579+228 = **807 passed, 0 failed, 28 skipped.**
+  26/9/34/25/1/14/7/9/8/8/27/5/25 = 228 → + 22 new data_contracts.py + 1 iceberg_contract
+  → total 579+228+23 = **830 passed, 0 failed, 28 skipped.**
   Full exit 0; ruff clean.
-  **PCO TRANCHE (6 gold files eliminated):** 6 multi-intent files split into thin
-  facade modules + 28 underscore-prefixed single-intent internal implementation
-  modules, all using the exact ai_graph facade pattern from ai_platform/implementation/*
-  PCO-governed repos. Facade compatibility guardrails preserved verbatim:
-  (1) mutable SDK singletons live on facade dict, (2) monkeypatch targets resolve
-  through facade dict every call, (3) source-inspection tests concatenate _cli_parser+_cli_main
-  to preserve find() anchor/callsite assertions, (4) 8 test facade boundary guard
-  tests mirror ai_graph structure forever ban sibling import of internal `_*` modules.
-  Publication scrub re-verified → 0 matches on all forbidden patterns.
+  **GAP-7 TRANCHE (1 internal module + 2 test files = 23 new tests):** contract manifest
+  field (strict/warn/off) default off, opt-in per-column SqlColumnSpec.type/nullable
+  enforcement at write-path interlock JUST BEFORE staging swap / Iceberg commit (strict
+  raises SQL_CONTRACT_BROKEN pre-write w/ structured {added/removed/changed} diff context,
+  warn emits WARN/contract/contract_broken log event + elt.contract.broken Prometheus
+  counter with labels, off no-op). Strict also validates against catalog schema of
+  existing tables (parquet + Iceberg), preventing drift between declared schema and
+  already-written catalog. 2 new test files match S-0 per-file Spark isolation pattern;
+  Iceberg-only tests in own file. Ruff clean, publication scrub zero hits.
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -395,38 +398,9 @@ work it one-per-session, then on close move the body to the archive file and lea
 
 ### Still Todo
 
-#### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)
+*None pre-scoped (zero-pre-scoped policy, post-Tranche-2 post-GAP-7). Pull forward only on concrete signed-off consumer demand per Active Constraint 9 procedure.*
 
-**Priority:** 🟠 P1 Moderate Capability (Industry Gap Analysis §5, roadmap ME-1 — medium effort 1 week, highest correctness ROI per engineering hour)
-**Pull-forward trigger:** Concrete signed-off consumer demand (2026-08-27, Active Constraint 9 procedure)
-**Industry reference:** dbt contracts (1.7+), Soda Core contracts, Great Expectations Expectations, Monte Carlo automated contracts.
-
-**Current state (gap):** Quality hooks validate *data content* (not-null/uniqueness/range/RI/freshness/regex). But there is no explicit framework-level enforcement of: "This L3 canonical model MUST expose columns {order_id STRING, customer_id BIGINT, order_total DECIMAL(18,4), order_date DATE} and these columns may not be renamed, retyped, or dropped unless the contract version is incremented" — enforced *before* the write commits.
-
-**Impact if unaddressed:** An upstream L2 schema change (new `order_total_micros` instead of `order_total`) silently propagates through the L3 compile, passes DQ if no rule checks it, and breaks every L4 mart and downstream consumer. Right now detection relies on human review + DQ coverage — both are fallible.
-
-**Design (reuses 100% of existing Pydantic manifest model fields):**
-1. **Manifest field:** Add field `contract: strict | warn | off` to `SqlModelManifest` (default: `off` for backward compat; L3 canonical + L4 published marts recommended `strict`).
-2. **Enforcement interlock:** At `spark_executor.py` write time, just before commit: compare (a) declared `SqlColumnSpec` list from manifest with (b) actual `df.schema` StructType of the DataFrame being written + (c) the current Iceberg table schema read back from the catalog (if table exists). Compare name/nullable/type.
-3. **Three enforcement modes:**
-   - **Strict** → raise `CONTRACT_BROKEN` error with structured diff (`added/removed/changed columns`) before any write.
-   - **Warn** → emit WARN class `contract_broken` log event to `logs.jsonl` + Prometheus `elt.contract.broken` gauge counter + allow write.
-   - **Off** → no enforcement (default, backward compat).
-4. **Optional additive:** `contract_version: 1.2.3` field per manifest with monotonic increase enforcement (breaking change = major bump).
-
-**Code insertion point:** Write-time interlock in `spark_executor.py` right before the atomic staging-swap.
-
-**Verification checklist:**
-- [ ] `contract` field added to `SqlModelManifest` Pydantic model with Literal type; default `off`; validates strict/warn/off only.
-- [ ] Manifest-level YAML parsing works: `contract: strict` in a SQL model manifest is correctly roundtripped through the manifest loader. 1 test.
-- [ ] `off` mode (default): zero behavior change. Every existing SQL model test passes without modification. Gate count preserved ± delta of new tests.
-- [ ] **Strict mode — manifest vs df.schema mismatch:** New model with `contract: strict` whose declared `SqlColumnSpec` differs from actual `df.schema` (column dropped, type changed, column added not in spec) → raises `PipelineError` with error code `CONTRACT_BROKEN` and structured context: `{added_columns: [...], removed_columns: [...], changed_columns: [{col, expected_type, actual_type}]}`. 3 focused tests (drop, type, add).
-- [ ] **Strict mode — match:** Same declared spec as df.schema → no error, write proceeds normally. 1 test.
-- [ ] **Strict mode — existing Iceberg table mismatch:** Table already exists in catalog with different schema; manifest spec matches df.schema (Spark-side) but not Iceberg catalog → `CONTRACT_BROKEN` with catalog diff context. 1 test (mock Iceberg catalog readback).
-- [ ] **Warn mode — mismatch:** Same mismatch cases but write proceeds; `contract_broken` WARN event in `logs.jsonl`; Prometheus gauge `elt.contract.broken{mode="warn", model="..."}` incremented. 2 tests (df mismatch + catalog mismatch).
-- [ ] Structured diff fields (added/removed/changed) are correctly populated for every mismatch variant: column order must not matter, type comparison handles Decimal precision/scale, nullable mismatch is detected as a change. 1 focused diff-only unit test.
-- [ ] Backward compat: all pre-existing spark_executor tests + example end-to-end runs pass without touching any fixture; 78 existing non-Spark + 228 Spark tests = 807 baseline must stay ≥ 807 after adding new contract tests.
-- [ ] Gate: `bash scripts/run_tests.sh` → PASS (≥ 807 passed, 0 failed, 28 emulator skipped); `uv run ruff check src/ tests/ examples` clean.
+#### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 
 ---
 
