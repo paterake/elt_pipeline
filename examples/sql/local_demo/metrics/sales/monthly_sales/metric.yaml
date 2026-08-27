@@ -1,0 +1,26 @@
+name: monthly_sales
+domain: sales
+description: >
+  Monthly gross sales total across all completed orders. Sum of the L4 order_summary total_amount
+  column grouped by the order_month ISO time bucket. Materialized as an Iceberg metric table for
+  dashboards; simultaneously exported as a Prometheus gauge for alerting and BI VIEW for Trino
+  ad-hoc queries. All three modes are guarded by a bidirectional generated_sql_hash so a diff
+  between modes fails the pipeline before any consumer reads a silent divergence.
+version: v1
+query_ref: level4.sales.order_summary.total_amount
+aggregation: sum
+dimensions:
+  - name: order_month
+    description: ISO month bucket (YYYY-MM) carried through from the order_summary mart.
+    is_time_dimension: true
+filters:
+  - predicate: total_amount > 0
+    description: Drop months where zero gross orders were recorded (sentinel).
+required_role: null
+owners:
+  - name: sales-analytics
+    email: sales-analytics@example.com
+tags:
+  - finance
+  - kpi
+  - dashboard

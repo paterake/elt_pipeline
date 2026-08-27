@@ -1,0 +1,26 @@
+name: order_count
+domain: sales
+description: >
+  Monthly distinct order count. Sum of the L4 order_summary order_count mart column per ISO month.
+  SECURITY DEFINER VIEW-enabled via required_role=internal so the Trino serving path enforces the
+  classification on every BI query (G-6 masking compliance). Materialized Iceberg table uses the
+  same aggregation SQL — the bidirectional guardrail guarantees byte-identical generated_sql_hash
+  across Iceberg, Trino VIEW, and Prometheus gauge mode in a single scheduled invocation.
+version: v1
+query_ref: level4.sales.order_summary.order_count
+aggregation: sum
+dimensions:
+  - name: order_month
+    description: >
+      ISO month bucket (YYYY-MM) — shared time dimension with monthly_sales for
+      dashboard alignment on a single x-axis.
+    is_time_dimension: true
+filters: []
+required_role: internal
+owners:
+  - name: sales-analytics
+    email: sales-analytics@example.com
+tags:
+  - kpi
+  - dashboard
+  - internal-only

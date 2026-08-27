@@ -13,3 +13,39 @@ sources:
     table_name: orders
 owner:
   name: platform
+governance:
+  classification: internal
+  retention_days: 365
+  retention_partition_column: order_date
+  columns:
+    - name: order_id
+      type: bigint
+      nullable: false
+      description: Surrogate order key assigned at ingest.
+      classification: internal
+    - name: customer_id
+      type: bigint
+      nullable: false
+      description: Immutable customer reference.
+      classification: confidential
+      masking: hash_sha256
+    - name: amount
+      type: decimal(18,2)
+      nullable: false
+      description: Gross line-item amount before taxes/discounts.
+      classification: internal
+    - name: status
+      type: string
+      nullable: false
+      description: Order lifecycle status (new/pending/shipped/cancelled/returned).
+      classification: internal
+    - name: order_date
+      type: timestamp
+      nullable: false
+      description: UTC wall-clock of the order placement event.
+      classification: internal
+    - name: order_month
+      type: string
+      nullable: false
+      description: Derived ISO month bucket YYYY-MM. Used as the time dimension for rolling metrics.
+      classification: internal

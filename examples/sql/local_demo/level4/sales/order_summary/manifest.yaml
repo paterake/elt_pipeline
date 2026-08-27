@@ -10,3 +10,28 @@ target:
   table_name: order_summary
 owner:
   name: platform
+governance:
+  classification: internal
+  retention_days: 365
+  retention_partition_column: order_month
+  columns:
+    - name: order_month
+      type: string
+      nullable: false
+      description: ISO month bucket YYYY-MM — primary rolling time dimension for all semantic sales metrics.
+      classification: internal
+    - name: total_amount
+      type: decimal(18,2)
+      nullable: false
+      description: Sum of base_orders.amount for the month. Reference column for the monthly_sales semantic metric.
+      classification: internal
+    - name: order_count
+      type: bigint
+      nullable: false
+      description: Count of distinct order_id rows for the month. Reference column for the order_count semantic metric.
+      classification: internal
+    - name: distinct_customers
+      type: bigint
+      nullable: false
+      description: Count of distinct (post-mask) customer_id values that placed an order in the month.
+      classification: internal
