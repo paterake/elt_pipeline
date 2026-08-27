@@ -201,6 +201,7 @@ class SqlExecutionRecord(BaseModel):
     target_table_name: str
     load_mode: SqlLoadMode
     row_count: int
+    column_lineage_map: dict[str, list[tuple[str, str]]] | None = None
 
 
 class SqlValidationResult(BaseModel):

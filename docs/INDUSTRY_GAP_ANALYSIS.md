@@ -119,6 +119,19 @@ Gaps in §5 use these severity bands:
 
 ## 5. Categorized Gap Inventory (20 Gaps)
 
+**Posture preamble (2026-08-27):** Severity classification (P0/P1/P2) below is
+*industry benchmark only* — it measures how far `elt_pipeline`'s feature set is
+from a full-service ELT platform (dbt + Meltano + Dagster combined). The
+*actual product posture* of each gap, including whether it is IN SCOPE, OUT OF
+SCOPE, or LOW-PRIORITY IN-SCOPE, is governed by
+[BACKLOG.md §Strategic Posture](../BACKLOG.md#L350-L432). Do **not** pull a gap
+forward based on severity alone — a P0 that competes with cloud services is
+still OUT OF SCOPE. Key in-scope priorities per signed-off operator demand:
+GAP-3 (Column-Level Lineage) ✅ pulled forward, GAP-4 (Semantic Metrics Layer)
+✅ pulled forward, GAP-8 (Data Profiling) 🔵 in-scope but waiting for measured
+toil. All others: ❌ OUT OF SCOPE (see BACKLOG §Still Todo blanket out-of-scope
+list + Active Constraints 10–13) unless signed-off exception.
+
 ### 🔴 P0 — Major Strategic Gaps
 
 #### GAP-1: Connector Ecosystem Breadth (4 families vs. 300+ industry norm)
@@ -128,6 +141,7 @@ Gaps in §5 use these severity bands:
 **Recommended path (highest leverage in the repo):** Implement **`SingerTapConnector`** as a 5th connector family. Singer's `--config --state --catalog` protocol maps 1:1 to the platform's lifecycle (extract → persist → audit → checkpoint). Build one adapter class + a YAML/JSON tap-spec manifest registry (same pattern as M-1 ConnectorManifest preset system). Instantly unlocks 300+ maintained community taps without writing 300 connectors.
 **Code insertion point:** New submodule [singer_tap.py](../src/elt_pipeline/ingest/connectors/singer_tap.py) + `register_connector_factory("singer_tap", SingerTapFactory())` at module load. Reads existing `SecretRef`, `LocalCheckpointStore`, and B-6 storage backend verbatim. Zero CLI changes (already registry-driven).
 **Why no rewrite risk:** Singer taps are separate subprocesses — no Python dependency conflict; failures are subprocess exit codes (already handled by `SubprocessCliInvoker` pattern). Tap output JSONL is trivial to land into L1 raw manifests (same wire format as M-11 Kafka JSONL replay — existing `Level1ArtifactManifest` schema fits like a glove).
+**Posture:** ❌ **OUT OF SCOPE** per BACKLOG §Strategic Posture + Active Constraint 11 (no connector ecosystem reinvention). Singer/Airbyte/Fivetran maintain 300 connectors as their core business — this framework will not build a parallel ecosystem. Correct documented path: (a) vendor export-to-S3, (b) managed Airbyte/Fivetran → S3, (c) then `object_storage` connector into L1. Pull forward ONLY with signed-off strategic-posture exception.
 
 #### GAP-2: No Native CDC (Change Data Capture) Ingest
 **What industry has:** Debezium standard for Postgres WAL/MySQL binlog/MSSQL CDC/Oracle LogMiner. Airbyte has first-class CDC sources. Meltano has Singer CDC taps.
@@ -137,6 +151,7 @@ Gaps in §5 use these severity bands:
 - **Tier A (lowest effort, 80% of value):** Add a **`postgres_logical_replication`** driver within the existing 6-driver `LocalSqlConnector` matrix. `psycopg` supports `LogicalReplicationConnection` natively. Emits row-level `(op, old, new, lsn, ts)` tuples. Checkpoint store already tracks offsets — store LSN as checkpoint key. This gives zero-infra Postgres CDC without Kafka Connect. New optional extra `--extra cdc_postgres`.
 - **Tier B (full Debezium coverage, pull-on-demand):** Debezium Server → local JSONL/S3 → M-11 Kafka JSONL replay connector already works out of the box (because Debezium Server can emit to a file/S3 without a Kafka broker). Document this integration path and add a `debezium` preset in the M-1 ConnectorManifest registry.
 **Code insertion point (Tier A):** Driver branch in [local_sql.py](../src/elt_pipeline/ingest/connectors/local_sql.py) (`_build_db_driver()`) alongside the existing 6.
+**Posture:** ❌ **OUT OF SCOPE** per BACKLOG §Strategic Posture + Active Constraint 11 (no CDC/WAL driver reinvention). AWS DMS / GCP Datastream / Azure CDC / Kafka Connect Debezium are the correct ingestion surfaces. Standard path: DMS/Datastream lands CDC to object storage → `object_storage` / `kafka` connector reads it. Watermark-column full re-extract on operational DBs is acceptable v1. Pull forward ONLY with signed-off exception.
 
 #### GAP-3: Column-Level Lineage & Impact Analysis
 **What industry has:** dbt docs column graph, DataHub column-level lineage graph search, OpenLineage `ColumnLineageDatasetFacet`, Monte Carlo impact analysis. "If I change `email_hash` type, which dashboards and which downstream consumers break?" is answerable in 1 click.
@@ -147,6 +162,7 @@ Gaps in §5 use these severity bands:
 2. After Spark SQL execution, walk `DataFrame.queryExecution.analyzed` (Spark exposes a `TreeNode` of resolved attributes → input references) → map to OpenLineage `ColumnLineageDatasetFacet` (field-level transformations).
 3. New CLI subcommand `elt lineage impact-analysis --column "<table>.<col>" --depth N` that reads `runs/**/lineage.jsonl` into a graph and walks it both directions. Outputs JSON + terminal table. Pure filesystem read — no new schema.
 **Code insertion point:** Hook in [spark_executor.py](../src/elt_pipeline/sql/spark_executor.py) right after `df = spark.sql(compiled_sql)` before write; facet injection in the existing [integrations/lineage.py](../src/elt_pipeline/integrations/lineage.py) OpenLineage converter.
+**Posture:** ✅ **IN SCOPE — PULLED FORWARD** to BACKLOG §Still Todo (2026-08-27). Core mission: data governance + column-level impact analysis. 90% of plumbing already exists (SqlColumnSpec, LineageEvent, OpenLineage export, lineage.jsonl always-on sink). Additive-only, zero new dependencies.
 
 #### GAP-4: Semantic Layer / Metric Definitions (Cube & Dimension)
 **What industry has:** dbt Semantic Layer (MetricFlow), Cube.dev, LookML, Sigma Workbook model, ThoughtSpot modeling. *One* YAML definition of a metric such as "MRR" resolves identically whether BI tool A, BI tool B, or a Trino SQL query reads it.
@@ -158,6 +174,7 @@ Gaps in §5 use these severity bands:
 - `elt metric run` → one of two outputs (operator choice per metric): (a) pre-compute an Iceberg metric table via Spark (aggregation materialised), or (b) generate a Trino SECURITY DEFINER SQL view with identical metric SQL and column-level masking applied. Both paths resolve to the same number.
 - A Prometheus/OTLP metric-exporter pass-through (optional): framework auto-derives `elt.metric.<name>` gauge from the same `MetricSpec` value per publish run.
 **Code insertion point:** New package [metrics/](../src/elt_pipeline/metrics/) with pCO-thin facade `__init__.py` + `_models / _compiler / _runtime.py`. Reuses existing SQL compiler token context, Pydantic manifests, and Spark executor. No new runtime concepts.
+**Posture:** ✅ **IN SCOPE — PULLED FORWARD** to BACKLOG §Still Todo (2026-08-27). Core mission: 1-canonical-metric-to-1-number across materialized tables, Trino views, and Prometheus gauges. Prevents the #1 data-platform complaint: "dashboards disagree on MRR." Thin manifest layer on existing L3/L4 outputs — no new engine, no new dialect.
 
 #### GAP-5: No Data Catalog / Discovery Browser UI
 **What industry has:** dbt docs (graph + search + column descriptions per model), DataHub (full catalog with search/ownership/lineage/graph), OpenMetadata, Amundsen.
@@ -167,6 +184,7 @@ Gaps in §5 use these severity bands:
 1. **Option A (fastest, leverages existing OSS UI):** Output a dbt-docs-compatible `manifest.json` + `catalog.json` at `elt sql generate-docs --out <dir>`. The existing dbt docs UI (`dbt docs generate && dbt docs serve`) works with *zero dbt code* if you produce files matching its JSON schema. Our SqlModelSpec already has: name/stage/domain, SqlColumnSpec with name/type/classification/description fields, depends_on list, sources list. All map directly to dbt manifest nodes. 1 mapping module = instant graph + search + column docs UI.
 2. **Option B (enterprise catalogue):** Document and tighten the existing OpenLineage wire export → any Marquez / DataHub / OpenMetadata instance ingests the events natively. Add a 1-click `elt catalog push-to-datahub --url <>` CLI helper that reads historical `lineage.jsonl` + SqlModelSpec manifests and POSTs enriched Dataset facets (ownership/tags/descriptions) in one bulk batch. No new UI, but full enterprise catalog support.
 **Code insertion point:** New [catalog/](../src/elt_pipeline/catalog/) package (Option A) or pure documentation + [_cli_main.py](../src/elt_pipeline/_cli_main.py) helper subcommand (Option B).
+**Posture:** ❌ **OUT OF SCOPE** per BACKLOG §Strategic Posture + Active Constraint 10 (NO UI surface, no React/FastAPI/Flask servers). Existing OSS UIs handle this with years of investment: (a) dbt docs — framework can emit manifest-compatible JSONL as a future adapter, (b) Marquez/DataHub/OpenMetadata — already ingest the existing OpenLineage wire export. A dbt-manifest JSON emit helper is borderline IN SCOPE (pure CLI, no UI); if a consumer asks for dbt docs integration, pull the "Option A emitter only" subpath (no UI) as a new mini-gap. Pull forward ONLY with signed-off exception.
 
 ---
 
@@ -182,6 +200,7 @@ Gaps in §5 use these severity bands:
 - Model discovery (`sql/discovery.py`) merges package dirs with local dirs, prefixing package models with the alias (`stdlib.common.dim_date`).
 - Optional extras: `--extra gitscm` if `git` binary is not acceptable (via `GitPython` SDK), default relies on `git` binary (JDK/Spark already require binaries, acceptable).
 **Code insertion point:** Hook in [discovery.py](../src/elt_pipeline/sql/discovery.py) (`discover_sql_packages()`) — add package-URL resolution before the existing filesystem walk. Reuses existing `SqlModelManifest` parser 100%.
+**Posture:** ❌ **OUT OF SCOPE** per BACKLOG §Strategic Posture + Active Constraint 13 (no package manager / SemVer resolver). Teams start monorepo; multi-deployment shared models use `git subtree` / copy-paste. A full package manager is a product in its own right (dbt Hub already solved it). Pull forward ONLY with signed-off exception AND measured shared-model duplication toil.
 
 #### GAP-7: Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)
 **What industry has:** dbt contracts (1.7+), Soda Core contracts, Great Expectations Expectations, Monte Carlo automated contracts.
@@ -193,6 +212,7 @@ Gaps in §5 use these severity bands:
 - Strict mode → raise `CONTRACT_BROKEN` with structured diff (`added/removed/changed columns`) before any write. Warn mode → emit WARN class `contract_broken` log event to `logs.jsonl` + Prometheus `elt.contract.broken` gauge counter + allow write.
 - Optional: write a `contract_version: 1.2.3` field per manifest and enforce monotonic increases (breaking change = major bump).
 **Code insertion point:** Write-time interlock in [spark_executor.py](../src/elt_pipeline/sql/spark_executor.py) right before the atomic staging-swap.
+**Posture:** ✅ **IMPLEMENTED** (2026-08-27). See BACKLOG §GAP-7 closure. Gate delta 807 → 830 (+23 new tests). `strict`/`warn`/`off` contract manifest field enforced at write-time interlock BEFORE staging swap or Iceberg commit. Structured {added/removed/changed} diff context, `elt.contract.broken` Prometheus counter, strict mode also validates against existing table catalog schema.
 
 #### GAP-8: Automatic Data Profiling (Per-Model, Per-Stage)
 **What industry has:** Great Expectations profiling, dbt `profiles` add-on (distinct rate / null rate / min / max / stddev / quantiles / top-N per column), Soda scan auto-profiling.
@@ -203,6 +223,7 @@ Gaps in §5 use these severity bands:
 - Always-on, non-blocking, zero-config default (opt-out via `ELT_PIPELINE_QUALITY_STAGES=` exclusion). Writes JSONL output to `runs/{run}/quality_profile/{stage}/{model_name}.jsonl` — same B-6 storage backend as quarantine.
 - Add `elt profile show <model>` CLI: pretty-prints the latest profile JSONL from the most recent successful run for that model/domain pair.
 **Code insertion point:** Registered alongside the two existing hooks in [quality/__init__.py](../src/elt_pipeline/integrations/quality/__init__.py).
+**Posture:** 🔵 **IN-SCOPE, LOW PRIORITY — WAITING FOR MEASURED TOIL.** Architecturally aligned: pure additive behind existing `QualityHookBackend` Protocol, no new subsystems, no UIs, no cloud-service duplication. But default-off because most teams write manual profiling queries as a one-off and the cost/benefit is unproven. Pull forward ONLY when an operator ticket documents measurable toil (e.g. "we spend 3+ hours/week manually running per-model approx_count_distinct on new L3 canonical models").
 
 #### GAP-9: Reverse ETL (Push Connectors — L5 Data to SaaS)
 **What industry has:** Census, Hightouch, Grouparoo, Meltano Singer targets. The standard pipeline loop includes writing back *to* SaaS operational systems (write account health scores to Salesforce, write user lifecycle flags to Intercom, write product usage counters to HubSpot).
@@ -217,6 +238,7 @@ Gaps in §5 use these severity bands:
   4. `sql_db` (reuses existing 6-driver LocalSqlConnector: UPSERT via merge on target DB — `sql/m`).
 - Reuses G-5 `secret_ref`, G-2 observability, lineage adapter (writes LineageEvent with output = L4 query input, output = target SaaS `DatasetRef` with namespace `reverse_etl:salesforce`), and quarantine for failed rows.
 **Code insertion point:** New package [reverse_etl/](../src/elt_pipeline/reverse_etl/) with pCO facade pattern. Zero changes to existing subsystems — all re-used.
+**Posture:** ❌ **OUT OF SCOPE** per BACKLOG §Strategic Posture + Active Constraint 12 (no Reverse ETL push-target registry). Census/Hightouch/Grouparoo own target SaaS operator semantics with rate-limit/retry/mapping UIs. Correct documented path: Trino JDBC read of L4/L5 → orchestrator wrapper (Airflow/Dagster/Prefect/Mage) → bespoke REST call via existing M-1 `rest` connector or target SDK. Pull forward ONLY with signed-off exception.
 
 #### GAP-10: RBAC/ABAC for Pipeline Artifacts & Execution
 **What industry has:** Dagster Cloud RBAC, dbt Cloud RBAC, Meltano RBAC + Permifrost. Who can run a backfill? Who can publish a L5 restricted-PII artifact? Who can view audit logs? These are controlled at the framework level, not just filesystem/Trino level.
@@ -228,6 +250,7 @@ Gaps in §5 use these severity bands:
 - Interlock at single point: top of [_cli_main.py](../src/elt_pipeline/_cli_main.py) (`main()`) before any stage runs. Fail with `RBAC_DENIED` `PipelineError` with structured context (`subject/role/missing_permission/stage/scope`) before JVM/SDK boot.
 - Write `rbac: {subject, role_used, matched_rules}` to every run's audit record + lineage run facet.
 **Code insertion point:** 100-line module [rbac.py](../src/elt_pipeline/shared/rbac.py) + 10-line hook in CLI entrypoint. Everything else reuses existing audit/lineage/env infrastructure.
+**Posture:** ❌ **OUT OF SCOPE** per BACKLOG §Strategic Posture + Active Constraint 11 (no framework-level RBAC). Access controls are delegated to: IAM (pipeline run identity), Trino CLS/Ranger + column-level masking views (artifact read), Iceberg catalog RBAC (Glue/Nessie/HMS), orchestrator wrapper role controls (Airflow Dagster Prefect Mage). Duplicating this matrix inside the framework guarantees drift. Pull forward ONLY with signed-off exception AND a documented scenario where IAM/Trino/orchestrator RBAC genuinely cannot cover the requirement.
 
 ---
 
@@ -242,6 +265,7 @@ Gaps in §5 use these severity bands:
 - `elt backfill status <plan.json_or_run_root>` → reads each chunk's audit record (or absence) + checkpoint history → terminal table: `chunk_id, status (pending/running/succeeded/failed/skipped), started_at, duration, exit_code, error, attempts, checkpoint_after`. Prometheus gauges via G-2 for active backfills.
 - `elt backfill retry-failed <plan.json>` → re-runs only failed chunks with same argv and a `backfill_attempt=N` run attribute stamp.
 **Code insertion point:** New subcommands in [_cli_parser.py](../src/elt_pipeline/_cli_parser.py) + implementations in [_cli_main.py](../src/elt_pipeline/_cli_main.py). Pure read/write against existing artifact layout + B-6 storage backends. No new schemas.
+**Posture:** ❌ **OUT OF SCOPE — ergonomic-only sugar per BACKLOG §Strategic Posture boundary 7 + Active Constraint 13.** Operators today script loops around the CLI with date windows. This is legitimate toil, but it's additive-only ergonomic CLI sugar with zero architectural impact on the transform/governance core. Pull forward ONLY with a concrete measured-toil ticket (e.g. "our backfill team wastes 8h/week manually tracking failed chunks across plans").
 
 #### GAP-13: Micro-Batch Scheduling (Sub-Hour Freshness Without New Engine)
 **Current posture (per FFM §4):** "⏳ Roadmap. Preferred: cloud-native durable sinks then batch ELT. Streaming add-on if explicitly signed off."
@@ -251,6 +275,7 @@ Gaps in §5 use these severity bands:
 - When set: each iteration reads checkpoint_after from `LocalCheckpointStore` (already exists) and uses it as the window_start for the next iteration. Window = `(checkpoint_after, min(checkpoint_after + interval, wall_clock))`. Checkpoint-after becomes the new *watermark high-water mark*, not just a resume point.
 - Exactly-once preserved by existing checkpoint idempotency + partition overwrite. No Spark Streaming code is ever written — the *only* difference from a normal batch is smaller windows triggered at intervals. Freshness is sub-interval; engine semantics are identical.
 **Code insertion point:** Per-job window derivation in [_cli_main.py](../src/elt_pipeline/_cli_main.py) (`_run_schedule_plan()`) + per-job checkpoint update after each successful microbatch iteration. Reuses existing LocalCheckpointStore verbatim.
+**Posture:** ❌ **OUT OF SCOPE per BACKLOG §Strategic Posture boundary 7 (ergonomic-only sugar by default).** The recommended path is architecturally sound (no new engine, pure checkpoint-window sugar over existing batch execution) and the *industry gap is real* (5–15 min freshness). But the correct posture for this framework is: teams wanting sub-hour freshness should evaluate whether Spark Structured Streaming, Flink, or ksqlDB are the correct long-lived engine for their latency SLA. Cron + microbatch windowing inside this framework is a valid interim workaround if a team *specifically* asks for it. Pull forward ONLY with concrete SLA evidence that the 4 ingress families + normal schedule cron genuinely cannot meet freshness requirements.
 
 #### GAP-14: Spark Cost Attribution & Auto-Optimize Hints
 **Current state:** G-2 observability exports run duration, rows read/written, files created. No Spark internal metrics: bytes shuffled, spill-to-disk bytes, task count, skew ratio (max task duration / median task duration), or plan-level size-in-bytes estimates.
@@ -262,12 +287,15 @@ Gaps in §5 use these severity bands:
    - If post-read partition count × 2 < `spark.sql.shuffle.partitions` → auto `coalesce()`.
    - If skew ratio >20 detected post-execute → emit WARN with suggested `repartition(column)` column for next run (never auto-apply on skew — correctness risk).
 **Code insertion point:** Post-execute hook in [spark_executor.py](../src/elt_pipeline/sql/spark_executor.py) — short and additive.
+**Posture:** ❌ **OUT OF SCOPE — ergonomic-only sugar per BACKLOG §Strategic Posture boundary 7 + Active Constraint 13.** Spark UI, Spark History Server, and `EXPLAIN FORMATTED` are the correct surfaces for cost attribution and broadcast-hint profiling. Framework-level Prometheus gauges are nice-to-have, but: (a) Spark UI is always more accurate for JVM-level metrics, (b) auto-broadcast heuristics are correctness-fragile and should be decided by humans reviewing `EXPLAIN FORMATTED`, not framework heuristics. Pull forward ONLY with a measured-toil ticket documenting repeated weeks of engineering lost to manually profiling slow SQL runs.
 
 ---
 
 ### ⚪ Niche / Advanced Gaps
 
 Pull forward only on explicit signed-off consumer demand. Each is a legitimate framework capability but <10% of deployments need them in the first 2–3 years.
+
+**Posture (entire niche section):** ❌ **OUT OF SCOPE per BACKLOG §Strategic Posture boundary 8 + Active Constraint 13.** All 5 gaps are individually valid and architecturally implementable behind existing seams (Iceberg Spark procedures, G-5 KMS providers, merge_sql_generator, L2 Spark loader). But they serve <10% of deployments and pull the framework into non-core concerns (ML feature serving, regulated-industry branch review, KMS crypto, SCD2 operational history tracking, static CSV loading). Pull ANY of GAP-15–GAP-19 forward ONLY with (a) a signed-off consumer demand ticket, AND (b) a signed-off strategic-posture exception from the product owner.
 
 | ID | Capability | When Needed | Recommended Path Behind Existing Seams |
 |---|---|---|---|

@@ -22,7 +22,13 @@ from elt_pipeline.integrations import (
 )
 from elt_pipeline.shared.audit import AuditRecord, MetricsSummary
 from elt_pipeline.shared.errors import PipelineError, build_error_record
-from elt_pipeline.shared.lineage import DatasetRef, LineageEvent
+from elt_pipeline.shared.governance import SqlColumnSpec
+from elt_pipeline.shared.lineage import (
+    DatasetRef,
+    LineageEvent,
+    build_openlineage_column_lineage_facet,
+    build_openlineage_schema_dataset_facet,
+)
 from elt_pipeline.shared.logging import build_log_event
 from elt_pipeline.shared.observability import MetricPoint, MetricType
 from elt_pipeline.shared.path_utils import join_paths
@@ -399,6 +405,34 @@ def _build_observer(
                 },
             ),
         )
+
+        output_facets: dict[str, object] = {
+            "model_id": model.model_id,
+            "warehouse_root": warehouse_root,
+            "stage": model.stage.value,
+            "domain": model.domain,
+            "load_mode": model.load_mode.value,
+            "row_count": record.row_count,
+        }
+        governance = model.governance
+        if governance is not None and governance.columns:
+            output_facets["schema"] = build_openlineage_schema_dataset_facet(
+                columns=governance.columns
+            )
+        elif record.column_lineage_map is not None:
+            declared = _infer_schema_facet_from_lineage_map(
+                column_lineage_map=record.column_lineage_map,
+                declared_columns=governance.columns if governance is not None else None,
+            )
+            if declared:
+                output_facets["schema"] = build_openlineage_schema_dataset_facet(
+                    columns=declared
+                )
+        if record.column_lineage_map is not None:
+            output_facets["columnLineage"] = build_openlineage_column_lineage_facet(
+                column_lineage_map=record.column_lineage_map
+            )
+
         artifacts.lineage_path = lineage_adapter.emit(
             run_context=run_context,
             environment=environment,
@@ -424,20 +458,39 @@ def _build_observer(
                     DatasetRef(
                         namespace=output_namespace,
                         name=record.target_table_name,
-                        facets={
-                            "model_id": model.model_id,
-                            "warehouse_root": warehouse_root,
-                            "stage": model.stage.value,
-                            "domain": model.domain,
-                            "load_mode": model.load_mode.value,
-                            "row_count": record.row_count,
-                        },
+                        facets=output_facets,
                     )
                 ],
             ),
         )
 
     return _observe
+
+
+def _infer_schema_facet_from_lineage_map(
+    *,
+    column_lineage_map: dict[str, list[tuple[str, str]]],
+    declared_columns: list[SqlColumnSpec] | None,
+) -> list[SqlColumnSpec]:
+    """Return a schema facet list guaranteed to cover every output column that
+    the observed DataFrame produced.
+
+    When governance.columns is explicitly declared, those are already produced
+    by the caller; this helper is only used when the declaration is absent or
+    empty. It guarantees that every column present in the lineage-produced
+    projection is represented in the schema facet so that OL consumers can
+    render the full output field list (even if type=nullable=null/UNKNOWN).
+    """
+    declared_by_name: dict[str, SqlColumnSpec] = {}
+    for spec in declared_columns or []:
+        declared_by_name[spec.name] = spec
+    merged: list[SqlColumnSpec] = []
+    for out_name in sorted(column_lineage_map.keys()):
+        if out_name in declared_by_name:
+            merged.append(declared_by_name[out_name])
+            continue
+        merged.append(SqlColumnSpec(name=out_name))
+    return merged
 
 
 def _build_audit_context(

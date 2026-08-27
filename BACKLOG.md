@@ -210,7 +210,8 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
 - **Session 2026-08-27 — closed:** **GAP-7 ✅ CLOSED** Data Contract enforcement (strict/warn/off). Pulled forward on concrete signed-off consumer demand per Active Constraint 9. Full spec, 10-point verified checklist with test counts, architecture decision log, gate result 830/0/28, and 3 pre-production bugs fixed archived in [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Delta vs prior gate: baseline 807 → 830 (+23 new tests: 22 in test_data_contracts.py + 1 in test_data_contracts_iceberg.py). ruff src/tests/examples clean, 0 issues.
 - **Session 2026-08-27 — closed (on-demand operator pull, Active Constraint 9):** **QW-1/TD-1 ✅ CLOSED + QW-3/GAP-11 ✅ CLOSED.** QW-1: pyproject.toml Development Status reaffirmed at **4 — Beta** (classifier already stamped pre-session; Alpha → Beta rationale: 830/0 green gate, zero CMM roadmap rows remaining, all rows Production or DEFUNCT — Alpha misrepresented maturity, zero test impact). QW-3/GAP-11: additive per-job `wait_for` sensors (path_exists / path_glob / http_url 3-kind mutual-exclusivity, poll/timeout bounds) + `sla_seconds` SLA alerts in `elt schedule` runner. Sensor polling reuses B-6 StorageBackend `path_exists` / `path_glob` for scheme-agnostic local/S3/GCS/ADLS dispatch. HTTP wait: GET 2xx poll with jittered exponential backoff capped at poll_sec×30. Per-poll emits structured `sensor_poll` JSON events to stderr (job, poll_index, state, kind, elapsed, detail) + aggregates `elt_sensor_poll_count` Prometheus gauge with labels `{job,state}`. Sensor timeout → job status `failed_sensor`, exit_code=5, downstream `stop_after_this_job` cascade same as CLI failure. SLA measured per-job from CLI body start→end elapsed; breach → G-2 `AlertEvent(severity=warning)` labels `{job, sla_seconds, elapsed_seconds, stage=schedule}` + audit `sla_breached=true` + top-level `sla_alerts[]` array in payload; under-SLA emits zero alerts. Insertion point: YAML schema extended in `shared/scheduler.py` (WaitForSpec Pydantic model + mutual-exclusivity validator + SLA fields) + execution in `_cli_main.py` `_run_schedule_plan()` (same function M-8 hardened). 11 original schedule tests stay GREEN unmodified. Gate delta 830 → **838 passed (+8 new tests: 3 wait_for happy paths + 1 timeout failure cascade + 1 HTTP 2xx progression + 1 SLA breach alert + 1 SLA ok silent + 1 sensor event/metric label counts + 1 YAML multi-kind validation reject).** `uv run ruff check src/ tests/ examples` clean, 0 issues.
 - **Doc-only GAP-7/GAP-11 claim batch ✅ CLOSED (2026-08-27, 4 files edited, 0 test delta, gate stayed 838/0/28 ruff clean)**
-- **Next work:** No further pre-scoped items. Pull additional gaps forward only on concrete consumer demand (zero-pre-scoped policy per §Work items rule, 2026-08-26 backlog deflation).
+- **Session 2026-08-27 — closed (Strategic Posture in-scope, Active Constraint 9):** **GAP-3 ✅ CLOSED** Column-Level Lineage & Impact Analysis (OpenLineage SchemaDatasetFacet + ColumnLineageDatasetFacet + `elt lineage impact-analysis` CLI). Pulled forward with GAP-4 as Strategic Posture §In-scope core priorities. Step 1: SchemaDatasetFacet mapping builder in `shared/lineage.py` (SqlColumnSpec → OL facet 1-1-1 wire dict, UNKNOWN type fallback for None, classification+custom_tags normalized to tags[]), attached at runtime observer to every output DatasetRef facet bag, with fallback `_infer_schema_facet_from_lineage_map()` synthesizing coverage when governance.columns is empty. Step 2: ColumnLineageDatasetFacet extraction via Spark resolved plan — PySpark 3.x uses `dataframe.queryExecution.analyzed`; PySpark 4.x falls back to `dataframe._jdf.queryExecution().analyzed()` Java plan access via py4j dispatch. Extractor walks Project.projectList / Aggregate.aggregateExpressions NamedExpression list (NOT fresh output AttributeReferences that lose computed-column refs), with generic node seam discovery handling children/childrenResolved/exprs/projectList/aggregateExpressions/joinKeys/condition/child/left/right plus vars() for Python 3.x TreeNode internal attrs. Alias matching: exact qualifier → exact col-name → endswith("."+alias) fuzzy. ColumnLineageDatasetFacet (spec 1-0-0) built with transformationType (DIRECT/LITERAL) and OL-namespace/name/field inputFields[] triples, carried from executor through SqlExecutionRecord.column_lineage_map (new optional field on the record). Step 3: `elt lineage impact-analysis` CLI (`--column "<dataset>.<col>" --depth N [--format json|table] [--root-path <dir>]`) using `shared/lineage_impact.py` graph builder over `runs/**/lineage.jsonl` (non-JSON lines silently skipped, only COMPLETE events parsed, table+column edges bidirectional). Per-column bidirectional BFS with depth caps, visited-set cycle guards, stable `(depth, dataset, column)` sorted JSON. Exit codes: 0=ok, 2=invalid args (bad column form / depth<1) with JSON stderr error dicts. Full spec with closure narrative, decision log, and verification counts → [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Gate delta 838 → **854 passed (+16 new tests: 9 in test_lineage_facets.py = 4 SchemaDatasetFacet mapping + 5 Spark extraction (identity/concat/group-by/join/unknown-alias-silent); 7 in test_lineage_impact.py = empty-history, bad-column-form, BFS bidirectional walk, depth-bound, bad-lineage-jsonlines-resilience, CLI integration table+JSON, CLI invalid-args exit-code-2).** 28 emulator tests skipped as expected. `uv run ruff check src/ tests/ examples` clean.
+- **Next work:** GAP-4 (Semantic Metric Definitions Layer, still in §Still Todo). Pull any additional gaps forward only on concrete signed-off consumer demand (zero-pre-scoped policy per §Work items rule, 2026-08-26 backlog deflation).
 
 ## Session start prompt
 
@@ -227,74 +228,100 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
 doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**838 / 0 failed**;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**854 / 0 failed**;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
   (zero code relation to recent work);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
-- **Captured:** 2026-08-27 (re-stamped POST QW-1/TD-1 Beta classifier reaffirm +
-  QW-3/GAP-11 schedule wait_for sensors + SLA alerts tranche closed:
-  Gate bumped 830 → **838 tests** (delta +8: 8 new schedule tests appended to
-  existing 11 schedule tests inside isolated test_cli.py, matching M-8 test
-  pattern). QW-1 pyproject classifier recheck: `pyproject.toml:24` already
-  reads `"Development Status :: 4 - Beta"` — no edit needed (no test impact).
-  Actual gate result:
-  Non-Spark 579 passed 28 skipped + 16 isolated Spark/Iceberg file processes
-  34/22/1/9/34/25/1/14/7/9/8/8/27/5/25 = 231 → + 8 new schedule test_cli.py tests
-  → total 579+231+28 = **838 passed, 0 failed, 28 skipped.**
+- **Captured:** 2026-08-27 (re-stamped POST GAP-3 Column-Level Lineage & Impact Analysis
+  CLI tranche closed: Gate bumped 838 → **854 tests** (delta +16: 9 in test_lineage_facets.py
+  + 7 in test_lineage_impact.py).
   Full exit 0; ruff clean.
-  **GAP-7 TRANCHE (1 internal module + 2 test files = 23 new tests):** contract manifest
-  field (strict/warn/off) default off, opt-in per-column SqlColumnSpec.type/nullable
-  enforcement at write-path interlock JUST BEFORE staging swap / Iceberg commit (strict
-  raises SQL_CONTRACT_BROKEN pre-write w/ structured {added/removed/changed} diff context,
-  warn emits WARN/contract/contract_broken log event + elt.contract.broken Prometheus
-  counter with labels, off no-op). Strict also validates against catalog schema of
-  existing tables (parquet + Iceberg), preventing drift between declared schema and
-  already-written catalog. 2 new test files match S-0 per-file Spark isolation pattern;
-  Iceberg-only tests in own file. Ruff clean, publication scrub zero hits.
+  **GAP-7 TRANCHE (1 internal module + 2 test files = 23 new tests):** (unchanged —
+  refer to WORK_ITEMS_CLOSED.md for full narrative).
   **QW-3/GAP-11 SCHEDULE SENSOR TRANCHE (2 source files + 1 test file = +8 new tests):**
-  WaitForSpec Pydantic model enforces 3-kind mutual exclusivity at YAML parse time
-  (path_exists string / path_glob {base, pattern} object / http_url string — exactly
-  one present), with poll_sec ∈ [0.01, 3600] seconds and timeout_sec ∈ [0.1, 604800]
-  seconds (one week upper bound); path_glob sub-object enforces exact {base,pattern}
-  keys + non-empty strings at model validator. Runtime sensor dispatch in
-  `_run_schedule_plan()` runs BEFORE job attempt loop, so CLI never spawns on
-  sensor failure. Path-based sensors dispatch through `path_utils.path_exists` /
-  `path_utils.path_glob` thin facades → B-6 StorageBackend registry, preserving
-  scheme-agnostic behavior (local POSIX / `s3://` / `gs://` / `abfss://` all route
-  through registry without per-scheme branching). HTTP sensor uses
-  `urllib.request.urlopen` GET call, bounded to `min(30, max(5, 2*poll_sec))`
-  per-request socket timeout, returning integer status code on any non-exceptional
-  response; backoff is jittered exponential `base*2^(n-1) + uniform(0, 0.5*base)`,
-  per-poll sleep capped at `poll_sec * 30` and clamped to remaining timeout budget
-  so final poll always lands inside timeout window. Both sensor helpers emit
-  `sensor_poll` structured JSON events on every iteration with unique
-  `poll_index` (1-based monotonic per job) and state machine states `{polling,
-  satisfied, error, timeout}`. Count dictionary keyed by `(job, state)` builds
-  gauge increment table, post-loop serialized as `MetricPoint` list with gauge
-  type `elt_sensor_poll_count` labels `{job,state}`. Sensor timeout triggers job
-  status=`failed_sensor` exit_code=5 `error.error_code=sensor_timeout` +
-  `stop_after_this_job=True` downstream skip cascade identical to regular CLI
-  failure semantics. SLA captures `time.monotonic()` at attempt-loop start/end →
-  raw seconds delta → `elapsed_seconds` always present in every job row paired
-  with ISO-8601 `started_at_iso`/`finished_at_iso`. If `sla_seconds` configured
-  AND `elapsed_seconds > sla_seconds`: (1) append AlertEvent severity=warning
-  with message, labels `{job,sla_seconds,elapsed_seconds,stage=schedule}`,
-  run_id/stage/job_name filled; (2) emit structured WARN `sla_breached` event
-  to stderr with same fields; (3) audit row flags `sla_seconds=<configured
-  float> + sla_breached=True`; (4) AlertEvent also pushed to top-level
-  `sla_alerts[]` array for downstream aggregation by observability adapter.
-  If elapsed within SLA, only `sla_seconds` audit row is populated,
-  `sla_breached=False`, zero AlertEvent emitted. Backward compat: all 11
-  pre-existing schedule tests (through `test_schedule_plan_bounds_retries_and_delay`)
-  pass UNMODIFIED byte-for-byte — fields are optional with default=None, only
-  additive top-level payload arrays present (`sensor_events[]`,
-  `sensor_metric_points[]`, `sla_alerts[]`) — legacy assertions reference
-  subset keys and still resolve. Full backoff math and label generation
-  covered by dedicated tests so future refactors cannot regress observability
-  signal correctness.
+  (unchanged — refer to WORK_ITEMS_CLOSED.md for full narrative).
+  **GAP-3 COLUMN-LEVEL LINEAGE & IMPACT ANALYSIS TRANCHE (4 source modules modified +
+  3 new internal files + 2 new test files = +16 new tests, 0 regression, 0 ruff):**
+  (1) `shared/lineage.py` — `build_openlineage_schema_dataset_facet(columns)` maps
+  `SqlColumnSpec[]` → OL SchemaDatasetFacet 1-1-1 wire dict with `_producer`, `_schemaURL`,
+  and `fields[]` per-column (name/type/nullable/description/tags). `type` field normalizes
+  `None`/empty strings → `"UNKNOWN"` via `_normalise_facet_type()`; otherwise
+  STRIP.UPPER().SPACE-COLLAPSE. Classification tag appended as
+  `classification.<enum.value>`; custom_tags rendered as `k=v` pairs (or bare `k` when
+  value is falsy). Twin `build_openlineage_column_lineage_facet(column_lineage_map)`
+  builds OL ColumnLineageDatasetFacet 1-0-0 dict: each output column gets
+  `transformationType = "LITERAL"` when inputFields[] is empty; otherwise `"DIRECT"`.
+  InputFields entries carry `namespace="elt_pipeline"` unless the reference FQN itself
+  already embeds a colon-prefixed namespace (e.g. `iceberg:` / `spark_parquet:`).
+  (2) `sql/_column_lineage.py` — NEW FILE (310 lines). PySpark 3.x / 4.x cross-version
+  dispatcher: try `dataframe.queryExecution.analyzed` first (Py3 Python TreeNode); if
+  unavailable, try `dataframe._jdf.queryExecution().analyzed()` → py4j JavaObject plan.
+  Generic helpers `_is_java_obj`, `_node_simple_name` (`getClass().getSimpleName()` vs
+  `type().__name__`), `_scala_seq_to_list` (`.size()` + `.apply(i)` for Java, `list()`
+  for Python), `_java_invoke_or_python_attr` (Java: method call; Python: attribute
+  access). Extractor walks NAMED EXPRESSIONS, NOT output attrs:
+  `Project.projectList()` / `Aggregate.aggregateExpressions()` are authoritative —
+  output AttributeReferences are fresh attrs for Alias-wrapped computed columns and
+  carry ZERO source refs. Wrapper nodes (`SubqueryAlias`, `View`) unwrapped up to 8
+  levels to reach the payload logical plan. `_walk_references` iterative stack DFS
+  with `visited_nodes: set[int]` of python `id()` proxy handles + 50,000-visit budget
+  guardrail. Alias match cascade: `exact qualifier` → `exact col-name` →
+  `qualifier.endswith("."+alias)`. AttributeReference class name detected by suffix
+  check `...AttributeReference` or exact match (handles both Java simple names and
+  Python wrapper classes). (3) `sql/spark_executor.py` return-type migration:
+  `_register_execute_inputs` now returns `dict[str, str]` alias→FQN (L2 source_refs:
+  `logical_name → logical_name`; compiled model deps:
+  `dep.target_table_name → f"{iceberg|spark_parquet}:{target_table_name}"`).
+  `_execute_model` signature extended with alias map, destructures
+  `(row_count, column_lineage_map)` at ALL four exit points (Iceberg / append /
+  staging swap / partition overwrite). `_execute_model` calls
+  `extract_column_lineage_from_dataframe(select_df, ...)` right after
+  `spark.sql(compiled_sql)` — BEFORE write, per GAP-3 spec. (4) `sql/models.py` —
+  `SqlExecutionRecord` gains `column_lineage_map: dict[str, list[tuple[str,str]]]
+  | None = None` as the plumbing pipe from executor → runtime observer. (5)
+  `sql/runtime.py` — per-model `_observe(model, record)` closure (already the single
+  seam that emits LineageEvent) enriched: if `model.governance.columns` declared,
+  SchemaDatasetFacet built from declared spec; else if `record.column_lineage_map`
+  non-None, `_infer_schema_facet_from_lineage_map()` merges declared-governance with
+  lineage output column keys to guarantee 100% output field coverage facet. If
+  `record.column_lineage_map` non-None → ColumnLineageDatasetFacet attached to same
+  facet bag. Legacy facet keys (`model_id`, `target_kind`, `target_namespace`,
+  `schema_version`, `classification_count`) preserved unmodified — pure additive.
+  (6) `shared/lineage_impact.py` — NEW FILE (332 lines). `build_lineage_graph(root)`
+  RGlob-walks `runs/**/lineage.jsonl`, only COMPLETE events parsed, non-JSON lines and
+  non-dict rows silently skipped. `_build_dataset_fqn` prepends non-`elt_pipeline`
+  namespace as `"{namespace}:{name}"` so graph keys are globally unique.
+  `LineageGraph` has `table_parents/table_children` + per-dataset `column_upstream/
+  column_downstream` dicts; all edges de-duplicated at add time via list-membership
+  check before append. `run_lineage_impact_analysis(root_path, column, depth, format)`
+  validates first: `depth<1` ValueError, column missing `.` separator ValueError
+  `<dataset>.<column>`. Bidirectional BFS over table graph (`_bfs_table`) and column
+  graph (`_bfs_columns`) with separate `visited` sets; BFS queue items are
+  `(node, depth)` so depth cap is exact. Sort keys: `(int(depth), dataset, column)`
+  for stable JSON. CLI format `"table"` adds `_display_lines` list (with `Impact
+  analysis for column:` header + `UPSTREAM dependencies` / `DOWNSTREAM dependencies`
+  sections); `"json"` format strips display lines via dict key filter. (7)
+  `_cli_parser.py` — `lineage` subparser + `impact-analysis` subcommand with 4 args:
+  `--column` (required, str), `--depth` (default 5, int), `--format` (choices
+  `table|json`, default `table`), `--root-path` (default cwd, str). (8)
+  `_cli_main.py` — `args.command == "lineage"` handler with single-level command
+  dispatch to `impact-analysis`. ValueError from analyzer caught and re-raised as
+  JSON-stderr dict with `"error"` field + exit code 2: `column` form errors →
+  `error = "lineage_impact_invalid_args"`; `depth<1` → error string set to the raw
+  ValueError exception message. Exit codes: 0 OK, 2 invalid args only — match
+  existing CLI contract. Valid result dumped with `json.dumps(sort_keys=True,
+  indent=2)` + trailing newline (JSON mode) or `"\n".join(_display_lines)` (table
+  mode). Test coverage: 4 SchemaDatasetFacet (known-fields, missing-type fallback to
+  UNKNOWN, empty-columns, ColumnLineageFacet round-trip), 5 Spark column extraction
+  tests (simple identity 1:1, CONCAT computed → 2-source refs, group-by aggregation
+  country + SUM(amount) + COUNT(*), equi-join cross-table refs, unknown alias silent
+  no-crash empty-refs output), 7 impact analysis / CLI (empty history, bad column
+  form reject, BFS bidirectional, depth=1 bounded, non-JSON-lineage resilience, CLI
+  integration table+JSON dual, CLI 2-invocation invalid args exit-2). All 16 new
+  tests green unmodified on PySpark 4.1.2 Temurin 23 JVM.
 - **Placement:** repo root, not `docs/` (PRD 10 §11).
 
 ## Environment & Verification (run this first, every session)
@@ -346,6 +373,90 @@ trade any of these away for a gap fix. When in doubt, protect this list.
   separate writer/serving Iceberg catalogs, six-way catalog enum. Coherent and well-tested.
 - **Design discipline** — thorough canonical PRDs, a green per-file test gate (311/0), and an
   end-to-end example that actually runs. The foundation is above-average; the gaps are additive.
+
+## Strategic Posture — Non-Goals & Product Boundaries (2026-08-27)
+
+**Product mission (narrow, explicit, non-negotiable):** This framework is a
+**data-transformation + governance + lineage engine for the Lakehouse Medallion
+architecture (L1 raw → L2 normalized → L3 canonical → L4 marts → L5 publish).**
+It ships the base 4 ingest patterns (`rest`, `sql`, `kafka`, `object_storage`)
+as *ingress to object storage*, and a full SQL transform pipeline with schema
+contracts, classification, replay idempotency, Iceberg catalog management,
+always-on lineage, and export sinks. Any capability outside this core is
+*explicitly out of scope* and deferred to existing cloud/provider services.
+
+**Hard product boundaries — the following will NOT be built:**
+1. **No UIs.** No data-catalog web UIs, no lineage-graph visualisers, no
+   backfill dashboards, no metric explorers. Existing OSS tools handle this
+   with years of investment: dbt docs (graph + column browser),
+   DataHub/OpenMetadata/Marquez (catalog via OpenLineage wire export),
+   Apache Superset / Sigma / Looker (BI semantic exploration). The framework
+   will emit well-formed JSONL/OpenLineage artifacts those tools ingest —
+   it will not ship a browser UI component, a React build, or a Flask/FastAPI
+   HTTP server process.
+2. **No cloud-service reinvention for data ingestion / CDC.** AWS DMS,
+   GCP Datastream, Azure CDC, Kafka Connect + Debezium, managed Airbyte,
+   Fivetran, and native service-to-S3 exports are the correct ingestion
+   surfaces. The framework's posture: *"let your cloud service land raw data
+   in object storage (or Kafka → Connect S3 sink) → the standard
+   `object_storage` / `kafka` connector reads it into L1."* A native
+   `postgres_logical_replication` CDC driver (GAP-2) is *not* a priority;
+   operator teams with no reliable watermark column should use DMS/Datastream.
+3. **No connector ecosystem (Singer/Airbyte 300-tap) platform.** Singer taps,
+   Airbyte connectors, and Fivetran managed connectors are maintained by
+   companies whose *entire business* is connector breadth. This framework
+   will not build a `SingerTapConnector` adapter (GAP-1) or a push-target
+   registry for 300 SaaS systems. Correct posture for ingestion sources
+   outside the 4 base families: (a) the source vendor's export-to-S3, or
+   (b) a managed Airbyte/Fivetran → S3, then `object_storage` ingress.
+4. **No Reverse ETL push targets (GAP-9).** Census, Hightouch, and Grouparoo
+   own L5→SaaS push with target-certified operators, rate-limit semantics,
+   and per-SaaS field mapping UIs. Correct posture: Trino JDBC read of L4/L5
+   artifacts → orchestrator wrapper (Airflow/Dagster/Prefect/Mage) → REST
+   push via the target's API. The M-1 `rest` connector is available for
+   bespoke one-off pulls; reverse-direction push is the orchestrator's job.
+5. **No framework-level RBAC/ABAC (GAP-10).** IAM, Trino column/row-level
+   security, Iceberg catalog RBAC (Glue/Nessie/HMS), and the 4 orchestrator
+   wrappers already enforce execution + artifact access controls. Duplicating
+   that matrix inside the framework is redundant and guarantees drift.
+6. **No SQL package registry / cross-project package manager (GAP-6).** Teams
+   start monorepo; when multi-deployment shared canonical models become a
+   *concrete* pain, copy-paste shared model directories or use a thin
+   `git subtree` / `git submodule` between deployment repos. A full package
+   manager (SemVer resolution, tarball caching, alias-prefixed refs) is a
+   product in its own right that dbt Hub already solved.
+7. **No ergonomic-only CLI sugar (GAP-12, GAP-14) without signed-off pain.**
+   Backfill plan/status generators and Spark cost-attribution Prometheus
+   gauges are nice-to-have; operators script loops and use the Spark UI.
+   These are additive non-blocking items that wait for *actual* operator
+   tickets, not roadmap fiat.
+8. **No niche advanced capabilities (GAP-15 through GAP-19).** Feature stores
+   (Feast), Iceberg branch-as-Git review workflows, KMS column-level
+   encryption, SCD2 snapshots, CSV seed loaders — all legitimate but <10%
+   of deployments. Pull forward only on signed-off consumer demand per
+   Active Constraint 9.
+
+**In-scope core priorities (aligned with mission, reinforced here):**
+- L1→L5 Medallion SQL transform correctness (4-tier validity chain, staging
+  swap idempotency, partition overwrite safety, Iceberg catalog matrix).
+- Explicit data contracts (GAP-7, closed): `strict` / `warn` / `off`
+  schema-as-code enforcement BEFORE write commit.
+- **Lineage completeness (GAP-3, pulled forward):** table + column-level
+  lineage with impact-analysis CLI, so a data platform team can answer
+  "which consumers break if I retype `customer.email_hash`?" from a single
+  command. Always-on OpenLineage `SchemaDatasetFacet` +
+  `ColumnLineageDatasetFacet` wire export for Marquez/DataHub ingestion.
+- **Semantic metric layer (GAP-4, pulled forward):** one canonical
+  `MetricSpec` YAML declaration with 1:1 identical resolution whether the
+  metric is materialised as an Iceberg table, exposed as a Trino SECURITY
+  DEFINER masked view, or exported as a Prometheus gauge. Prevents the
+  #1 data-platform complaint: "dashboards disagree on MRR."
+- Base 4 ingress patterns (`rest`, `sql`, `kafka`, `object_storage`) stay
+  Production — they are the framework's "last mile" before object storage
+  and are *not* being deprioritised.
+- Governance, classification, secrets redaction, quarantine, audit JSONL
+  sinks, DQ hooks, 4-cloud storage parity, 6-way catalog matrix — all
+  retained as Production strengths.
 
 ## Accumulated Active Constraints (honour in every item; append, never delete)
 
@@ -424,6 +535,37 @@ trade any of these away for a gap fix. When in doubt, protect this list.
    (design, tradeoffs, verification output with counts) to `docs/todo/archive/WORK_ITEMS_CLOSED.md`
    per the rule at `§Work items` lines 374–377; (d) re-stamp `§Resume` and `§Status snapshot`
    before ending the session.
+10. **Strategic Posture: No UI surface.** The framework will never ship a browser UI,
+    a React/Node build, or a long-lived Flask/FastAPI/HTTP server process. Catalog and
+    lineage visualization are delegated to dbt docs (manifest-compatible JSONL emit),
+    DataHub/OpenMetadata/Marquez (OpenLineage wire export), and BI platforms (Superset/
+    Sigma/Looker). All user interfaces are CLI-only (`elt ...` subcommands). Any "UI"
+    deliverable from the framework is a structured JSON/JSONL artifact an external OSS
+    UI ingests — no CSS, no JS, no templates.
+11. **Strategic Posture: No cloud-service reinvention for ingestion / CDC / RBAC.**
+    - Ingestion beyond the 4 base families (`rest`, `sql`, `kafka`, `object_storage`)
+      uses AWS DMS / GCP Datastream / Azure CDC / Kafka Connect Debezium / managed
+      Airbyte or Fivetran → land to object storage → `object_storage` connector.
+      No Singer/Airbyte ecosystem, no Debezium subprocess wrappers, no WAL drivers.
+    - Pipeline RBAC uses IAM + Trino CLS/Ranger + Iceberg catalog Glue/Nessie RBAC
+      + orchestrator wrapper (Airflow/Dagster/Prefect/Mage) role controls. No internal
+      `RbacPolicy` YAML engine, no duplicated subject-role-permission matrix inside
+      the framework.
+    - CDC: no `postgres_logical_replication` driver branch. DMS/Datastream → S3 is
+      the canonical path. Watermark-column full re-extract on operational DBs is
+      acceptable v1; when a team truly needs CDC, that is a *cloud-infrastructure*
+      ticket not a framework ticket.
+12. **Strategic Posture: No Reverse ETL push-target registry (GAP-9).** Census/Hightouch
+    own target SaaS operator semantics. Push from L4/L5 is documented as: Trino read
+    → orchestrator wrapper → bespoke REST call via existing M-1 `rest` connector or
+    target SDK. No `PushTargetFactory` Protocol, no `salesforce` / `hubspot` extras,
+    no reverse manifest YAML format.
+13. **Strategic Posture: No package manager (GAP-6) and no ergonomic-only sugar by
+    default.** Cross-deployment shared canonical models use `git subtree` / copy-paste,
+    not a SemVer resolver. Ergonomic CLI sugar (backfill planners, Spark cost-attribution
+    gauges, auto-optimize hints) is deferred to *actual* operator tickets with measured
+    toil-cost, not roadmap fiat. Niche advanced gaps (GAP-15 through GAP-19) are always
+    "pull forward on signed-off demand", never "scope creep on a related edit".
 
 ---
 
@@ -441,15 +583,102 @@ work it one-per-session, then on close move the body to the archive file and lea
 
 ### Still Todo
 
-*None pre-scoped (zero-pre-scoped policy, post-Tranche-2 post-GAP-7). Pull forward only on concrete signed-off consumer demand per Active Constraint 9 procedure.*
+One gap pulled forward and still open (GAP-4 Semantic Metrics). GAP-3 closed this session.
+Both are explicitly aligned with the core transformation + governance mission per Strategic
+Posture §In-scope core priorities (lineage completeness, semantic metric layer).
+See INDUSTRY_GAP_ANALYSIS.md §5 for full design + code insertion points.
+
+#### GAP-3 — Column-Level Lineage & Impact Analysis (OpenLineage Schema + ColumnLineage facets + impact-analysis CLI)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
+
+#### GAP-4 — Semantic Metric Definitions Layer (MetricSpec YAML + compile/run CLI + 3 resolution modes)
+- **Why in scope:** Core mission requirement. Without a canonical metric object,
+  the #1 data platform complaint ("dashboards disagree on the same metric") is
+  structurally unfixable from L4 marts alone. MetricSpec is a thin YAML manifest
+  layer on top of existing L3/L4 compiled SQL model outputs — no new engine,
+  no new execution primitive.
+- **Scope (4 parts):**
+  1. New YAML manifest format `metric.yaml` (or `metrics/` subdir per domain)
+     with Pydantic `MetricSpec` model: `name`, `description`, `query_ref` →
+     existing L3/L4 model.column FQN, `aggregation` (sum/count_distinct/average/
+     cumulative_rolling/min/max), `dimensions[]` (time + categorical, refs to
+     other columns in same `query_ref`), `filters` (optional SQL predicate
+     string), `required_role` classification (G-6 tier), `owners[]`.
+  2. `elt metric compile` → resolves token context + validates `query_ref`
+     points at existing L3/L4 discovered model + `dimensions`/`query_ref.column`
+     exist in that model's SqlColumnSpec; failure is
+     `ConfigValidationError(metric_invalid_refs=…)` at parse time, before JVM.
+  3. `elt metric run --metric <name-or-glob>` → 3 operator-selectable resolution
+     modes per-metric (NOT framework-picked; operator owns the cost/accuracy
+     tradeoff):
+     - **(a) Materialize:** Spark aggregation of the L3/L4 source → new Iceberg
+       metric table at `<prefix>_metric_<name>` with partition columns = time
+       dimensions. Uses existing Spark executor write path + GAP-7 contract
+       enforcement + B-6 staging swap idempotency. Output table has columns
+       `(time_dim_1, …, cat_dim_n, <metric_name>, _run_id, _as_of)`.
+     - **(b) Trino VIEW:** Generate and execute `CREATE OR REPLACE SECURITY
+       DEFINER VIEW <schema>.metric_<name>` SQL with identical aggregation
+       semantics + column-level G-6 masking views applied per `required_role`.
+       Materialization cost: 0; compute cost at query time. Exact same number
+       as mode (a) by construction (same agg SQL, same filters).
+     - **(c) Prometheus gauge export:** Framework auto-derives
+       `elt.metric.<name>` gauge (labels = dimensions) from MetricSpec value
+       on each publish run, exported through G-2 existing Prometheus adapter
+       (no new exporter surface). Optional; default off per
+       `ELT_PIPELINE_METRIC_EXPORT_PROM=0`.
+  4. Bidirectional consistency guardrail (the whole point): every
+     `elt metric run` generates a `metric_audit.jsonl` record per metric with
+     `{name, mode, total_sum, non_null_count, min, max, generated_sql_hash}` —
+     for any 2 modes run on the same source data window, the
+     `generated_sql_hash` MUST be byte-identical and `total_sum`/`non_null_count`
+     MUST match within float tolerance. This is fail-closed: if hashes differ,
+     the framework raises `METRIC_MODE_INCONSISTENT`. Prevents the "views and
+     tables disagree" bug by construction.
+- **Code insertion point:** New package
+  [metrics/](src/elt_pipeline/metrics/) with pCO-compliant thin facade
+  `__init__.py` (pure `__all__` re-export) + `_models / _compiler / _runtime.py`
+  submodules. Reuses 100% of existing SQL compiler token context, Pydantic
+  manifests, Spark executor, B-6 StorageBackend, G-2 metrics adapter. No new
+  runtime concepts. Zero changes to existing SQL model execution paths.
+- **Verification plan (minimum gate delta target: +16 tests):**
+  - 3 `MetricSpec` compile tests (valid ref, invalid model ref, invalid column
+    ref → ConfigValidationError; classification inheritance from source model).
+  - 4 mode-(a) materialize tests (simple sum L3 → metric Iceberg table,
+    count_distinct with 2 dims, cumulative_rolling window, contract strict
+    enforcement on output metric schema). Isolated Spark process (S-0).
+  - 3 mode-(b) Trino VIEW tests (generate SQL string hash match, SECURITY
+    DEFINER wrapper, column-masking predicate appended for `required_role`
+    tiers). Trino-available skip guard same as existing Trino tests.
+  - 3 mode-(c) Prometheus export tests (gauge label dims = spec dimensions,
+    ELT_PIPELINE_METRIC_EXPORT_PROM=0 no-op, non-null filter applied).
+  - 2 mode-consistency guardrail tests: same metric + data → mode (a) vs
+    mode-(b) `generated_sql_hash` identical + audit row matches; hash
+    mismatch → `METRIC_MODE_INCONSISTENT` raised fail-closed.
+  - 1 `elt metric run --metric 'sales_*'` glob selector: multi-metric parallel
+    dispatch with audit JSONL written to `runs/<run>/metrics/`.
+- **Hard constraints on design:**
+  - NO new SQL dialect. Metric aggregation SQL is generated by `_runtime.py`
+    using EXISTING token context + Spark ANSI SQL compiler. MetricSpec is a
+    *manifest shim over L3/L4 outputs*, not a reimplementation of dbt
+    MetricFlow. If a user needs joins/CTEs inside a metric: do it in L3 first,
+    then reference the L3 output column.
+  - NO cube engine, no multi-dimensional query server, no OLAP rollup planner.
+    All 3 modes are thin passes over existing Spark/Trino output.
+  - NO UI component. MetricSpec YAML + CLI + audit JSONL are the full surface.
+    BI platforms connect directly to mode-(a) Iceberg tables or mode-(b) Trino
+    views.
+  - Backward compat: zero changes to any existing `elt sql run`, `elt ingest`,
+    `elt publish`, `elt schedule` command paths. Metrics are a completely
+    additive CLI subcommand family + manifest format.
+
+---
+
+*None further pre-scoped. Gaps explicitly OUT OF SCOPE per Strategic Posture §Hard product boundaries + Active Constraints 10-13:* GAP-1 (Singer ecosystem), GAP-2 (Native CDC/Postgres WAL), GAP-5 (Catalog/discovery UI — no framework UI per constraint 10), GAP-6 (SQL package manager), GAP-9 (Reverse ETL push targets), GAP-10 (Framework-level RBAC), GAP-12/14 (Ergonomic-only CLI sugar — backfill planners, Spark cost attribution), GAP-15 through GAP-19 (Niche advanced). Pull any of these forward ONLY with a concrete signed-off consumer demand ticket AND a signed-off strategic-posture exception from the product owner.
+
+*Gaps NOT pulled-forward today but architecturally in-scope, waiting for concrete measured operator toil:* GAP-8 (Automatic Data Profiling behind QualityHookBackend Protocol — in-scope because it adds no new subsystems; pure additive transform-layer observability. But default-off, pull forward only when "manual per-model profiling is costing measurable toil" ticket exists.)
 
 #### QW-1/TD-1 + QW-3/GAP-11 — Alpha→Beta bump + schedule wait_for sensors + SLA alerts  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 
 #### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
-
----
-
-*None further pre-scoped. Pull forward on concrete consumer demand only.*
 
 #### M-8 — `elt schedule` runner 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 #### M-9 — Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)

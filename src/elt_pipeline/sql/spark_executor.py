@@ -11,6 +11,7 @@ from elt_pipeline.config.runtime_manifest import runtime_manifest
 from elt_pipeline.shared.errors import PipelineError
 from elt_pipeline.shared.governance import build_governance_table_properties
 from elt_pipeline.shared.path_utils import join_paths, path_exists
+from elt_pipeline.sql._column_lineage import extract_column_lineage_from_dataframe
 from elt_pipeline.sql._contract_enforcement import (
     enforce_data_contract_at_write,
     extract_schema_fields,
@@ -143,8 +144,13 @@ class SparkSqlModelExecutor:
         try:
             for model in models:
                 try:
-                    self._register_execute_inputs(model=model, models_by_id=models_by_id)
-                    row_count = self._execute_model(model=model)
+                    alias_to_input_fqn = self._register_execute_inputs(
+                        model=model, models_by_id=models_by_id
+                    )
+                    row_count, column_lineage_map = self._execute_model(
+                        model=model,
+                        alias_to_input_fqn=alias_to_input_fqn,
+                    )
                 except PySparkException as exc:
                     raise build_sql_runtime_error(
                         message=f"Failed to execute SQL model '{model.model_id}'",
@@ -163,6 +169,7 @@ class SparkSqlModelExecutor:
                     target_table_name=model.target_table_name,
                     load_mode=model.load_mode,
                     row_count=row_count,
+                    column_lineage_map=column_lineage_map,
                 )
                 execution_result.executed_models.append(record)
 
@@ -220,13 +227,19 @@ class SparkSqlModelExecutor:
         *,
         model: CompiledSqlModel,
         models_by_id: dict[str, CompiledSqlModel],
-    ) -> None:
+    ) -> dict[str, str]:
+        alias_to_input_fqn: dict[str, str] = {}
+        output_namespace = (
+            "iceberg" if _is_iceberg_enabled(self.spark) else "spark_parquet"
+        )
         for source_ref in model.sources:
             dataframe = self._level2_locator.read(
                 source_ref=source_ref,
                 environment=source_ref.environment or self.environment,
             )
             dataframe.createOrReplaceTempView(source_ref.logical_name)
+            fqn = source_ref.logical_name
+            alias_to_input_fqn[source_ref.logical_name] = fqn
 
         use_iceberg = _is_iceberg_enabled(self.spark)
         for dependency_id in model.depends_on:
@@ -254,6 +267,10 @@ class SparkSqlModelExecutor:
                 )
                 dataframe = self.spark.read.parquet(dependency_path)
             dataframe.createOrReplaceTempView(dependency.target_table_name)
+            fqn = f"{output_namespace}:{dependency.target_table_name}"
+            alias_to_input_fqn[dependency.target_table_name] = fqn
+
+        return alias_to_input_fqn
 
     def _register_plan_sources(self, *, model: CompiledSqlModel) -> None:
         for source_ref in model.sources:
@@ -268,18 +285,29 @@ class SparkSqlModelExecutor:
         planned_df = self.spark.sql(f"select * from ({select_sql}) as planned_model limit 0")
         planned_df.createOrReplaceTempView(model.target_table_name)
 
-    def _execute_model(self, *, model: CompiledSqlModel) -> int:
+    def _execute_model(
+        self,
+        *,
+        model: CompiledSqlModel,
+        alias_to_input_fqn: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, list[tuple[str, str]]]]:
         select_sql = model.compiled_sql.rstrip().rstrip(";")
         dataframe = self.spark.sql(select_sql)
+        if alias_to_input_fqn is None:
+            alias_to_input_fqn = {}
+        column_lineage_map = extract_column_lineage_from_dataframe(
+            dataframe, input_datasets_by_alias=alias_to_input_fqn
+        )
         use_iceberg = _is_iceberg_enabled(self.spark)
         effective_partition_columns = self._effective_partition_columns(model=model)
 
         if use_iceberg:
-            return self._execute_iceberg_write(
+            row_count = self._execute_iceberg_write(
                 model=model,
                 dataframe=dataframe,
                 effective_partition_columns=effective_partition_columns,
             )
+            return (row_count, column_lineage_map)
 
         target_path = self._table_path(stage=model.stage, table_name=model.target_table_name)
 
@@ -297,7 +325,7 @@ class SparkSqlModelExecutor:
             if effective_partition_columns:
                 writer = writer.partitionBy(*effective_partition_columns)
             writer.parquet(target_path)
-            return self.spark.read.parquet(target_path).count()
+            return (self.spark.read.parquet(target_path).count(), column_lineage_map)
 
         if model.load_mode == SqlLoadMode.partition_overwrite:
             self._validate_partition_requirements(model=model)
@@ -398,7 +426,7 @@ class SparkSqlModelExecutor:
             ) from exc
 
         best_effort_delete_staging(staging_path, scheme)
-        return row_count
+        return (row_count, column_lineage_map)
 
     def _apply_governance_table_properties(
         self,

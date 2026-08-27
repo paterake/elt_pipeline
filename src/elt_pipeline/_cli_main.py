@@ -1067,6 +1067,49 @@ def main(argv: list[str] | None = None) -> int:
             payload["run_id"] = run_id
             print(json.dumps(payload, indent=2))
             return exit_code
+
+        if args.command == "lineage":
+            from elt_pipeline.shared.lineage_impact import run_lineage_impact_analysis
+
+            if args.lineage_command == "impact-analysis":
+                if args.depth < 1:
+                    print(
+                        json.dumps(
+                            {
+                                "error": "depth must be >= 1",
+                                "provided": args.depth,
+                            },
+                            indent=2,
+                        ),
+                        file=sys.stderr,
+                    )
+                    return 2
+                try:
+                    result = run_lineage_impact_analysis(
+                        root_path=path_normalize(args.root_path),
+                        column=args.impact_column,
+                        depth=args.depth,
+                        output_format=args.impact_format,
+                    )
+                except ValueError as exc:
+                    print(
+                        json.dumps(
+                            {"error": "lineage_impact_invalid_args", "message": str(exc)},
+                            indent=2,
+                        ),
+                        file=sys.stderr,
+                    )
+                    return 2
+                if args.impact_format == "json":
+                    clean = {k: v for k, v in result.items() if not k.startswith("_")}
+                    print(json.dumps(clean, indent=2, default=str, sort_keys=True))
+                else:
+                    lines = result.get("_display_lines") or []
+                    for line in lines:
+                        print(line)
+                return 0
+            parser.error(f"Unhandled lineage subcommand: {args.lineage_command}")
+            return 1
     except (ConfigValidationError, ValidationError) as exc:
         error_record = build_error_record(
             run_id="unassigned",

@@ -726,4 +726,51 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    lineage_parser = subparsers.add_parser(
+        "lineage",
+        help="Inspect lineage artifacts emitted by prior runs.",
+    )
+    lineage_subparsers = lineage_parser.add_subparsers(
+        dest="lineage_command",
+        required=True,
+    )
+    impact_parser = lineage_subparsers.add_parser(
+        "impact-analysis",
+        help="Bidirectional column-level impact analysis over collected lineage.jsonl.",
+    )
+    impact_parser.add_argument(
+        "--column",
+        dest="impact_column",
+        required=True,
+        help=(
+            "Target column in the form '<dataset>.<column_name>'. Dataset is the "
+            "output dataset FQN recorded in lineage.jsonl — "
+            "typically the target table name or 'namespace:table_name'."
+        ),
+    )
+    impact_parser.add_argument(
+        "--depth",
+        type=int,
+        default=5,
+        help="Maximum graph-walk depth in both upstream and downstream directions (default: 5).",
+    )
+    impact_parser.add_argument(
+        "--format",
+        dest="impact_format",
+        choices=["table", "json"],
+        default="table",
+        help="Output format. 'table' produces a human-readable summary, 'json' "
+             "emits raw machine-readable JSON.",
+    )
+    impact_parser.add_argument(
+        "--root-path",
+        type=str,
+        default=_DEFAULT_ROOT_PATH_EVAL,
+        help=(
+            "Pipeline runtime root containing runs/.../lineage.jsonl files "
+            "defaults to ELT_PIPELINE_REPO_RUN_DIR/runtime if available, "
+            "otherwise .ignore/runtime."
+        ),
+    )
+
     return parser
