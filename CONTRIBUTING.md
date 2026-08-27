@@ -120,7 +120,7 @@ Every PR MUST have all `[x]` marks on the template below (GitHub template lives 
 - [ ] **Official gate green locally:** `bash scripts/run_tests.sh` (NOT bare pytest). If the full gate takes too long locally, at minimum run the gate-subset for changed files and confirm CI passes once opened.
 - [ ] **Tests:** ≥1 test per behavior change. No "only docs" exception for docs that describe new CLI behavior — a structural CLI parse test or compile smoke test is required.
 - [ ] **pCO package layout:** New source code follows thin-facade `__init__.py` + underscore-prefixed submodule pattern (§3 above). No gold files.
-- [ ] **Docs:** README, [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md), [Industry Gap Analysis](docs/INDUSTRY_GAP_ANALYSIS.md), and [BACKLOG.md](BACKLOG.md) updated ONLY IF this changes a capability. Publishing-hygiene docs (CONTRIBUTING, SECURITY, tutorials) don't require a CMM row.
+- [ ] **Docs:** README, [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md), [Industry Gap Analysis](docs/INDUSTRY_GAP_ANALYSIS.md), and [BACKLOG.md](docs/todo/BACKLOG.md) updated ONLY IF this changes a capability. Publishing-hygiene docs (CONTRIBUTING, SECURITY, tutorials) don't require a CMM row.
 - [ ] **API compatibility note:** Any Protocol change, `__all__` list edit, Enum value removal, or CLI subcommand flag rename must be labeled `[BREAKING]` in the PR title and explained in the body. Default rule: no breaking changes without explicit signed-off deprecation window ≥2 releases.
 - [ ] **No secrets, no PII:** Review diff for `sk-`, `ghp_`, `AKIA` non-example AWS keys, personal emails, internal hostnames. `.gitignore` covers most of this by policy; double-check new example configs.
 

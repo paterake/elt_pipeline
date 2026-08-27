@@ -21,7 +21,7 @@ This document is intentionally **gap-facing**, not strength-facing — §5 first
 Companion documents:
 - [CAPABILITY_MATURITY_MATRIX.md](./CAPABILITY_MATURITY_MATRIX.md) — maturity badge per shipped capability (🟢 / 🟠 / ⏳ / DEFUNCT) with per-row test counts and dates.
 - [FRAMEWORK_FEATURE_MATRIX.md](./FRAMEWORK_FEATURE_MATRIX.md) — condensed 15-section tabular "what ships" with maturity-graded overview by capability area.
-- [BACKLOG.md](../BACKLOG.md) — next-work pointer, green-gate capture, and accumulated active constraints that every gap-closure item must honour.
+- [BACKLOG.md](./todo/BACKLOG.md) — next-work pointer, green-gate capture, and accumulated active constraints that every gap-closure item must honour.
 - Architecture & lifecycle source of truth: [PRD 10 §6.3](./prd/10-prd-architecture-and-lifecycle.md).
 
 ---
@@ -85,7 +85,7 @@ Coverage distribution by severity:
 
 ## 3. Verified Strengths (Above Industry Median — Protect)
 
-Before reading the gaps, anchor on what is already genuinely strong. No gap closure is allowed to trade any of these away. (See also the explicit *Platform strengths* list in [BACKLOG.md §Root-cause summary](../BACKLOG.md#L281-L299).)
+Before reading the gaps, anchor on what is already genuinely strong. No gap closure is allowed to trade any of these away. (See also the explicit *Platform strengths* list in [BACKLOG.md §Root-cause summary](./todo/BACKLOG.md#L281-L299).)
 
 | Capability | Where it lives | Why it beats most in-house + OSS builds |
 |---|---|---|
@@ -124,7 +124,7 @@ Gaps in §5 use these severity bands:
 from a full-service ELT platform (dbt + Meltano + Dagster combined). The
 *actual product posture* of each gap, including whether it is IN SCOPE, OUT OF
 SCOPE, or LOW-PRIORITY IN-SCOPE, is governed by
-[BACKLOG.md §Strategic Posture](../BACKLOG.md#L350-L432). Do **not** pull a gap
+[BACKLOG.md §Strategic Posture](./todo/BACKLOG.md#L350-L432). Do **not** pull a gap
 forward based on severity alone — a P0 that competes with cloud services is
 still OUT OF SCOPE. Key in-scope priorities per signed-off operator demand:
 GAP-3 (Column-Level Lineage) ✅ pulled forward, GAP-4 (Semantic Metrics Layer)
@@ -412,7 +412,7 @@ Only pull items forward on concrete consumer demand per BACKLOG policy. This is 
 |---|---|
 | Maturity badge per row, test counts, closure dates | [CAPABILITY_MATURITY_MATRIX.md](./CAPABILITY_MATURITY_MATRIX.md) |
 | Condensed "what ships" by 15 capability areas | [FRAMEWORK_FEATURE_MATRIX.md](./FRAMEWORK_FEATURE_MATRIX.md) |
-| Gate command, next-work pointer, accumulated constraints (zero-env, single-seam, leaf-only swap, etc.) | [BACKLOG.md](../BACKLOG.md) |
+| Gate command, next-work pointer, accumulated constraints (zero-env, single-seam, leaf-only swap, etc.) | [BACKLOG.md](./todo/BACKLOG.md) |
 | 5-layer architecture, 4-phase lifecycle, 4-tier cascade, 4-tier SQL validity chain, catalog matrix, portability | [PRD 10](./prd/10-prd-architecture-and-lifecycle.md) |
 | Platform principles, DAMA-DMBOK alignment statement | [PRD 00 Platform Principles](./prd/00-prd-platform-principles.md) |
 | Level definitions & governance boundaries | [PRD 00 Architecture Levels](./prd/00-prd-architecture-levels-and-governance.md) |

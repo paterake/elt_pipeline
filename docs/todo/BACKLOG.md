@@ -2,31 +2,76 @@
 
 <!--
   ANCHOR DOC. Durable, cold-start-resumable state for the portability / publication-readiness
-  effort. Lives at repo root, NOT under docs/ (PRD 10 §11). Method + section contract:
-  docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md. Operating model: ONE session per item;
-  update the Resume line + Status snapshot before closing a session.
+  effort. REPO LAYOUT NOTE (2026-08-27): Backlog anchor file lives at docs/todo/BACKLOG.md by
+  maintainer choice to keep repo-root .md listing clean (only README.md / CONTRIBUTING.md /
+  SECURITY.md / toolchain TRAE.md and CLAUDE.md at root). PRD 10 §11 default anchor location
+  (repo root) is overridden for this repo for the cleaner docs-homed navigation pattern.
+  Method + section contract: docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md.
+  Operating model: ONE session per item; update the Resume line + Status snapshot
+  before closing a session.
 
   ARCHIVE NOTE (2026-08-26, backlog deflation): This file is intentionally KEPT SMALL so
   it fits inside an agent's context window without token-bloat pollution. Verbose per-item
   closure narratives, full work-item specifications, and status-snapshot historical prose
-  live under docs/todo/archive/:
-    - TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md  — every per-bullet closure narrative that used to live in ## Resume
-    - WORK_ITEMS_CLOSED.md                     — full #### specs + ### Done section for every closed item (D-0/B-0/G-1/M-1/S1/etc.)
-    - STATUS_SNAPSHOT_NARRATIVES.md            — verbose closed-item recap prose that used to live inside ## Status snapshot
+  live under archive/:
+    - archive/TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md  — every per-bullet closure narrative that used to live in ## Resume
+    - archive/WORK_ITEMS_CLOSED.md                     — full #### specs + ### Done section for every closed item (D-0/B-0/G-1/M-1/S1/etc.)
+    - archive/STATUS_SNAPSHOT_NARRATIVES.md            — verbose closed-item recap prose that used to live inside ## Status snapshot
   If you need the design rationale, implementation scope, test counts, or verification output
   of any closed tranche / item, READ THE ARCHIVE FILES — they are canonical and complete.
-  The repo-root BACKLOG.md only carries: (a) the next-item pointer + high-level completion markers,
+  The anchor BACKLOG.md only carries: (a) the next-item pointer + high-level completion markers,
   (b) the current gate status, (c) the anchoring sections a cold session needs to boot correctly.
 -->
+
+## ⚠️ Backlog Status: **EMPTY** ✅ (as of 2026-08-27)
+
+**There are genuinely zero in-scope capability items queued.** This is not an oversight — it is the
+intended empty state after closing the last signed-off pull-forward work item
+([GAP-4 Semantic Metrics Layer, elt166](archive/WORK_ITEMS_CLOSED.md)). All 15 tracked
+core capability work items are closed.
+
+### What to do if you want work to happen
+
+1. **Plugin-style feature request (9/10 cases):** Use one of the 6 zero-core-edit Protocol/registry
+   extension APIs first — no BACKLOG entry required. See [CONTRIBUTING.md §5](CONTRIBUTING.md).
+   90% of feature ideas already fit here without touching repo code.
+2. **Incremental improvement to an existing green capability:** Use the
+   [feature request issue template](.github/ISSUE_TEMPLATE/feature_request.yml). These ship on
+   their own merits (bug fixes / better error messages / new CLI flags on existing commands) —
+   no strategic sign-off needed.
+3. **New platform capability that is currently 🔴/⏳/Out of Scope in the
+   [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md):**
+   - **DO NOT open a cold PR.**
+   - Open an RFC-type issue using the [RFC / new Capability template](.github/ISSUE_TEMPLATE/rfc-capability.yml).
+   - RFC MUST document: concrete use case → ≥**3 hrs/week measurable operator toil** eliminated
+     → why none of the 6 Protocol APIs (CONTRIBUTING §5) can express it → answer the Strategic
+     Posture Check (why this is better implemented in-house vs delegating to the dominant mature
+     cloud/OSS alternative per §2 posture).
+   - Backlog entry is only written AFTER maintainers sign off the RFC AND a signed-off
+     strategic-posture exception exists for that gap (Active Constraints 10–13 in §Scoping Policy below).
+4. **Security vulnerability:** Do NOT open an issue. Follow [SECURITY.md](SECURITY.md) — email
+   the listed contact, 90-day window + 14-day compression for active-in-wild.
+
+### Current gate snapshot for this empty-state check-in
+
+| Gate | Numbers | Verified in commit |
+|---|---|---|
+| Tests (claimed) | **875 passed / 0 failed / 28 skipped** | elt168 (this check-in) |
+| Non-Spark bulk subset (scripts/run_tests.sh — isolated subprocess) | 607 passed / 0 failed | elt168 |
+| Ruff | **0 errors** across `src/ tests/ examples/` | elt168 |
+| Semantic metrics test suite (new GAP-4) | **21 / 21 passing** | elt168 |
+| `elt-pipeline metric compile examples/sql/local_demo --with-sql-refs --format summary` smoke | EXIT=0 (2 metrics OK) | elt168 |
+
+---
 
 ## Resume (start here)
 
 Cold-start contract: the bullets below are the NEXT-WORK POINTER and high-level completion markers.
 Verbose per-item closure narratives (test counts, code diff regions, verification output) for
-all completed tranches live in [TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md](docs/todo/archive/TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md).
+all completed tranches live in [archive/TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md](archive/TRANCHE_1_AND_TRANCHE_2_COMPLETIONS.md).
 Full work-item specifications (design rationale, tradeoffs, per-item checklists) for every
 closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I-2) live in
-[WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md).
+[WORK_ITEMS_CLOSED.md](archive/WORK_ITEMS_CLOSED.md).
 
 - **TRANCHE 1 COMPLETE (publication-readiness gate, 2026-08-19):** D-0 ✅ → D-1 ✅ → I-1 ✅ → **D-2 ✅**.
   Repo is publication-ready with honest scope; README links the Capability Maturity Matrix;
@@ -218,16 +263,16 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
 
 Paste verbatim to boot a cold session warm:
 
-> `from BACKLOG.md, continue`
+> `from docs/todo/BACKLOG.md, continue`
 
 The session reads the **Resume (start here)** line for the next item, and **Environment &
 Verification** for the JDK exports and the gate command before running anything. (If the cold
-tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, then …`.)
+tool doesn't auto-load `CLAUDE.md`, prepend `Read docs/todo/BACKLOG.md, then …`.)
 
 ## Status snapshot
 
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
-doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
+doc-audit inventory) lives in [archive/STATUS_SNAPSHOT_NARRATIVES.md](archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
 - **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**875 / 0 failed**;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
@@ -535,7 +580,7 @@ always-on lineage, and export sinks. Any capability outside this core is
    as a single `#### GAP-X — Title` item; (b) work one-per-session per the standard
    continuity playbook; (c) on close, leave the 1-line `#### GAP-X — Title  ✅ CLOSED
    (YYYY-MM-DD, archive: WORK_ITEMS_CLOSED.md)` summary here and move the full body
-   (design, tradeoffs, verification output with counts) to `docs/todo/archive/WORK_ITEMS_CLOSED.md`
+   (design, tradeoffs, verification output with counts) to `archive/WORK_ITEMS_CLOSED.md`
    per the rule at `§Work items` lines 374–377; (d) re-stamp `§Resume` and `§Status snapshot`
    before ending the session.
 10. **Strategic Posture: No UI surface.** The framework will never ship a browser UI,
@@ -578,7 +623,7 @@ always-on lineage, and export sinks. Any capability outside this core is
 future close must be triaged per concrete consumer demand — pull one item forward per session.
 All closed item bodies (design rationale, tradeoffs, verification checklists, 28 ✅ items from
 D-0 / B-0→B-6 / G-1→G-8 / M-1→M-7 / S1→S4 / I-1 / I-2 / D-1 / D-2 / D-3) are preserved in
-[WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md); do NOT re-create them here.
+[WORK_ITEMS_CLOSED.md](archive/WORK_ITEMS_CLOSED.md); do NOT re-create them here.
 When a new item is pulled forward: create its `#### Item-id — Title` block below `### Still Todo`,
 work it one-per-session, then on close move the body to the archive file and leave a one-line
 `#### Item-id — Title  ✅ CLOSED (YYYY-MM-DD, archive: WORK_ITEMS_CLOSED.md)` summary here
@@ -618,7 +663,7 @@ Total closed core work items: 15.
 ## Gotchas (things a fresh session would otherwise re-learn)
 
 - The gate is `bash scripts/run_tests.sh`, **not** `uv run pytest` — one JVM = one SparkSession,
-  so Spark files run per-process. See [docs/maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md](docs/maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md).
+  so Spark files run per-process. See [../maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md](../maintainer/LOCAL_DEVELOPMENT_AND_RELEASE.md).
 - Export `JAVA_HOME`/`PATH` first or Spark tests fail `JAVA_GATEWAY_EXITED` (env, not a defect).
 - `s3a://` is deliberately rejected (PRD 08): Spark uses `s3a://` internally, but the framework's
   handoff URIs are `s3://` and EMRFS bridges them. Don't "fix" this by coercing schemes.

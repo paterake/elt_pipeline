@@ -4,7 +4,7 @@ Auto-loaded into every session. Keep it tiny; it is a router, not documentation.
 
 ## Active backlog (cold-start resume)
 
-There is durable, resumable backlog state in **[BACKLOG.md](BACKLOG.md)** (repo-root anchor doc) —
+There is durable, resumable backlog state in **[docs/todo/BACKLOG.md](docs/todo/BACKLOG.md)** (anchor doc, maintainer choice 2026-08-27 to keep repo-root clean) —
 the **publication-readiness & platinum-hardening** effort: two tranches — (1) publish honestly
 (reconcile the multi-cloud/ingest claims with the S3+local demo-grade reality + a maturity matrix),
 and (2) platinum hardening (Iceberg maintenance, observability, orchestration, deployment, secrets,
@@ -12,7 +12,9 @@ governance, OpenLineage, DQ quarantine, multi-cloud storage). If the user asks t
 the backlog, open it and follow its **"Resume (start here)"** line (and read its **Platform
 strengths** section first). Method: [docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md).
 Operating model: **one session per backlog item**; update the Resume line + Status snapshot before ending a session.
-When the backlog is exhausted and the gate is green, delete `BACKLOG.md` and this section.
+When the backlog is exhausted and the gate is green, keep the anchor doc in place with its
+"Backlog Status: EMPTY" banner — future RFC pull-forward work items land here. The process
+constitution (Active Constraints 10-13) outlives the current tranche's items.
 
 ## Running tests (required environment + the gate)
 
@@ -29,4 +31,7 @@ The gate is **`scripts/run_tests.sh`**, not a bare `uv run pytest`: one JVM hold
 ## Canonical docs
 
 Architecture/lifecycle source of truth: **[docs/prd/10-prd-architecture-and-lifecycle.md](docs/prd/10-prd-architecture-and-lifecycle.md)**.
-Per PRD 10 §11, **no backlog/tracker files belong inside `docs/`** — any `BACKLOG.md` tracker lives at repo root by design (the reusable method is [docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md)).
+Repository-specific layout note (2026-08-27): This repo overrides PRD 10 §11's default anchor location
+(repo root) for cleaner root directory. The BACKLOG anchor lives at **[docs/todo/BACKLOG.md](docs/todo/BACKLOG.md)**
+by maintainer choice; no code or CI consequence. Reusable process method:
+[docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md](docs/maintainer/BACKLOG_CONTINUITY_PLAYBOOK.md).

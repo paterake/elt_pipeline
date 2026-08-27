@@ -52,7 +52,7 @@ All items `[x]` required for merge. Maintainers: if an item is N/A, check it AND
 
 - [ ] **README / examples / operator docs** updated for any new user-facing CLI/YAML surface.
 - [ ] **CAPABILITY_MATURITY_MATRIX.md** green-row flipped (if capability PR) + **INDUSTRY_GAP_ANALYSIS.md §5** GAP-N status ⏳/🔴 → ✅ IMPLEMENTED with Implementation subsection (template copy-paste from GAP-4).
-- [ ] **BACKLOG.md §Resume pointer** updated + **Still Todo** section updated with the corresponding delta. Capability PRs: close the GAP-N block and add a Closed Work Items row. Bug/docs-only PRs: BACKLOG unchanged.
+- [ ] **BACKLOG.md §Resume pointer** updated + **Still Todo** section updated with the corresponding delta. Capability PRs: close the GAP-N block and add a Closed Work Items row. Bug/docs-only PRs: BACKLOG unchanged. See [BACKLOG.md](../docs/todo/BACKLOG.md).
 - [ ] **WORK_ITEMS_CLOSED.md archival narrative** (capability PRs only). Paste the 12-section closure narrative here OR commit to `docs/todo/archive/WORK_ITEMS_CLOSED.md` in this PR.
 
 ### Safety

@@ -1,14 +1,25 @@
 # Backlog Continuity Playbook (AI-assisted, cold-start-resumable)
 
+> **Repository-specific override, 2026-08-27:** This repo's live anchor doc lives at
+> **[docs/todo/BACKLOG.md](../todo/BACKLOG.md)**, NOT at the repo root. This is a
+> maintainer choice to keep the repo-root `.md` listing clean (only navigation README,
+> standard GitHub CONTRIBUTING/SECURITY, and toolchain TRAE.md / CLAUDE.md remain at root).
+> PRD 10 §11's default (root) was overridden after the framework reached the
+> stranger-ready / backlog-empty milestone. The section contract below still applies —
+> only the file location differs. When starting a fresh effort elsewhere, use the repo-root
+> location as the default; this override is specific to THIS repository only.
+
 A reusable method for running a **bounded, multi-session recovery or migration effort**
 (e.g. a red test gate, a large mechanical refactor, a framework upgrade) with an AI
 assistant that starts each session **cold** — no memory of prior sessions.
 
 This is a **process/methodology doc**, not a tracker. It stays here permanently. The
-tracker *instance* it describes (`BACKLOG.md`) is created at the **repo root** while an
-effort is in flight and **deleted** when the effort completes — never inside canonical
-`docs/`, per [PRD 10 §11](../prd/10-prd-architecture-and-lifecycle.md). This directory
-holds the playbook; the repo root holds the live state.
+tracker *instance* it describes (`BACKLOG.md`) is created at the location chosen by
+the repo maintainers (default: repo root, override here: `../todo/BACKLOG.md`) while an
+effort is in flight and retained with an EMPTY banner after completion (per modern
+standard where future RFC flow + empty pointer beats deletion). Never inside canonical
+`docs/prd/`, per [PRD 10 §11](../prd/10-prd-architecture-and-lifecycle.md). This directory
+holds the playbook; the live state lives where the override above points.
 
 ## When to use it
 
