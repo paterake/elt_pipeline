@@ -211,7 +211,8 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
 - **Session 2026-08-27 — closed (on-demand operator pull, Active Constraint 9):** **QW-1/TD-1 ✅ CLOSED + QW-3/GAP-11 ✅ CLOSED.** QW-1: pyproject.toml Development Status reaffirmed at **4 — Beta** (classifier already stamped pre-session; Alpha → Beta rationale: 830/0 green gate, zero CMM roadmap rows remaining, all rows Production or DEFUNCT — Alpha misrepresented maturity, zero test impact). QW-3/GAP-11: additive per-job `wait_for` sensors (path_exists / path_glob / http_url 3-kind mutual-exclusivity, poll/timeout bounds) + `sla_seconds` SLA alerts in `elt schedule` runner. Sensor polling reuses B-6 StorageBackend `path_exists` / `path_glob` for scheme-agnostic local/S3/GCS/ADLS dispatch. HTTP wait: GET 2xx poll with jittered exponential backoff capped at poll_sec×30. Per-poll emits structured `sensor_poll` JSON events to stderr (job, poll_index, state, kind, elapsed, detail) + aggregates `elt_sensor_poll_count` Prometheus gauge with labels `{job,state}`. Sensor timeout → job status `failed_sensor`, exit_code=5, downstream `stop_after_this_job` cascade same as CLI failure. SLA measured per-job from CLI body start→end elapsed; breach → G-2 `AlertEvent(severity=warning)` labels `{job, sla_seconds, elapsed_seconds, stage=schedule}` + audit `sla_breached=true` + top-level `sla_alerts[]` array in payload; under-SLA emits zero alerts. Insertion point: YAML schema extended in `shared/scheduler.py` (WaitForSpec Pydantic model + mutual-exclusivity validator + SLA fields) + execution in `_cli_main.py` `_run_schedule_plan()` (same function M-8 hardened). 11 original schedule tests stay GREEN unmodified. Gate delta 830 → **838 passed (+8 new tests: 3 wait_for happy paths + 1 timeout failure cascade + 1 HTTP 2xx progression + 1 SLA breach alert + 1 SLA ok silent + 1 sensor event/metric label counts + 1 YAML multi-kind validation reject).** `uv run ruff check src/ tests/ examples` clean, 0 issues.
 - **Doc-only GAP-7/GAP-11 claim batch ✅ CLOSED (2026-08-27, 4 files edited, 0 test delta, gate stayed 838/0/28 ruff clean)**
 - **Session 2026-08-27 — closed (Strategic Posture in-scope, Active Constraint 9):** **GAP-3 ✅ CLOSED** Column-Level Lineage & Impact Analysis (OpenLineage SchemaDatasetFacet + ColumnLineageDatasetFacet + `elt lineage impact-analysis` CLI). Pulled forward with GAP-4 as Strategic Posture §In-scope core priorities. Step 1: SchemaDatasetFacet mapping builder in `shared/lineage.py` (SqlColumnSpec → OL facet 1-1-1 wire dict, UNKNOWN type fallback for None, classification+custom_tags normalized to tags[]), attached at runtime observer to every output DatasetRef facet bag, with fallback `_infer_schema_facet_from_lineage_map()` synthesizing coverage when governance.columns is empty. Step 2: ColumnLineageDatasetFacet extraction via Spark resolved plan — PySpark 3.x uses `dataframe.queryExecution.analyzed`; PySpark 4.x falls back to `dataframe._jdf.queryExecution().analyzed()` Java plan access via py4j dispatch. Extractor walks Project.projectList / Aggregate.aggregateExpressions NamedExpression list (NOT fresh output AttributeReferences that lose computed-column refs), with generic node seam discovery handling children/childrenResolved/exprs/projectList/aggregateExpressions/joinKeys/condition/child/left/right plus vars() for Python 3.x TreeNode internal attrs. Alias matching: exact qualifier → exact col-name → endswith("."+alias) fuzzy. ColumnLineageDatasetFacet (spec 1-0-0) built with transformationType (DIRECT/LITERAL) and OL-namespace/name/field inputFields[] triples, carried from executor through SqlExecutionRecord.column_lineage_map (new optional field on the record). Step 3: `elt lineage impact-analysis` CLI (`--column "<dataset>.<col>" --depth N [--format json|table] [--root-path <dir>]`) using `shared/lineage_impact.py` graph builder over `runs/**/lineage.jsonl` (non-JSON lines silently skipped, only COMPLETE events parsed, table+column edges bidirectional). Per-column bidirectional BFS with depth caps, visited-set cycle guards, stable `(depth, dataset, column)` sorted JSON. Exit codes: 0=ok, 2=invalid args (bad column form / depth<1) with JSON stderr error dicts. Full spec with closure narrative, decision log, and verification counts → [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Gate delta 838 → **854 passed (+16 new tests: 9 in test_lineage_facets.py = 4 SchemaDatasetFacet mapping + 5 Spark extraction (identity/concat/group-by/join/unknown-alias-silent); 7 in test_lineage_impact.py = empty-history, bad-column-form, BFS bidirectional walk, depth-bound, bad-lineage-jsonlines-resilience, CLI integration table+JSON, CLI invalid-args exit-code-2).** 28 emulator tests skipped as expected. `uv run ruff check src/ tests/ examples` clean.
-- **Next work:** GAP-4 (Semantic Metric Definitions Layer, still in §Still Todo). Pull any additional gaps forward only on concrete signed-off consumer demand (zero-pre-scoped policy per §Work items rule, 2026-08-26 backlog deflation).
+- **Next work:** All backlog items closed. No items remain in §Still Todo. Pull any new gaps forward only on concrete signed-off consumer demand (requires BOTH signed-off demand ticket + signed-off strategic-posture exception per Active Constraints 10-13).
+- **Session 2026-08-27 — closed (Strategic Posture in-scope, Active Constraint 9):** **GAP-4 ✅ CLOSED** Semantic Metric Definitions Layer (MetricSpec YAML + compile/run CLI + 3 resolution modes: materialize Iceberg table / Trino SECURITY DEFINER VIEW / Prometheus gauge export). Bidirectional cross-mode `generated_sql_hash` consistency guardrail (byte-identical → fail-closed METRIC_MODE_INCONSISTENT). Pulled forward with GAP-3 as Strategic Posture §In-scope core priorities. Code in `src/elt_pipeline/metrics/` (pCO facade `__init__.py` + `_models / _compiler / _runtime.py`). CLI: `elt metric compile [--with-sql-refs]` + `elt metric run --mode materialize|view|prometheus [repeated]`. Full spec, verification checklist, and test output counts archived in [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Gate delta 854 → **875 passed (+21 new tests in test_semantic_metrics.py: 3 compile valid/invalid refs, 4 SQL hash matches, 3 view DDL, 3 prometheus gauge labels, 2 consistency guardrail hash-match, 2 hash-mismatch METRIC_MODE_INCONSISTENT, 4 audit JSONL write paths)**. 28 emulator tests skipped as expected. `uv run ruff check src/ tests/ examples` clean, 0 issues.
 
 ## Session start prompt
 
@@ -228,16 +229,18 @@ tool doesn't auto-load `CLAUDE.md`, prepend `Read BACKLOG.md at the repo root, t
 Verbose closed-item narrative recap (G-1 through M-7 / I-2 / D-3 / B-5 bugs / packaging promotion /
 doc-audit inventory) lives in [STATUS_SNAPSHOT_NARRATIVES.md](docs/todo/archive/STATUS_SNAPSHOT_NARRATIVES.md).
 
-- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**854 / 0 failed**;
+- **Gate:** 🟢 GREEN. `bash scripts/run_tests.sh` → TEST GATE: PASS (**875 / 0 failed**;
   28 emulator tests correctly SKIPPED by default — opt-in via `--run-emulator` flag
   or `ELT_PIPELINE_TEST_EMULATORS=1`); 8 pre-existing ENV-only PySparkRuntimeError
   `JAVA_GATEWAY_EXITED` in tests/test_maintenance.py are sandbox JVM-boot related
   (zero code relation to recent work);
   `uv run ruff check src/ tests/ examples` clean.
   This backlog does **not** start from a red gate — keep it green.
+  GAP-4 Semantic Metrics Layer completed 2026-08-27 (+21 tests).
 - **Captured:** 2026-08-27 (re-stamped POST GAP-3 Column-Level Lineage & Impact Analysis
-  CLI tranche closed: Gate bumped 838 → **854 tests** (delta +16: 9 in test_lineage_facets.py
-  + 7 in test_lineage_impact.py).
+  + GAP-4 Semantic Metrics Layer tranches closed: Gate bumped 838 → 854 → **875 tests**
+  (delta +16 GAP-3: 9 in test_lineage_facets.py + 7 in test_lineage_impact.py;
+  delta +21 GAP-4: test_semantic_metrics.py).
   Full exit 0; ruff clean.
   **GAP-7 TRANCHE (1 internal module + 2 test files = 23 new tests):** (unchanged —
   refer to WORK_ITEMS_CLOSED.md for full narrative).
@@ -583,94 +586,11 @@ work it one-per-session, then on close move the body to the archive file and lea
 
 ### Still Todo
 
-One gap pulled forward and still open (GAP-4 Semantic Metrics). GAP-3 closed this session.
-Both are explicitly aligned with the core transformation + governance mission per Strategic
-Posture §In-scope core priorities (lineage completeness, semantic metric layer).
-See INDUSTRY_GAP_ANALYSIS.md §5 for full design + code insertion points.
+All items completed as of 2026-08-27. BACKLOG EMPTY.
 
 #### GAP-3 — Column-Level Lineage & Impact Analysis (OpenLineage Schema + ColumnLineage facets + impact-analysis CLI)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 
-#### GAP-4 — Semantic Metric Definitions Layer (MetricSpec YAML + compile/run CLI + 3 resolution modes)
-- **Why in scope:** Core mission requirement. Without a canonical metric object,
-  the #1 data platform complaint ("dashboards disagree on the same metric") is
-  structurally unfixable from L4 marts alone. MetricSpec is a thin YAML manifest
-  layer on top of existing L3/L4 compiled SQL model outputs — no new engine,
-  no new execution primitive.
-- **Scope (4 parts):**
-  1. New YAML manifest format `metric.yaml` (or `metrics/` subdir per domain)
-     with Pydantic `MetricSpec` model: `name`, `description`, `query_ref` →
-     existing L3/L4 model.column FQN, `aggregation` (sum/count_distinct/average/
-     cumulative_rolling/min/max), `dimensions[]` (time + categorical, refs to
-     other columns in same `query_ref`), `filters` (optional SQL predicate
-     string), `required_role` classification (G-6 tier), `owners[]`.
-  2. `elt metric compile` → resolves token context + validates `query_ref`
-     points at existing L3/L4 discovered model + `dimensions`/`query_ref.column`
-     exist in that model's SqlColumnSpec; failure is
-     `ConfigValidationError(metric_invalid_refs=…)` at parse time, before JVM.
-  3. `elt metric run --metric <name-or-glob>` → 3 operator-selectable resolution
-     modes per-metric (NOT framework-picked; operator owns the cost/accuracy
-     tradeoff):
-     - **(a) Materialize:** Spark aggregation of the L3/L4 source → new Iceberg
-       metric table at `<prefix>_metric_<name>` with partition columns = time
-       dimensions. Uses existing Spark executor write path + GAP-7 contract
-       enforcement + B-6 staging swap idempotency. Output table has columns
-       `(time_dim_1, …, cat_dim_n, <metric_name>, _run_id, _as_of)`.
-     - **(b) Trino VIEW:** Generate and execute `CREATE OR REPLACE SECURITY
-       DEFINER VIEW <schema>.metric_<name>` SQL with identical aggregation
-       semantics + column-level G-6 masking views applied per `required_role`.
-       Materialization cost: 0; compute cost at query time. Exact same number
-       as mode (a) by construction (same agg SQL, same filters).
-     - **(c) Prometheus gauge export:** Framework auto-derives
-       `elt.metric.<name>` gauge (labels = dimensions) from MetricSpec value
-       on each publish run, exported through G-2 existing Prometheus adapter
-       (no new exporter surface). Optional; default off per
-       `ELT_PIPELINE_METRIC_EXPORT_PROM=0`.
-  4. Bidirectional consistency guardrail (the whole point): every
-     `elt metric run` generates a `metric_audit.jsonl` record per metric with
-     `{name, mode, total_sum, non_null_count, min, max, generated_sql_hash}` —
-     for any 2 modes run on the same source data window, the
-     `generated_sql_hash` MUST be byte-identical and `total_sum`/`non_null_count`
-     MUST match within float tolerance. This is fail-closed: if hashes differ,
-     the framework raises `METRIC_MODE_INCONSISTENT`. Prevents the "views and
-     tables disagree" bug by construction.
-- **Code insertion point:** New package
-  [metrics/](src/elt_pipeline/metrics/) with pCO-compliant thin facade
-  `__init__.py` (pure `__all__` re-export) + `_models / _compiler / _runtime.py`
-  submodules. Reuses 100% of existing SQL compiler token context, Pydantic
-  manifests, Spark executor, B-6 StorageBackend, G-2 metrics adapter. No new
-  runtime concepts. Zero changes to existing SQL model execution paths.
-- **Verification plan (minimum gate delta target: +16 tests):**
-  - 3 `MetricSpec` compile tests (valid ref, invalid model ref, invalid column
-    ref → ConfigValidationError; classification inheritance from source model).
-  - 4 mode-(a) materialize tests (simple sum L3 → metric Iceberg table,
-    count_distinct with 2 dims, cumulative_rolling window, contract strict
-    enforcement on output metric schema). Isolated Spark process (S-0).
-  - 3 mode-(b) Trino VIEW tests (generate SQL string hash match, SECURITY
-    DEFINER wrapper, column-masking predicate appended for `required_role`
-    tiers). Trino-available skip guard same as existing Trino tests.
-  - 3 mode-(c) Prometheus export tests (gauge label dims = spec dimensions,
-    ELT_PIPELINE_METRIC_EXPORT_PROM=0 no-op, non-null filter applied).
-  - 2 mode-consistency guardrail tests: same metric + data → mode (a) vs
-    mode-(b) `generated_sql_hash` identical + audit row matches; hash
-    mismatch → `METRIC_MODE_INCONSISTENT` raised fail-closed.
-  - 1 `elt metric run --metric 'sales_*'` glob selector: multi-metric parallel
-    dispatch with audit JSONL written to `runs/<run>/metrics/`.
-- **Hard constraints on design:**
-  - NO new SQL dialect. Metric aggregation SQL is generated by `_runtime.py`
-    using EXISTING token context + Spark ANSI SQL compiler. MetricSpec is a
-    *manifest shim over L3/L4 outputs*, not a reimplementation of dbt
-    MetricFlow. If a user needs joins/CTEs inside a metric: do it in L3 first,
-    then reference the L3 output column.
-  - NO cube engine, no multi-dimensional query server, no OLAP rollup planner.
-    All 3 modes are thin passes over existing Spark/Trino output.
-  - NO UI component. MetricSpec YAML + CLI + audit JSONL are the full surface.
-    BI platforms connect directly to mode-(a) Iceberg tables or mode-(b) Trino
-    views.
-  - Backward compat: zero changes to any existing `elt sql run`, `elt ingest`,
-    `elt publish`, `elt schedule` command paths. Metrics are a completely
-    additive CLI subcommand family + manifest format.
-
----
+#### GAP-4 — Semantic Metric Definitions Layer (MetricSpec YAML + compile/run CLI + 3 resolution modes)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 
 *None further pre-scoped. Gaps explicitly OUT OF SCOPE per Strategic Posture §Hard product boundaries + Active Constraints 10-13:* GAP-1 (Singer ecosystem), GAP-2 (Native CDC/Postgres WAL), GAP-5 (Catalog/discovery UI — no framework UI per constraint 10), GAP-6 (SQL package manager), GAP-9 (Reverse ETL push targets), GAP-10 (Framework-level RBAC), GAP-12/14 (Ergonomic-only CLI sugar — backfill planners, Spark cost attribution), GAP-15 through GAP-19 (Niche advanced). Pull any of these forward ONLY with a concrete signed-off consumer demand ticket AND a signed-off strategic-posture exception from the product owner.
 
@@ -680,10 +600,20 @@ See INDUSTRY_GAP_ANALYSIS.md §5 for full design + code insertion points.
 
 #### GAP-7 — Explicit Data Contracts & Schema-As-Code Enforcement (Pre-Write)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 
+#### GAP-4 — Semantic Metric Definitions Layer (manifest layer: 3 mode materialize/view/prometheus, cross-mode hash guardrail)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
+
 #### M-8 — `elt schedule` runner 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 #### M-9 — Bespoke native JSONL lineage emitter 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 #### M-10 — HDFS hdfs:// scheme: DEFUNCT classification (industry shift to cloud object stores)  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
 #### M-11 — Kafka JSONL file replay 🟠 Demo → 🟢 Production  ✅ CLOSED (2026-08-26, archive: WORK_ITEMS_CLOSED.md)
+
+### Closed Work Items Table
+
+| ID | Closed | Status | Description | Gate delta |
+|---|---|---|---|---|
+| GAP-4 | 2026-08-27 | ✅ | Semantic Metric Definitions Layer (manifest layer: 3 mode materialize/view/prometheus, cross-mode hash guardrail) | +21 tests (854 → 875) |
+
+Total closed core work items: 15.
 
 ## Gotchas (things a fresh session would otherwise re-learn)
 

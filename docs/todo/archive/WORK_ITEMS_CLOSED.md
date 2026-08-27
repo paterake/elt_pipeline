@@ -2324,3 +2324,82 @@ TEST GATE: PASS (all files green)
 - These 4 doc flips are **NOT** part of GAP-3 code scope per signed-off demand boundary (code-only closure per Active Constraint 9 close-playbook scope-inflation prohibition). Batch-eligible with GAP-4 follow-up doc PR.
 
 
+---
+
+### GAP-4: Semantic Metric Definitions Layer ✅ CLOSED (2026-08-27, session: GAP-4 implementation)
+
+**Work Item ID:** GAP-4
+**Status (honest badge):** ✅ CLOSED — TEST GATE: PASS (all files green), baseline 854 → **875** claimed (+21 delta matches test count exactly); 0 failures, 28 skipped (emulator-only, unchanged); ruff: 0 errors after fixes.
+**Closed Date:** 2026-08-27
+**Session:** GAP-4 semantic metrics implementation (pCO facade + CLI + tests)
+
+#### Why it was pulled forward
+
+The #1 data platform complaint is dashboards disagreeing on the same number due to inline metric formulas in L4 marts. Semantic metric layer prevents "two dashboards, two answers for MRR" problem by centralizing aggregation definitions in declarative YAML manifests that are machine-validated, hash-versioned, and multi-mode executable. A single `MetricSpec` declaration resolves 1:1 identically whether the metric is materialised as an Iceberg table, exposed as a Trino SECURITY DEFINER masked view, or exported as a Prometheus gauge — guaranteeing one canonical number per metric regardless of consumption path.
+
+#### Scope (4 parts, thin manifest layer only — NO new engine, NO new dialect)
+
+(a) **Manifest model** — `MetricManifest` Pydantic model with `MetricOwner`, `MetricDimensionSpec`, `MetricFilterSpec`; `MetricAggregation` enum (sum/count/count_distinct/avg/min/max/cumulative_rolling); `query_ref` 4-part dotted string `stage.domain.model.column`; `required_role` for DataClassification policy integration; YAML discovery via `metrics/**/*.yaml` glob with filter selectors.
+
+(b) **Compile** — `compile_metric()` / `compile_all_metrics()` pure resolvers: validates `query_ref` points to existing discovered L3/L4 SQL model + specific column (raises `METRIC_QUERY_REF_UNRESOLVABLE`); resolves token context (window/environment) from shared SQL compiler context; structural validation on dimensions (time vs categorical) + filters (SQL predicate string parse-safe) + aggregation (numeric-type compatibility check).
+
+(c) **3 run modes** — (1) `materialize`: Spark aggregation write → Iceberg metric table via standard spark_executor (inherits GAP-7 contract enforcement, B-6 staging-swap atomicity); (2) `view`: Trino-compatible `CREATE OR REPLACE VIEW` DDL with column-level masking applied; conditional `SECURITY DEFINER` wrapper only when `required_role` is explicitly set (G-6 compliance); (3) `prometheus`: G-2 `MetricType.gauge` adapter → `elt.metric.<name>` gauge with dimension labels, hash label, and role label. `--mode` flag is repeatable (Append action) for simultaneous multi-mode execution in one scheduled job.
+
+(d) **Consistency guardrail** — Cross-mode SHA-256 hash equivalence check: before any mode commits, compute normalized SQL hash with constant `source_table_ref="SOURCE_TABLE"` anchor (defeats catalog/namespace prefix differences between materialize and view modes); all selected modes must hash to identical value or raise `METRIC_MODE_INCONSISTENT` with structured diff (`ErrorCategory.data_integrity_error`); audit JSONL record written with per-mode hash, normalized SQL, and guardrail pass/fail status.
+
+#### Design Decisions / Tradeoffs (per-item Decision Log)
+
+**D-1. pCO facade package pattern over monolithic single file** — Rationale: matches user's stated preference for thin-facade modules; keeps test file 1:1 per impl unit. Package structure: `metrics/__init__.py` (33 lines, pure re-export) + `_models.py` (manifest Pydantic models) + `_compiler.py` (discover/compile/filter pure functions) + `_runtime.py` (3 mode runners + guardrail + audit writer). Each implementation module is single-intent and independently testable; facade boundary is enforced by `test_facade_import_boundary.py` 8 tests unchanged.
+
+**D-2. `query_ref` = `stage.domain.model.column` 4-part dotted string over structured sub-object** — Rationale: consistent with existing `model_id` dotted naming; grep/searchable; single-field atomic FQN avoids import cycles in CLI arg parsing. Alternative `{stage, domain, model, column}` nested dict would require 4 argparse flags or a JSON-parse arg string, bloating CLI surface. Single dotted string is validated at manifest load time with explicit `METRIC_QUERY_REF_FORMAT` error code showing expected format and actual value.
+
+**D-3. `--mode` repeatable (Append action) for simultaneous multi-mode execution + cross-mode guardrail** — Rationale: operators commonly want both Iceberg materialization AND Prometheus export AND BI VIEW in one scheduled job; the guardrail guarantees semantic equivalence across all three. Alternative of separate `elt metric materialize` / `elt metric view` / `elt metric prometheus` subcommands would force 3 CLI invocations with no shared guardrail. Repeatable `--mode` with action=append gives one atomic run where guardrail checks all modes against the compiled hash before ANY write commits.
+
+**D-4. `source_table_ref="SOURCE_TABLE"` anchor in SHA-256 hash normalization** — Rationale: without this constant anchor, materialize and view modes would hash to different values because of catalog/namespace prefix differences, defeating the consistency guardrail. Materialize mode uses fully-qualified `catalog.database.table`; view mode uses bare table references relative to search_path. Normalization substitutes all real table references with the constant string `"SOURCE_TABLE"` before hashing, so both modes hash identically when their logical aggregation SQL is semantically equivalent.
+
+**D-5. SECURITY DEFINER VIEW conditional on `required_role` being set (not blanket)** — Rationale: SECURITY DEFINER disables some column-level ACL; only wrap when `DataClassification` policy explicitly requires it (G-6 compliance). Blanket SECURITY DEFINER on all views would be a security regression: it bypasses the invoker's column-level grants and forces all access through the view owner's privilege. Conditional wrap means views without `required_role` use standard `SECURITY INVOKER` (default), preserving Trino's normal column-ACL enforcement.
+
+**D-6. Added `ErrorCategory.data_integrity_error` enum value** — Rationale: `METRIC_MODE_INCONSISTENT` is a data integrity failure distinct from `validation_error` or `processing_error`; future-proofs error taxonomy for any future cross-layer parity failures (audit hash mismatches, CDC reconciliation, etc.). `validation_error` covers manifest/compile-time input defects; `processing_error` covers runtime infrastructure failures (Spark JDBC, network, IO); `data_integrity_error` covers "computed result X should equal computed result Y but doesn't" — a logically separate category that alerting policies should page on with higher urgency than transient processing errors.
+
+#### Test Counts
+
++21 new tests in `tests/test_semantic_metrics.py`, breakdown:
+- 3 manifest validation (literal valid, aggregation enum valid, query_ref format reject)
+- 3 compile (structural roundtrip, with-refs resolution + token context, missing-model-column error code)
+- 1 glob selector (discover + filter by name/domain patterns)
+- 4 materialize (SQL shape matches aggregation, hash matches compile hash, table prefix with metric catalog, audit JSONL write path with all 7 fields)
+- 3 view (no-SD invoker-default view shape, SD view with required_role wrapper, hash matches materialize hash)
+- 3 Prometheus (gauge naming prefix metric, hash label propagated, role label from required_role)
+- 2 consistency guardrail (mismatch raises METRIC_MODE_INCONSISTENT, all-3-mode match passes)
+- 2 smoke/filters compile-all (empty metrics dir clean, mixed 3-metric package full compile)
+
+Non-Spark single-process; 21 passed / 0 failed.
+
+#### Gate Result
+
+**TEST GATE: PASS (all files green)** — baseline 854 → **875** claimed (+21 delta matches test count exactly); 0 failures, 28 skipped (emulator-only, unchanged); ruff: 0 errors after fixes.
+
+#### Per-Item Checklist (16 items, all ✅)
+
+- [x] `MetricManifest` Pydantic model shipped with all fields (metric_id, name, description, owner, query_ref, aggregation, dimensions[], filters[], required_role, contract_version) + default None on optional fields; 100% backward-compat: zero existing models affected.
+- [x] `MetricAggregation` enum (sum, count, count_distinct, avg, min, max, cumulative_rolling) with Pydantic validator; invalid literal → `ValidationError` with allowed-values list; 2/3 manifest validation tests cover valid + reject paths.
+- [x] `query_ref` 4-part dotted string `stage.domain.model.column` validation at manifest load; regex `^[^.]+\\.[^.]+\\.[^.]+\\.[^.]+$` with explicit `METRIC_QUERY_REF_FORMAT` error code showing expected format + actual value; manifest validation test #3 covers rejection path.
+- [x] Manifest YAML discovery + glob selector: `discover_metrics(root_path)` walks `metrics/**/*.yaml` (configurable via arg); `filter_metrics(discovered, name_pattern, domain_pattern)` with fnmatch glob; 1 dedicated test covers discovery + 2-pattern filter on a 3-metric fixture.
+- [x] Compile step validates query_ref points to existing discovered L3/L4 SQL model + specific column via shared `discover_sql_models()` + compiled column set; raises `METRIC_QUERY_REF_UNRESOLVABLE` with structured context (missing model / missing column separately distinguished); compile test #3 covers both failure modes.
+- [x] Compile step resolves token context (window, environment, run_id) from shared SQL compiler `TokenContext` → identical window/environment tokens as SQL models; compile test #2 asserts token-substituted dimension filters match expected SQL.
+- [x] Compile step structural validation: dimensions type-check (time dimension = DATE/TIMESTAMP compatible column, categorical = any type); aggregation compatibility (sum/avg/cumulative_rolling only on numeric columns, count_distinct on any type); errors raised with `METRIC_COMPILE_STRUCTURAL` code before any runtime.
+- [x] Run mode 1 — materialize: Spark aggregation built by `_build_aggregation_sql(compiled)` → GROUP BY dimensions → aggregation expr; writes via standard `run_sql_models_locally()` (inherits B-6 staging-swap atomicity, GAP-7 contract enforcement); 4 tests cover SQL/hash/prefix/audit-JSONL.
+- [x] Run mode 2 — view: Trino-compatible `CREATE OR REPLACE VIEW <catalog>.<metric_id>` DDL generated; column-level masking applied via `CASE WHEN has_role(required_role) THEN column ELSE NULL END` pattern; 3 tests cover no-SD-default / SD-with-required_role / hash-match-materialize.
+- [x] Run mode 3 — prometheus: G-2 `ObservabilityAdapter.record_gauge()` call (reuses existing G-2 subsystem, zero new exporter code); gauge name `elt.metric.<name_snakecase>` with labels {dimensions..., metric_hash, required_role}; 3 tests cover naming/hash-label/role-label.
+- [x] `--mode` flag repeatable (argparse action="append"): `elt metric run --mode materialize --mode view --mode prometheus` runs all 3 in sequence; guardrail runs BEFORE any write → all modes hash-identical or zero writes happen; CLI integration covered in guardrail mismatch + match tests.
+- [x] Cross-mode consistency guardrail: `_check_consistency_or_raise(compiled, per_mode_sql_dict)` — SHA-256 hash per mode after `_compute_sql_hash(sql, source_table_ref="SOURCE_TABLE")` normalization; mismatch → `PipelineError(error_code="METRIC_MODE_INCONSISTENT", category=ErrorCategory.data_integrity_error, context={mode_hashes, first_mismatch_pair})`; 2 tests cover mismatch-raise + all-3-match-pass.
+- [x] SHA-256 hash normalization with `source_table_ref="SOURCE_TABLE"` constant anchor: regex substitution normalizes all table references to the constant; materialize mode fully-qualified refs and view mode bare refs both hash identically when logical SQL is equivalent; D-4 rationale proven in test_materialize_and_view_hashes_match (view test #3).
+- [x] SECURITY DEFINER VIEW conditional on `required_role` set: manifest without required_role → standard `CREATE VIEW` (no SD clause, invoker-privileges default); manifest with required_role → `CREATE VIEW ... WITH SECURITY DEFINER` wrapper + `SET ROLE <required_role>` check in view body column masking; G-6 compliance preserved without blanket SD regression.
+- [x] New `ErrorCategory.data_integrity_error` enum value added to shared errors taxonomy; distinct from `validation_error` (input bad) and `processing_error` (infra bad); `METRIC_MODE_INCONSISTENT` uses new category; D-6 rationale: future-proofs for audit-hash-mismatch / CDC-reconciliation / cross-layer parity failures.
+- [x] pCO thin-facade compliance: `src/elt_pipeline/metrics/__init__.py` = 33-line pure re-export with explicit `__all__` (22 symbols); 3 underscore-prefixed sibling modules `_models.py` / `_compiler.py` / `_runtime.py` each <500 lines; zero "gold files"; facade-boundary 8 tests in `test_facade_import_boundary.py` still green unmodified.
+
+#### Next work pointer
+
+BACKLOG EMPTY. All closed items in §Closed Work Items table. New gaps require signed-off demand ticket + signed-off strategic-posture exception per Active Constraints 10-13.
+
+

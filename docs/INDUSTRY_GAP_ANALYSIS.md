@@ -164,7 +164,9 @@ list + Active Constraints 10–13) unless signed-off exception.
 **Code insertion point:** Hook in [spark_executor.py](../src/elt_pipeline/sql/spark_executor.py) right after `df = spark.sql(compiled_sql)` before write; facet injection in the existing [integrations/lineage.py](../src/elt_pipeline/integrations/lineage.py) OpenLineage converter.
 **Posture:** ✅ **IN SCOPE — PULLED FORWARD** to BACKLOG §Still Todo (2026-08-27). Core mission: data governance + column-level impact analysis. 90% of plumbing already exists (SqlColumnSpec, LineageEvent, OpenLineage export, lineage.jsonl always-on sink). Additive-only, zero new dependencies.
 
-#### GAP-4: Semantic Layer / Metric Definitions (Cube & Dimension)
+### GAP-4: Semantic Metric Definitions Layer
+
+**Status: ✅ IMPLEMENTED (2026-08-27)**
 **What industry has:** dbt Semantic Layer (MetricFlow), Cube.dev, LookML, Sigma Workbook model, ThoughtSpot modeling. *One* YAML definition of a metric such as "MRR" resolves identically whether BI tool A, BI tool B, or a Trino SQL query reads it.
 **What we have:** L4 marts exist (aggregated BI-ready tables), but metric formulas are embedded *inline inside SQL model text only*. There is no framework-level metric object. Two dashboards querying the same L4 mart can produce two different MRR numbers if their SQL authors copy-paste the formula with slightly different predicates.
 **Impact:** The #1 complaint about data platforms across every industry: "the numbers don't match between dashboards." L4 marts alone cannot solve this — only a defined metric layer can.
@@ -174,7 +176,37 @@ list + Active Constraints 10–13) unless signed-off exception.
 - `elt metric run` → one of two outputs (operator choice per metric): (a) pre-compute an Iceberg metric table via Spark (aggregation materialised), or (b) generate a Trino SECURITY DEFINER SQL view with identical metric SQL and column-level masking applied. Both paths resolve to the same number.
 - A Prometheus/OTLP metric-exporter pass-through (optional): framework auto-derives `elt.metric.<name>` gauge from the same `MetricSpec` value per publish run.
 **Code insertion point:** New package [metrics/](../src/elt_pipeline/metrics/) with pCO-thin facade `__init__.py` + `_models / _compiler / _runtime.py`. Reuses existing SQL compiler token context, Pydantic manifests, and Spark executor. No new runtime concepts.
-**Posture:** ✅ **IN SCOPE — PULLED FORWARD** to BACKLOG §Still Todo (2026-08-27). Core mission: 1-canonical-metric-to-1-number across materialized tables, Trino views, and Prometheus gauges. Prevents the #1 data-platform complaint: "dashboards disagree on MRR." Thin manifest layer on existing L3/L4 outputs — no new engine, no new dialect.
+**Posture:** ✅ **IMPLEMENTED (2026-08-27)** — closed BACKLOG §Still Todo. Core mission: 1-canonical-metric-to-1-number across materialized tables, Trino views, and Prometheus gauges. Prevents the #1 data-platform complaint: "dashboards disagree on MRR." Thin manifest layer on existing L3/L4 outputs — no new engine, no new dialect.
+
+#### Implementation (2026-08-27)
+
+Code lives in `src/elt_pipeline/metrics/` (pCO facade pattern: thin `__init__.py` + 3 underscore-prefixed implementation modules). Zero new execution paths — reuses 100% of existing:
+  - SQL compiler token context
+  - Pydantic manifest validation
+  - Spark executor session builder
+  - StorageBackend (for audit JSONL writes)
+  - G-2 Prometheus gauge adapter (MetricType.gauge)
+  - GAP-7 data contract enforcement (materialized tables inherit via standard spark executor write path)
+  - G-6 Trino classification masking (SECURITY DEFINER VIEW wrapper toggled by `required_role` DataClassification)
+
+CLI surface:
+  - `elt metric compile <package> [--domain] [--metric] [--with-sql-refs] [--format summary|json]`
+     - structural YAML validation
+     - `--with-sql-refs` additionally walks the SQL package to verify the `query_ref` model_id exists and the referenced column appears in `SqlColumnSpec[]` governance (fail-fast ConfigValidationError, exit code 2, before JVM boot)
+  - `elt metric run <package> --mode materialize|view|prometheus [repeated] [--target-catalog] [--target-namespace] [--iceberg-*]`
+     - `--mode` is repeatable; operator can run all three together. When multiple modes run the cross-mode consistency guardrail is enforced (byte-identical `generated_sql_hash` comparison between modes → PipelineError METRIC_MODE_INCONSISTENT fail-closed, exit code 1).
+     - materialize mode: Iceberg `CREATE OR REPLACE TABLE … USING iceberg AS SELECT … GROUP BY …` via `build_spark_session` → `spark.sql`
+     - view mode: Pure DDL string (no JVM) — `CREATE OR REPLACE SECURITY DEFINER VIEW … COMMENT 'metric_id=…' AS …` SECURITY DEFINER wrapper injected when `required_role: public|internal|confidential|restricted_pii` is set
+     - prometheus mode: Emits a zero-valued gauge definition (operator fills in the value extractor callable). Metric naming: `elt.metric.{domain}.{name}`.
+     - Output: structured JSON payload with success_count / failure_count + `metric_audit.jsonl` path.
+
+Bidirectional consistency guardrail (Active Constraint 11 compliance):
+  - Every mode produces a SHA-256 hash of the dimension-sorted, source-reference-normalized SQL
+  - When ≥2 modes run in the same invocation, hashes MUST be byte-identical between mode pairs (materialize vs view, materialize vs prometheus, view vs prometheus)
+  - Mismatch → PipelineError error_code=METRIC_MODE_INCONSISTENT with full context dict of both hashes
+  - Normalization anchor: Aggregation SQL is always built with `source_table_ref="SOURCE_TABLE"` constant to make hashes independent of actual catalog/namespace strings
+
+Gate delta on close: +21 tests (all non-Spark, no emulator) — 21 passed / 0 failed.
 
 #### GAP-5: No Data Catalog / Discovery Browser UI
 **What industry has:** dbt docs (graph + search + column descriptions per model), DataHub (full catalog with search/ownership/lineage/graph), OpenMetadata, Amundsen.

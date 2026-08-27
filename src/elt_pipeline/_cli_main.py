@@ -66,6 +66,14 @@ from elt_pipeline.maintenance import (
     MaintenanceOperation,
     run_maintenance,
 )
+from elt_pipeline.metrics import (
+    MetricAuditRecord,
+    _check_consistency_or_raise,
+    run_metric_mode_materialize,
+    run_metric_mode_prometheus,
+    run_metric_mode_view,
+    write_metric_audit,
+)
 from elt_pipeline.normalize.partitioning import PartitionStrategy
 from elt_pipeline.normalize.pipeline import normalize_level1_to_local_level2
 from elt_pipeline.publish import (
@@ -1109,6 +1117,217 @@ def main(argv: list[str] | None = None) -> int:
                         print(line)
                 return 0
             parser.error(f"Unhandled lineage subcommand: {args.lineage_command}")
+            return 1
+
+        if args.command == "metric":
+            from elt_pipeline.metrics import (
+                compile_all_metrics as _metric_compile_all,
+            )
+
+            if args.metric_command == "compile":
+                sql_refs: list | None = None
+                if getattr(args, "with_sql_refs", False):
+                    sql_refs = discover_sql_models(args.package_path)
+                compiled = _metric_compile_all(
+                    package_root=args.package_path,
+                    sql_models=sql_refs,
+                    domain=args.domain,
+                    metric_name=getattr(args, "metric", None),
+                )
+                if args.compile_format == "json":
+                    payload = {
+                        "metric_count": len(compiled),
+                        "metrics": [
+                            {
+                                "metric_id": m.metric_id,
+                                "domain": m.domain,
+                                "name": m.name,
+                                "query_ref_model_id": m.query_ref_model_id,
+                                "query_ref_column": m.query_ref_column,
+                                "aggregation": m.aggregation.value,
+                                "dimension_count": len(m.dimensions),
+                                "filter_count": len(m.filters),
+                                "generated_sql_hash": m.generated_sql_hash,
+                                "manifest_path": str(m.manifest_path),
+                            }
+                            for m in compiled
+                        ],
+                    }
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                else:
+                    if not compiled:
+                        print("No metrics matched.")
+                    for m in compiled:
+                        dims = ", ".join(d.name for d in m.dimensions) or "-"
+                        print(
+                            f"[OK] {m.metric_id}: {m.aggregation.value}({m.query_ref_column}) "
+                            f"ON {m.query_ref_model_id} dims=[{dims}] "
+                            f"hash={m.generated_sql_hash[:12]}..."
+                        )
+                return 0
+
+            if args.metric_command == "run":
+                run_context = new_run_context(
+                    stage=StageName.semantic_metrics,
+                    job_name=args.job_name,
+                    trigger_type=args.trigger_type,
+                )
+                sql_models = discover_sql_models(args.package_path)
+                compiled = _metric_compile_all(
+                    package_root=args.package_path,
+                    sql_models=sql_models,
+                    domain=args.domain,
+                    metric_name=getattr(args, "metric", None),
+                )
+                if not compiled:
+                    raise ConfigValidationError(
+                        message="No metrics matched the requested selection",
+                        context={
+                            "package_path": str(args.package_path),
+                            "domain": args.domain,
+                            "metric": getattr(args, "metric", None),
+                        },
+                    )
+                _validate_iceberg_catalog_binding(
+                    args, runtime_overrides=_load_runtime_overrides_from_env_or_args(args)
+                )
+                mode_set = set(args.run_modes)
+                spark = None
+                results: list[dict[str, Any]] = []
+                hashes_by_metric: dict[str, dict[str, str]] = {}
+                try:
+                    if "materialize" in mode_set:
+                        spark = build_spark_session(
+                            **_resolve_iceberg_session_kwargs(
+                                args=args,
+                                app_name=f"elt-pipeline-metrics-{args.job_name}",
+                                runtime_overrides=_load_runtime_overrides_from_env_or_args(args),
+                            )
+                        )
+                    for metric in compiled:
+                        started = datetime.now(UTC).isoformat()
+                        metric_hashes: dict[str, str] = {}
+                        output_locations: list[str] = []
+                        success = True
+                        error_msg: str | None = None
+                        try:
+                            if "materialize" in mode_set and spark is not None:
+                                full_table, _, sql_hash = run_metric_mode_materialize(
+                                    metric=metric,
+                                    spark=spark,
+                                    target_catalog=args.target_catalog,
+                                    target_namespace=args.target_namespace,
+                                )
+                                metric_hashes["materialize"] = sql_hash
+                                output_locations.append(f"iceberg:{full_table}")
+                            if "view" in mode_set:
+                                view_sql, sql_hash = run_metric_mode_view(
+                                    metric=metric,
+                                    target_schema=args.target_namespace,
+                                )
+                                metric_hashes["view"] = sql_hash
+                                output_locations.append(f"view:{args.target_namespace}.metric_{metric.domain}_{metric.name}")
+                                if (
+                                    "materialize" in metric_hashes
+                                    and "view" in metric_hashes
+                                ):
+                                    _check_consistency_or_raise(
+                                        metric_id=metric.metric_id,
+                                        mode_a="materialize",
+                                        sql_hash_a=metric_hashes["materialize"],
+                                        mode_b="view",
+                                        sql_hash_b=metric_hashes["view"],
+                                    )
+                            if "prometheus" in mode_set:
+                                points, sql_hash = run_metric_mode_prometheus(
+                                    metric=metric,
+                                    value_extractor=lambda m: {"value": 0.0},
+                                )
+                                metric_hashes["prometheus"] = sql_hash
+                                output_locations.append(
+                                    f"prometheus:elt.metric.{metric.domain}.{metric.name}"
+                                )
+                                if (
+                                    "materialize" in metric_hashes
+                                    and "prometheus" in metric_hashes
+                                ):
+                                    _check_consistency_or_raise(
+                                        metric_id=metric.metric_id,
+                                        mode_a="materialize",
+                                        sql_hash_a=metric_hashes["materialize"],
+                                        mode_b="prometheus",
+                                        sql_hash_b=metric_hashes["prometheus"],
+                                    )
+                        except PipelineError as exc:
+                            success = False
+                            error_msg = str(exc)
+                        except Exception as exc:
+                            success = False
+                            error_msg = f"{type(exc).__name__}: {exc}"
+                        finished = datetime.now(UTC).isoformat()
+                        first_hash = next(iter(metric_hashes.values()), metric.generated_sql_hash)
+                        record_mode = (
+                            "materialize"
+                            if "materialize" in mode_set
+                            else next(iter(mode_set))
+                        )
+                        record_output = (
+                            "; ".join(output_locations) if output_locations else None
+                        )
+                        record = MetricAuditRecord(
+                            metric_id=metric.metric_id,
+                            mode=record_mode,
+                            started_at_iso=started,
+                            finished_at_iso=finished,
+                            generated_sql_hash=first_hash,
+                            output_location=record_output,
+                            success=success,
+                            error_message=error_msg,
+                        )
+                        write_metric_audit(
+                            root_path=path_normalize(args.root_path),
+                            run_id=run_context.run_id,
+                            record=record,
+                        )
+                        hashes_by_metric[metric.metric_id] = metric_hashes
+                        results.append(
+                            {
+                                "metric_id": metric.metric_id,
+                                "success": success,
+                                "modes": list(metric_hashes.keys()),
+                                "generated_sql_hash": first_hash,
+                                "output_locations": output_locations,
+                                "error": error_msg,
+                            }
+                        )
+                finally:
+                    if spark is not None:
+                        spark.stop()
+                any_failures = any(not r["success"] for r in results)
+                payload = {
+                    "command": "metric.run",
+                    "run_id": run_context.run_id,
+                    "package_path": str(args.package_path),
+                    "modes": sorted(mode_set),
+                    "metric_count": len(results),
+                    "success_count": sum(1 for r in results if r["success"]),
+                    "failure_count": sum(1 for r in results if not r["success"]),
+                    "results": results,
+                    "artifacts": {
+                        "root_path": path_normalize(args.root_path),
+                        "audit_path": join_paths(
+                            path_normalize(args.root_path),
+                            "runs",
+                            run_context.run_id,
+                            "metrics",
+                            "metric_audit.jsonl",
+                        ),
+                    },
+                }
+                print(json.dumps(payload, indent=2, default=str, sort_keys=True))
+                return 1 if any_failures else 0
+
+            parser.error(f"Unhandled metric subcommand: {args.metric_command}")
             return 1
     except (ConfigValidationError, ValidationError) as exc:
         error_record = build_error_record(

@@ -773,4 +773,103 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    metric_parser = subparsers.add_parser(
+        "metric",
+        help="Discover, compile, and run semantic metric definitions.",
+    )
+    metric_subparsers = metric_parser.add_subparsers(
+        dest="metric_command",
+        required=True,
+    )
+
+    metric_compile_parser = metric_subparsers.add_parser(
+        "compile",
+        help="Compile metric manifests and validate query_refs against SQL models.",
+    )
+    metric_compile_parser.add_argument("package_path", type=Path)
+    metric_compile_parser.add_argument("--domain")
+    metric_compile_parser.add_argument("--metric")
+    metric_compile_parser.add_argument(
+        "--with-sql-refs",
+        dest="with_sql_refs",
+        action="store_true",
+        default=False,
+        help=(
+            "Also discover SQL models from the same package and validate that "
+            "query_ref model/column exist in SqlColumnSpec governance. "
+            "Without this flag, compile performs structural YAML validation only."
+        ),
+    )
+    metric_compile_parser.add_argument(
+        "--format",
+        dest="compile_format",
+        choices=["summary", "json"],
+        default="summary",
+    )
+
+    metric_run_parser = metric_subparsers.add_parser(
+        "run",
+        help="Run compiled metrics in one or more resolution modes.",
+    )
+    metric_run_parser.add_argument("package_path", type=Path)
+    metric_run_parser.add_argument("--domain")
+    metric_run_parser.add_argument("--metric")
+    metric_run_parser.add_argument(
+        "--mode",
+        dest="run_modes",
+        action="append",
+        choices=["materialize", "view", "prometheus"],
+        required=True,
+        help=(
+            "Resolution mode(s). Repeatable to run multiple modes. "
+            "materialize=Iceberg table, view=Trino SECURITY DEFINER VIEW, "
+            "prometheus=Prometheus gauge via existing metrics adapter."
+        ),
+    )
+    metric_run_parser.add_argument(
+        "--root-path",
+        type=str,
+        default=_DEFAULT_ROOT_PATH_EVAL,
+    )
+    metric_run_parser.add_argument(
+        "--warehouse-root",
+        type=str,
+        default=_DEFAULT_WAREHOUSE_ROOT_EVAL,
+    )
+    metric_run_parser.add_argument("--job-name", default="metric-run")
+    metric_run_parser.add_argument("--trigger-type", default="manual")
+    metric_run_parser.add_argument(
+        "--target-catalog",
+        default="spark_catalog",
+        help="Target catalog name for materialize mode (default: spark_catalog).",
+    )
+    metric_run_parser.add_argument(
+        "--target-namespace",
+        default="metrics",
+        help="Target schema/namespace for materialize and view modes (default: metrics).",
+    )
+    metric_run_parser.add_argument(
+        "--iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_true",
+        default=None,
+    )
+    metric_run_parser.add_argument(
+        "--no-iceberg-enabled",
+        dest="iceberg_enabled",
+        action="store_false",
+        default=None,
+    )
+    metric_run_parser.add_argument(
+        "--iceberg-catalog-type",
+        default=None,
+        choices=["hadoop", "hive_metastore", "jdbc", "nessie", "rest", "glue"],
+    )
+    metric_run_parser.add_argument("--iceberg-catalog-name", default=None)
+    metric_run_parser.add_argument("--iceberg-catalog-uri", default=None)
+    metric_run_parser.add_argument("--iceberg-rest-token", default=None)
+    metric_run_parser.add_argument("--iceberg-rest-warehouse", default=None)
+    metric_run_parser.add_argument("--iceberg-glue-region", default=None)
+    metric_run_parser.add_argument("--iceberg-hive-metastore-uri", default=None)
+
     return parser

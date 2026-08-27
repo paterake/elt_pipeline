@@ -14,6 +14,7 @@ class StageName(str, Enum):
     sql = "sql"
     publish = "publish"
     shared = "shared"
+    semantic_metrics = "semantic_metrics"
 
 
 class TriggerType(str, Enum):

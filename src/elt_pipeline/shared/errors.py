@@ -15,6 +15,7 @@ class ErrorCategory(str, Enum):
     lineage_error = "lineage_error"
     observability_error = "observability_error"
     unexpected_runtime_error = "unexpected_runtime_error"
+    data_integrity_error = "data_integrity_error"
 
 
 class ErrorRecord(BaseModel):
