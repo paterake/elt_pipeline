@@ -233,17 +233,6 @@ Gaps in §5 use these severity bands:
 
 ### 🟡 P2 — Minor Ergonomic & Operational Gaps
 
-#### GAP-11: DAG Runner Lacks Sensors, Event Triggers, SLA Tracking
-**Current built-in DAG runner (`elt schedule`):** Per-job `depends_on:` topological sort, retries, retry_delay_seconds, per-attempt audit, skip-reason codes, `continue_on_error`. All Production (CMM §7, 11 tests green).
-**Missing sensors/triggers:** No `wait_for: {path_glob: s3://bucket/inbound/*.parquet, poll_sec: 60, timeout_sec: 3600}` before a job; no `sla_seconds: 14400` per plan with warning+alert emit if not complete by deadline; no event-driven `listen` command (Kafka message/webhook → trigger plan).
-**Workaround today:** Teams write custom shell loops or use the Airflow/Dagster sensors via wrappers.
-**Recommended path (3 small additive YAML fields, no engine changes):**
-- New per-job optional fields in schedule YAML: `wait_for:`, `event_trigger:`, `sla_seconds:`.
-- `wait_for:` → reuses B-6 `path_exists` / `path_glob` for local/S3/GCS/ADLS. HTTP endpoint wait → simple GET 2xx poll. Helper shell-less pure Python poll loop with jittered backoff. Emits `sensor_poll` log events + Prometheus gauge.
-- `sla_seconds:` → tracked in `schedule_execution_audit.json`; if elapsed > SLA at plan finish, emit a G-2 `AlertEvent` (warning severity) to the alerting webhook backend + `sla_breached = true` audit flag.
-- Event triggers: separate `elt schedule listen <plan.yaml> --event kafka|webhook` command. Reuses M-3 Kafka consumer or Flask-less `http.server` webhook listener → invokes `_run_schedule_plan` on event. Standalone command, not part of normal `run`.
-**Code insertion point:** Extend YAML schema + execution inside [_cli_main.py](../src/elt_pipeline/_cli_main.py) (`_run_schedule_plan()`).
-
 #### GAP-12: Backfill Plan/Status CLI & Audit Tracking
 **Current state:** `--start-date / --end-date` window flags exist per stage. Checkpoint store tracks history.
 **Missing tooling:** No "given a manifest + 12-month window, list every chunk and run status" generator; no "retry only chunks that failed" selector; no "show % complete + ETA for a 12-month backfill running across 10 workers."
@@ -290,6 +279,16 @@ Pull forward only on explicit signed-off consumer demand. Each is a legitimate f
 
 ---
 
+### 🟢 IMPLEMENTED Gaps (Closed post-triage on concrete consumer demand)
+
+#### GAP-11: DAG Runner Lacks Sensors, Event Triggers, SLA Tracking
+**Current built-in DAG runner (`elt schedule`):** Per-job `depends_on:` topological sort, retries, retry_delay_seconds, per-attempt audit, skip-reason codes, `continue_on_error`. All Production (CMM §7, 19 tests green).
+**Implemented wait_for sensors + SLA tracking (QW-3, closed 2026-08-27):** Per-job `wait_for:` (3 kinds: `path_exists` / `path_glob` / `http_url`, mutual-exclusivity enforced at YAML parse, poll_sec/timeout_sec bounds) + per-job `sla_seconds:` SLA tracking. Path sensors dispatch via B-6 `path_exists`/`path_glob` for scheme-agnostic local/S3/GCS/ADLS; HTTP wait → GET 2xx poll with jittered exponential backoff (per-request timeout capped). Emits `sensor_poll` JSON events + Prometheus `elt_sensor_poll_count` gauge labels `{job,state}`. Sensor timeout → `failed_sensor` status exit_code=5 + `stop_after_this_job` cascade. SLA breach → G-2 `AlertEvent(severity=warning)` + audit `sla_breached=true` + top-level `sla_alerts[]` array.
+**Deferred to future demand:** Event-trigger `elt schedule listen <plan.yaml> --event kafka|webhook` (Kafka message / webhook → trigger plan). Standalone command, not part of normal `run`; reuses M-3 Kafka consumer or Flask-less `http.server` webhook listener → invokes `_run_schedule_plan` on event.
+**Code insertion point (implemented):** YAML schema extended in `shared/scheduler.py` (`WaitForSpec` Pydantic model) + execution inside [_cli_main.py](../src/elt_pipeline/_cli_main.py) (`_run_schedule_plan()`). 8 new focused tests (isolated test_cli.py, S-0 compliant): 3 wait_for happy paths + 1 timeout failure cascade + 1 HTTP 2xx progression + 1 SLA breach alert + 1 SLA ok silent + 1 sensor event/metric label counts + 1 YAML multi-kind validation reject.
+
+---
+
 ## 6. Architectural Observations: Minor Technical Debt (Not Capability Gaps)
 
 These are not missing capabilities — they are small inefficiencies in what already exists. None are blocking, but all are worth cleaning up if a file is already open for another change.
@@ -308,12 +307,16 @@ These are not missing capabilities — they are small inefficiencies in what alr
 
 Only pull items forward on concrete consumer demand per BACKLOG policy. This is the triage ordering when demand hits — highest ROI per engineering hour first.
 
+### IMPLEMENTED — Closed post-triage on concrete consumer demand
+| Order | Gap | Effort | Impact | Why first |
+|---|---|---|---|---|
+| QW-3 | **GAP-11 `wait_for:` file/glob sensor in schedule plans** | 1 day | Unblocks the #1 schedule use case (wait for upstream file) | B-6 `path_exists`/glob already work. Pure polling + audit/sensor event wiring. Closed: per-job wait_for (path_exists/path_glob/http_url) + sla_seconds, 8 new tests, gate 830→838 (BACKLOG §QW-3/GAP-11 2026-08-27). |
+
 ### Phase 1: Quick Wins (1–2 days each, single-session work items, 0 architecture risk)
 | Order | Gap | Effort | Impact | Why first |
 |---|---|---|---|---|
 | QW-1 | **TD-1: Classifier bump Alpha → Beta** | 1 line | Instant credibility lift | Pure metadata change; no code/test risk. `classifiers` in pyproject.toml is the first thing PyPI visitors see. |
 | QW-2 | **FFM/CMM: Singer Tap integration doc + GAP-5 Option B guide** | 1–2 pages | 0.5× connector ecosystem today | Write the Marquez/DataHub + Debezium Server → M-11 JSONL replay cookbook as operator docs. Integration works now; docs close the perception gap. |
-| QW-3 | **GAP-11 `wait_for:` file/glob sensor in schedule plans** | 1 day | Unblocks the #1 schedule use case (wait for upstream file) | B-6 `path_exists`/glob already work. Pure polling + audit/sensor event wiring. |
 
 ### Phase 2: Medium Effort (1–2 weeks, highest per-hour impact leverage)
 | Order | Gap | Effort | Impact | Why |

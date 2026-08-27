@@ -93,3 +93,34 @@ jobs:
       - "2026-01-31"
 
 continue_on_error: false
+
+# ---------------------------------------------------------------------------
+# GAP-11: per-job wait_for sensors (3 kinds, mutually exclusive) + sla_seconds
+# Copy-paste any of these blocks into a job to enable them.
+# ---------------------------------------------------------------------------
+#
+# # --- Kind 1: wait for a specific path to exist (local / s3:// / gs:// / abfss://)
+# #   Dispatches via B-6 StorageBackend protocol (4-cloud scheme-agnostic).
+# # wait_for:
+# #   path_exists: /absolute/path/to/upstream/completed/_SUCCESS
+# #   poll_sec: 30
+# #   timeout_sec: 3600
+#
+# # --- Kind 2: wait for a glob pattern to match ≥1 path (same 4 schemes)
+# # wait_for:
+# #   path_glob:
+# #     base: s3://bucket/inbound/orders/
+# #     pattern: "dt=2026-08-27/*/*.parquet"
+# #   poll_sec: 60
+# #   timeout_sec: 7200
+#
+# # --- Kind 3: wait for an HTTP endpoint to return 2xx (e.g. upstream webhook)
+# # wait_for:
+# #   http_url: https://upstream.example.com/api/jobs/orders-extract/status
+# #   poll_sec: 15
+# #   timeout_sec: 1800
+#
+# # --- Per-job SLA deadline (elapsed wall-clock of CLI body execution)
+# #   Breach → G-2 AlertEvent severity=warning + audit sla_breached=true.
+# # sla_seconds: 14400
+
