@@ -63,3 +63,24 @@ jobs:
               raise SystemExit("missing source distribution artifact")
           print("validated artifacts:", ", ".join(sorted(built_files)))
           PY
+
+  doc-links:
+    runs-on: ubuntu-latest
+    name: Markdown links (lychee)
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check internal markdown links for 404s
+        uses: lycheeverse/lychee-action@v1
+        with:
+          # Internal-only: no external HTTP calls. Fail on any broken relative link.
+          # Accept 429s for future-proofing in case external URLs are ever added.
+          args: >
+            --no-progress
+            --offline
+            --accept 200,429
+            --include-mail
+            './**/*.md'
+          fail: true
+

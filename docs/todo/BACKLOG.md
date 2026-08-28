@@ -381,10 +381,34 @@ inherit mise's activation. Export first, then run the gate:
 export JAVA_HOME="$HOME/.local/share/mise/installs/java/temurin-23"
 export PATH="$JAVA_HOME/bin:$PATH"
 bash scripts/run_tests.sh          # the gate — per-file Spark isolation; must stay green
+
+# AGENT_SPEC Tier-1 anchor smoke (8 key deep-link files exist, no JVM/no deps, ~50ms)
+# Fails CI-red if any AGENT_SPEC §9 deep-link canonical file moves without summary updates.
+uv run python -c "
+import pathlib
+for p in ['docs/todo/BACKLOG.md','docs/prd/10-prd-architecture-and-lifecycle.md',
+          'docs/CAPABILITY_MATURITY_MATRIX.md','docs/INDUSTRY_GAP_ANALYSIS.md',
+          'docs/todo/archive/WORK_ITEMS_CLOSED.md','docs/operator/BYOD_TUTORIAL.md',
+          'CONTRIBUTING.md','SECURITY.md']:
+    assert pathlib.Path(p).exists(), f'AGENT_SPEC anchor MISSING (rename/moved?): {p}'
+print('8 AGENT_SPEC anchor links OK')
+"
 ```
 
 Per-item verification commands are inside each item. "Should pass" is not a check — run it and
 paste the count. Any new storage-backend work MUST ship with tests (see B-5) and keep the gate green.
+
+### Session close ritual (3 required bullets — run ALL before closing)
+
+1. **Resume line updated** — Next-work pointer in [§Resume](docs/todo/BACKLOG.md#resume-start-here)
+   stamped with the current item's CLOSED ✅ line or the handoff to the next item.
+2. **Status snapshot updated** — [§Status snapshot](docs/todo/BACKLOG.md#status-snapshot) gate
+   numbers (tests passed/failed/skipped, smoke exit code) refreshed to reflect this session.
+3. **AGENT_SPEC Tier-1 drift check** — Did this session change any of: extension API in §3,
+   exit codes in §5, file-map paths in §2, architecture levels in §7, durable pointers in §8,
+   playbook branches in §6, or a Tier-2 canonical filename referenced in §9? If YES, update
+   the CORRESPONDING summary/pointer row in [AGENT_SPEC.md](../../AGENT_SPEC.md) in THIS same
+   session. If NOTHING changed in those categories, write "Tier-1 N/A this session" in notes.
 
 ## Root-cause summary
 

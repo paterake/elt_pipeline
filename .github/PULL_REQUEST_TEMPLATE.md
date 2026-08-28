@@ -54,6 +54,7 @@ All items `[x]` required for merge. Maintainers: if an item is N/A, check it AND
 - [ ] **CAPABILITY_MATURITY_MATRIX.md** green-row flipped (if capability PR) + **INDUSTRY_GAP_ANALYSIS.md §5** GAP-N status ⏳/🔴 → ✅ IMPLEMENTED with Implementation subsection (template copy-paste from GAP-4).
 - [ ] **BACKLOG.md §Resume pointer** updated + **Still Todo** section updated with the corresponding delta. Capability PRs: close the GAP-N block and add a Closed Work Items row. Bug/docs-only PRs: BACKLOG unchanged. See [BACKLOG.md](../docs/todo/BACKLOG.md).
 - [ ] **WORK_ITEMS_CLOSED.md archival narrative** (capability PRs only). Paste the 12-section closure narrative here OR commit to `docs/todo/archive/WORK_ITEMS_CLOSED.md` in this PR.
+- [ ] **AGENT_SPEC Tier-1 summaries synced** — If any Tier-2 canonical file, extension API, exit code, file-map path, architecture level, or playbook branch referenced by [AGENT_SPEC.md](../../AGENT_SPEC.md) changed in this PR, update the CORRESPONDING summary section in AGENT_SPEC.md. Do NOT add new narrative to AGENT_SPEC.md — only update existing summary lines, pointers, and tables. If AGENT_SPEC was not touched by this PR, check and note "N/A: no Tier-1 category changed".
 
 ### Safety
 
