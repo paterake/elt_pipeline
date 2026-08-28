@@ -52,15 +52,17 @@ core capability work items are closed.
 4. **Security vulnerability:** Do NOT open an issue. Follow [SECURITY.md](SECURITY.md) — email
    the listed contact, 90-day window + 14-day compression for active-in-wild.
 
-### Current gate snapshot for this empty-state check-in
+### Current gate snapshot for this empty-state check-in (v0.5.0 — 2026-08-28)
 
-| Gate | Numbers | Verified in commit |
+| Gate | Numbers | Verified in commit / tag |
 |---|---|---|
-| Tests (claimed) | **875 passed / 0 failed / 28 skipped** | elt168 (this check-in) |
-| Non-Spark bulk subset (scripts/run_tests.sh — isolated subprocess) | 607 passed / 0 failed | elt168 |
-| Ruff | **0 errors** across `src/ tests/ examples/` | elt168 |
-| Semantic metrics test suite (new GAP-4) | **21 / 21 passing** | elt168 |
-| `elt-pipeline metric compile examples/sql/local_demo --with-sql-refs --format summary` smoke | EXIT=0 (2 metrics OK) | elt168 |
+| Tests (claimed) | **882 passed / 0 failed / 28 skipped** | elt172 + `v0.5.0` annotated tag |
+| Non-Spark bulk subset (scripts/run_tests.sh — isolated subprocess) | 635 passed / 28 skipped in 8.15s | v0.5.0 + 4-core Apple Silicon, maintenance JVM_MEM=2g hint applied |
+| New Tier-1 contract guard tests (test_agent_spec_contract.py) | **28 / 28 passing in 0.12s** | elt172 / v0.5.0 (§3 Extensions ×6, §2 pCO layouts ×4, §8+§9 Tier-2 file anchors ×17, §4 entry points ×1) |
+| Ruff | **0 errors** across `src/ tests/ examples/` | elt172 / v0.5.0 |
+| Full gate (15 Spark/CLI isolated subprocesses) | TEST GATE: PASS. 17 subprocess files: 34 cli, 22 data_contracts, 1 iceberg_data_contracts, 9 examples, 34 iceberg_catalog_config, 25 iceberg_parity_and_audit, 1 iceberg_preflight, 9 lineage_facets, 14 maintenance, 7 normalize_engine_parity, 9 normalize_pipeline, 8 publish_cli, 8 publish_models, 27 spark_fs_config, 5 sql_iceberg_write, 25 sql_models | v0.5.0 / bash scripts/run_tests.sh (2026-08-28) |
+| `elt-pipeline metric compile examples/sql/local_demo --with-sql-refs --format summary` smoke | EXIT=0 (2 metrics OK) | elt172 |
+| doc-links CI job (.github/workflows/ci.yml, lychee --offline) | Validated YAML, installed in CI; catches internal markdown link 404s | elt172 CI only (run at GitHub) |
 
 ---
 
@@ -256,7 +258,14 @@ closed item (D-0 / B-0 → B-6 / G-1 → G-8 / M-1 → M-8 / S1 → S4 / I-1 / I
 - **Session 2026-08-27 — closed (on-demand operator pull, Active Constraint 9):** **QW-1/TD-1 ✅ CLOSED + QW-3/GAP-11 ✅ CLOSED.** QW-1: pyproject.toml Development Status reaffirmed at **4 — Beta** (classifier already stamped pre-session; Alpha → Beta rationale: 830/0 green gate, zero CMM roadmap rows remaining, all rows Production or DEFUNCT — Alpha misrepresented maturity, zero test impact). QW-3/GAP-11: additive per-job `wait_for` sensors (path_exists / path_glob / http_url 3-kind mutual-exclusivity, poll/timeout bounds) + `sla_seconds` SLA alerts in `elt schedule` runner. Sensor polling reuses B-6 StorageBackend `path_exists` / `path_glob` for scheme-agnostic local/S3/GCS/ADLS dispatch. HTTP wait: GET 2xx poll with jittered exponential backoff capped at poll_sec×30. Per-poll emits structured `sensor_poll` JSON events to stderr (job, poll_index, state, kind, elapsed, detail) + aggregates `elt_sensor_poll_count` Prometheus gauge with labels `{job,state}`. Sensor timeout → job status `failed_sensor`, exit_code=5, downstream `stop_after_this_job` cascade same as CLI failure. SLA measured per-job from CLI body start→end elapsed; breach → G-2 `AlertEvent(severity=warning)` labels `{job, sla_seconds, elapsed_seconds, stage=schedule}` + audit `sla_breached=true` + top-level `sla_alerts[]` array in payload; under-SLA emits zero alerts. Insertion point: YAML schema extended in `shared/scheduler.py` (WaitForSpec Pydantic model + mutual-exclusivity validator + SLA fields) + execution in `_cli_main.py` `_run_schedule_plan()` (same function M-8 hardened). 11 original schedule tests stay GREEN unmodified. Gate delta 830 → **838 passed (+8 new tests: 3 wait_for happy paths + 1 timeout failure cascade + 1 HTTP 2xx progression + 1 SLA breach alert + 1 SLA ok silent + 1 sensor event/metric label counts + 1 YAML multi-kind validation reject).** `uv run ruff check src/ tests/ examples` clean, 0 issues.
 - **Doc-only GAP-7/GAP-11 claim batch ✅ CLOSED (2026-08-27, 4 files edited, 0 test delta, gate stayed 838/0/28 ruff clean)**
 - **Session 2026-08-27 — closed (Strategic Posture in-scope, Active Constraint 9):** **GAP-3 ✅ CLOSED** Column-Level Lineage & Impact Analysis (OpenLineage SchemaDatasetFacet + ColumnLineageDatasetFacet + `elt lineage impact-analysis` CLI). Pulled forward with GAP-4 as Strategic Posture §In-scope core priorities. Step 1: SchemaDatasetFacet mapping builder in `shared/lineage.py` (SqlColumnSpec → OL facet 1-1-1 wire dict, UNKNOWN type fallback for None, classification+custom_tags normalized to tags[]), attached at runtime observer to every output DatasetRef facet bag, with fallback `_infer_schema_facet_from_lineage_map()` synthesizing coverage when governance.columns is empty. Step 2: ColumnLineageDatasetFacet extraction via Spark resolved plan — PySpark 3.x uses `dataframe.queryExecution.analyzed`; PySpark 4.x falls back to `dataframe._jdf.queryExecution().analyzed()` Java plan access via py4j dispatch. Extractor walks Project.projectList / Aggregate.aggregateExpressions NamedExpression list (NOT fresh output AttributeReferences that lose computed-column refs), with generic node seam discovery handling children/childrenResolved/exprs/projectList/aggregateExpressions/joinKeys/condition/child/left/right plus vars() for Python 3.x TreeNode internal attrs. Alias matching: exact qualifier → exact col-name → endswith("."+alias) fuzzy. ColumnLineageDatasetFacet (spec 1-0-0) built with transformationType (DIRECT/LITERAL) and OL-namespace/name/field inputFields[] triples, carried from executor through SqlExecutionRecord.column_lineage_map (new optional field on the record). Step 3: `elt lineage impact-analysis` CLI (`--column "<dataset>.<col>" --depth N [--format json|table] [--root-path <dir>]`) using `shared/lineage_impact.py` graph builder over `runs/**/lineage.jsonl` (non-JSON lines silently skipped, only COMPLETE events parsed, table+column edges bidirectional). Per-column bidirectional BFS with depth caps, visited-set cycle guards, stable `(depth, dataset, column)` sorted JSON. Exit codes: 0=ok, 2=invalid args (bad column form / depth<1) with JSON stderr error dicts. Full spec with closure narrative, decision log, and verification counts → [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Gate delta 838 → **854 passed (+16 new tests: 9 in test_lineage_facets.py = 4 SchemaDatasetFacet mapping + 5 Spark extraction (identity/concat/group-by/join/unknown-alias-silent); 7 in test_lineage_impact.py = empty-history, bad-column-form, BFS bidirectional walk, depth-bound, bad-lineage-jsonlines-resilience, CLI integration table+JSON, CLI invalid-args exit-code-2).** 28 emulator tests skipped as expected. `uv run ruff check src/ tests/ examples` clean.
-- **Next work:** All backlog items closed. No items remain in §Still Todo. Pull any new gaps forward only on concrete signed-off consumer demand (requires BOTH signed-off demand ticket + signed-off strategic-posture exception per Active Constraints 10-13).
+- **Next work:** Only 1 open item in §Still Todo (pull forward only on measured pain, not roadmap fiat):
+  **CLI-PCO-1** — pCO split of the 2 remaining CLI god files (_cli_main.py 3318L + test_cli.py 1981L).
+  LOW priority today; pull when (a) adding 16th+ CLI subcommand, (b) cold-agent editing
+  single-file-too-big toil measured ≥ 3 hrs/week. 20-atomic-step gate-green plan, 2 new pre-split
+  guard tests, 10-point D-9 close checklist. Item body in §Still Todo below (CLI-PCO-1 block).
+  Signed-off demand ticket + Strategic Posture Check NOT required for this item (it's a behavior-
+  preserving refactor of existing code, not a capability expansion — Active Constraints 10–13 apply
+  only to new capability requests).
 - **Session 2026-08-27 — closed (Strategic Posture in-scope, Active Constraint 9):** **GAP-4 ✅ CLOSED** Semantic Metric Definitions Layer (MetricSpec YAML + compile/run CLI + 3 resolution modes: materialize Iceberg table / Trino SECURITY DEFINER VIEW / Prometheus gauge export). Bidirectional cross-mode `generated_sql_hash` consistency guardrail (byte-identical → fail-closed METRIC_MODE_INCONSISTENT). Pulled forward with GAP-3 as Strategic Posture §In-scope core priorities. Code in `src/elt_pipeline/metrics/` (pCO facade `__init__.py` + `_models / _compiler / _runtime.py`). CLI: `elt metric compile [--with-sql-refs]` + `elt metric run --mode materialize|view|prometheus [repeated]`. Full spec, verification checklist, and test output counts archived in [WORK_ITEMS_CLOSED.md](docs/todo/archive/WORK_ITEMS_CLOSED.md). Gate delta 854 → **875 passed (+21 new tests in test_semantic_metrics.py: 3 compile valid/invalid refs, 4 SQL hash matches, 3 view DDL, 3 prometheus gauge labels, 2 consistency guardrail hash-match, 2 hash-mismatch METRIC_MODE_INCONSISTENT, 4 audit JSONL write paths)**. 28 emulator tests skipped as expected. `uv run ruff check src/ tests/ examples` clean, 0 issues.
 
 ## Session start prompt
@@ -655,7 +664,129 @@ work it one-per-session, then on close move the body to the archive file and lea
 
 ### Still Todo
 
-All items completed as of 2026-08-27. BACKLOG EMPTY.
+All pre-scoped capability items completed as of 2026-08-27. BACKLOG single open item below is a code-structure refactor
+only (no new features, no capability additions), pulled forward explicitly on 2026-08-28 v0.5.0 audit discovery.
+
+#### CLI-PCO-1 — CLI Dispatcher pCO Split: eliminate 2 remaining multi-purpose god files (_cli_main.py + test_cli.py)
+_Status: 📋 OPENED (2026-08-28, v0.5.0 audit discovery)_  
+_Priority: **LOW for v0.5.0** / pull forward only when (a) adding 16th+ CLI subcommand causes 3700+ line pain OR (b) the "cold agent editing 1 file to add a subcommand" becomes a real toil issue. Gate is green without this; correctness not blocked._
+
+**D-1 Problem (definition):** 2 remaining multi-purpose "god files" in the repo (2026-08-28 audit counts; 4-test god-file definition from the audit session below). The code is *correct* today (full gate 882/0/28 green) but file-level single-responsibility is violated, so the file grows linearly with each new CLI subcommand, making future edits higher-risk.
+
+**D-2 God-file 4-part test definition used to classify these (from 2026-08-28 audit; reuse this exact test for future file audits):**
+1. **Size heuristic FAIL:** 500+ lines (warning), 1000+ lines (strong god signal)
+2. **Cross-domain mixing FAIL:** File imports from 3+ unrelated domain packages AND implements handlers for 3+ unrelated semantic subcommand groups
+3. **Single-source-of-truth lock-in FAIL:** Adding a new capability (CLI subcommand) REQUIRES touching this one file; there is no plugin/register_* extension point
+4. **Prose-in-code risk FAIL:** 20+ top-level functions each with implicit domain knowledge but no guard test validating the split claim
+
+**D-3 Offenders (2026-08-28 concrete numbers):**
+
+| Offender file | Lines (source) | Fails which 4-tests? | Concrete evidence from 2026-08-28 audit |
+|---|---|---|---|
+| `src/elt_pipeline/_cli_main.py` | 3,318 | 1/2/3/4 — ALL 4 FAIL | Imports **13 distinct domain packages** (ingest × 2, metrics, publish × 2, config, normalize, maintenance, integrations, 5 _cli_* helper modules). **38 top-level functions** mixing: schedule sensor waits `_wait_for_path_exists / _wait_for_path_glob / _wait_for_http_2xx`, schedule plan builder `_run_schedule_plan`, rerun validators × 3 (`_validate_normalize/sql/publish_rerun_request`), Kafka log resolvers, L1 manifest selectors, ingest entity runner `_run_ingest_entity`, maintenance config builder `_build_maintenance_config`, dispatch main `def main()` argparse 15-case switch at L138. Any new subcommand requires editing the ONE 3318-line file. |
+| `tests/test_cli.py` | 1,981 | 1/2/4 — FAIL 3/4 | **7 semantic test groups** = 33 tests spread across ingest/schedule/normalize/sql/validate/show/end (19 schedule × 5 sql × 5 normalize × 2 ingest × 1 validate × 1 show × 1 end). Every CLI subcommand's test suite in one 1981-line file. File-level single-responsibility is violated. Does NOT fail test 3 because adding a new CLI test file doesn't require editing test_cli.py; we only do so because we didn't split. |
+
+**What is NOT a god file (2026-08-28 audit — reference set; keep this list for future cold sessions):**
+- Every connector backend file under `shared/storage_backends/` (_s3_backend 702L / _gcs_backend 726L / _adls_backend 843L): 800 lines but SINGLE DOMAIN (1 backend only). Pass 4-tests. Not gods.
+- `ingest/connectors/rest.py` 1536L, `sql.py` 969L, `publish/runtime.py` 925L, `spark/session.py` 899L: each 1 domain only. Not gods.
+- `AGENT_SPEC.md` 413L: Tier-1 summary ONLY. 3-tier hierarchy rule forbids narrative here. Not a god doc.
+- Archive md files (WORK_ITEMS_CLOSED 2405L, etc.): append-only ledger, 1 purpose. Not gods.
+
+**D-4 Architecture decision:** Apply the exact same pCO treatment that already worked for `cli.py → 5 _cli_*` split + `shared/storage_backends/__init__.py → _protocol/_registry/_*_backend` (see BACKLOG Resume PCO tranche entry, 2026-08-27, 6 gold files eliminated with 0 gate breaks). The pattern is proven and test-guarded.
+
+**D-5 Code split plan (exact target layout):**
+
+Source side: convert `_cli_main.py` + 5 existing _cli_* helper files into a proper pCO CLI subpackage:
+```
+src/elt_pipeline/cli/                 # NEW package directory
+├── __init__.py                       # thin facade (≈30 lines): __all__ = ['main', 'build_parser'] ; facade imports from submodules only
+├── _parser.py                        # moved from src/elt_pipeline/_cli_parser.py (875L today — single domain already)
+├── _helpers.py                       # moved from src/elt_pipeline/_cli_helpers.py (842L — single domain already)
+├── _models.py                        # moved from src/elt_pipeline/_cli_models.py (existing, single domain)
+├── _connectors.py                    # moved from src/elt_pipeline/_cli_connectors.py (existing, single domain)
+├── _main.py                          # DISPATCHER ONLY — max 150 lines. NO handler code. Def main(argv) = 15-case dispatch that calls into _commands_* submodules via facade imports. NO scheduling waits. No ingest logic. No rerun validators. Pure argparse-case routing.
+├── _commands_ingest.py               # _run_ingest_entity, _resolve_kafka_log_path, _select_level1_manifests, window/selection helpers for ingest ONLY (~400L from today's file, 1 domain)
+├── _commands_schedule.py             # _wait_for_path_exists/_glob/_http_2xx, _run_schedule_plan, _build_sensor_metric_points, schedule context builders (~700L, 1 domain)
+├── _commands_rerun.py                # _validate_normalize/sql/publish_rerun_request ×3, _build_cli_window_selection, _parse_* argument helpers, _serialize_datetime, _resolve_entity_selections (~350L, 1 domain)
+├── _commands_sql.py                  # sql validate / exec / rerun handlers (~250L)
+├── _commands_normalize.py            # normalize validate / exec / rerun handlers (~200L)
+├── _commands_publish.py              # publish validate / exec / rerun handlers (~200L)
+└── _commands_maintenance.py          # _build_maintenance_config + maintenance job helpers (~150L)
+```
+
+Delete the 5 flat files after moving:
+```
+rm src/elt_pipeline/_cli_parser.py src/elt_pipeline/_cli_helpers.py src/elt_pipeline/_cli_models.py src/elt_pipeline/_cli_connectors.py src/elt_pipeline/_cli_main.py
+```
+
+Update facade `src/elt_pipeline/cli.py` (the existing 133-line thin facade) to re-export from the new `cli/` SUBPACKAGE (not from flat files). Backwards compatibility: `from elt_pipeline.cli import main, build_parser` MUST work unchanged. All import strings in existing call sites, `test_facade_import_boundary.py`, `test_agent_spec_contract.py` facade checks stay green — only the file tree moves, the facade public surface is byte-identical.
+
+Test side: split the 1981-line `tests/test_cli.py` into per-subcommand files:
+```
+tests/cli/                           # NEW test directory
+├── __init__.py                      # empty; makes it a package for pytest discovery
+├── test_cli_dispatch_main.py        # def main() dispatcher tests, argparse parser structure, version/help → max 200L
+├── test_cli_schedule.py             # 19 schedule tests from today's file (~700L)
+├── test_cli_sql.py                  # 5 sql tests (~300L)
+├── test_cli_normalize.py            # 5 normalize tests (~250L)
+├── test_cli_ingest.py               # 2 ingest tests (~200L)
+├── test_cli_publish.py              # publish test cases that are in test_cli.py today (~200L)
+├── test_cli_metric.py               # metric subcommand tests from test_cli.py today (~150L)
+└── test_cli_end_to_end.py           # 1 end-to-end validation flow + 1 show + 1 end test (~150L)
+```
+
+Delete `tests/test_cli.py` after split is verified green.
+
+**D-6 Non-goals / explicitly NOT in scope for this item:**
+- NOT adding any new CLI subcommand. Refactor only — 0 new features.
+- NOT changing any behavior. All 33 tests in today's test_cli.py must pass with 0 assertion edits; any test that needs an edit to pass = refactor failure, roll back and re-plan the split.
+- NOT introducing a `register_subcommand` extension API (that's a future RFC-capability item if needed, but today's risk is "file too big", not "no plugin point". Do NOT combine these two refactors into one session.)
+- NOT touching the pCO facade of any package other than CLI. Storage_backends / secrets / metrics / quality are already correctly split (verified by 28 contract guards).
+- NOT touching `scripts/run_tests.sh` beyond what's needed to pick up pytest's package discovery. If `tests/cli/*.py` are auto-discovered (they are with standard pytest), no change.
+- NOT updating any Tier-2 canonical narrative docs beyond AGENT_SPEC.md §2 file map (required per session-close ritual bullet 3).
+
+**D-7 Invariants to keep fail-closed (write 2 NEW guard tests before touching ANY other code):**
+1. **Facade compatibility guard:** Extend `tests/test_facade_import_boundary.py` (already 8 tests) with 2 new rows: (a) `from elt_pipeline.cli import main as m; m.__module__ == 'elt_pipeline.cli'` (callers can still import from top facade package; the new `cli/` subpackage is re-exported transparently). (b) `import elt_pipeline.cli; hasattr(elt_pipeline.cli, '__all__') and len(elt_pipeline.cli.__all__) >= 2`.
+2. **Subcommand dispatcher location guard:** `tests/test_agent_spec_contract.py` gains 1 new test: `import inspect, elt_pipeline.cli as c; src = inspect.getsource(c.main); assert src.count('subparsers') >= 1; assert len(src.split('\n')) < 150` — verifies that def main() STAYS < 150 lines (dispatcher only). If someone puts a handler back into main, red CI.
+
+Both NEW tests MUST pass on the CURRENT pre-split code (today's code) BEFORE the split. That's the anti-regression pattern we use on storage_backends.
+
+**D-8 Environment & gate:**
+- Standard env: JAVA_HOME Temurin 23 exports. ELT_PIPELINE_TEST_MAINTENANCE_JVM_MEM=2g on 4-core.
+- Gate is **`bash scripts/run_tests.sh` MUST STAY 882/0/28 at EVERY step.** Do not do the entire file-move batch in one go and hope; do it in 13 atomic steps (1 per moved file) with an intermediate gate run each step. Rollback = 1 git mv per step; never get > 1 file away from a green gate.
+- Step sequence order for the 13 atomic moves (each = 1 step, gate must be green after):
+  1. Add D-7 2 new guard tests → commit → 884/0/28 green. (Now you have the anti-regression net.)
+  2. Move _cli_parser.py → cli/_parser.py; fix imports only; cli.py facade re-exports point to subpkg; gate green.
+  3. Move _cli_helpers.py → cli/_helpers.py; fix imports only; green.
+  4. Move _cli_models.py → cli/_models.py; green.
+  5. Move _cli_connectors.py → cli/_connectors.py; green.
+  6. Refactor step: carve `_main.py` dispatcher ONLY from _cli_main.py (15-case dispatch). Keep handlers IN _cli_main.py. Facade cli main() points to cli._main.main. Gate still 884.
+  7. Carve _commands_schedule.py from _cli_main.py → replace calls in dispatcher; green.
+  8. Carve _commands_rerun.py from _cli_main.py → green.
+  9. Carve _commands_ingest.py → green.
+  10. Carve _commands_sql.py → green.
+  11. Carve _commands_normalize.py → green.
+  12. Carve _commands_publish.py → green.
+  13. Carve _commands_maintenance.py → _cli_main.py is now EMPTY of handlers. Delete _cli_main.py flat file; green.
+  14. Test split 1 file at a time similarly, 7 steps. 13 + 7 = 20 atomic commit points between which gate MUST be green.
+  15. Final: AGENT_SPEC §2 file map + Tier-1 drift check per BACKLOG session-close ritual bullet 3.
+
+**D-9 Verification checklist (pass/fail; ALL must be true before calling item closed):**
+1. ✅ Gate delta: 882 → **≥ 884 passed** (the 2 new guard tests added in D-7 step 1). 0 failed. 28 skipped unchanged.
+2. ✅ `wc -l src/elt_pipeline/cli/_main.py` → **≤ 150 lines** (dispatcher only, no handlers).
+3. ✅ Largest single file under `src/elt_pipeline/cli/` excluding comments/docstrings → **≤ 500 lines**. No file exceeds 800.
+4. ✅ Largest single file under `tests/cli/` → **≤ 800 lines**. No test file 1000+.
+5. ✅ `find src/elt_pipeline -maxdepth 2 -name '_cli_*' | wc -l` → **0** (all flat _cli_*.py files in parent dir deleted; everything lives under cli/ subpackage).
+6. ✅ `grep -l '_cli_main.py' tests/test_facade_import_boundary.py tests/test_agent_spec_contract.py src/elt_pipeline/cli.py` → **0 hits** (no leftover old flat-filename references outside of git history).
+7. ✅ 2 new guard tests from D-7 pass on the post-split code (they were written pre-split; still pass post-split = facade compatibility preserved).
+8. ✅ `from elt_pipeline.cli import main, build_parser` → works in fresh Python REPL (no deprecation warnings, no facade import errors).
+9. ✅ All 33 original CLI test functions (counted pre-split) have a corresponding test in tests/cli/ with the SAME name; no renamed tests silently dropped. Count tests: `grep -cE 'def test_' tests/cli/*.py` SUM = 33 exactly.
+10. ✅ AGENT_SPEC.md §2 File map updated: 1 row for CLI pCO subpackage (new); old flat _cli_* paths removed. Session-close ritual bullets 1/2/3 run.
+
+**D-10 Closure narrative → `docs/todo/archive/WORK_ITEMS_CLOSED.md` (per BACKLOG_CONTINUITY_PLAYBOOK deflation rule):**
+When closed: copy this 12-section spec verbatim + a Done section with: (a) Gate final numbers (88x passed/0 failed), (b) File-count before/after (1 source + 1 test → 12 source + 7 test), (c) Max file line count before (3318L) / after (< 800L), (d) Any rollbacks encountered, (e) Commit SHAs for each of the 20 atomic steps, (f) 2 new guard test code snippets for future reference. Leave a 1-line CLOSED stub in BACKLOG Still Todo per playbook.
+
+---
 
 #### GAP-3 — Column-Level Lineage & Impact Analysis (OpenLineage Schema + ColumnLineage facets + impact-analysis CLI)  ✅ CLOSED (2026-08-27, archive: WORK_ITEMS_CLOSED.md)
 

@@ -410,4 +410,8 @@ Updates you SHOULD make to this file (Tier-1 summary edits, no narrative duplica
 - New architectural level (L6) added → update §7a. Very rare; requires an RFC.
 - Durable state pointers move (happened once: BACKLOG.md root → docs/todo/ 2026-08-27).
 - §9 deep-links table: change the Tier-2 filename or line reference if a canonical doc moves.
+- **pCO package layout refactor (e.g. CLI flat _cli_* → cli/ subpackage, 20-atomic-step green-gate split):**
+  Update §2 File & code map table rows. Add/remove package directory rows with the correct
+  thin-facade + _* submodule pattern. Tier-2 canonical plan for this refactor lives in
+  BACKLOG.md §Still Todo (do NOT link to it here — cycle prevention rule).
 
