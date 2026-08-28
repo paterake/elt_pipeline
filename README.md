@@ -647,6 +647,11 @@ Each job omits the program name and passes the same arguments you would provide 
 
 ## Contributing, Issues & Capability Requests
 
+**New contributors (human or AI):** Start with the 10-minute index card —
+[AGENT_SPEC.md](AGENT_SPEC.md). It contains the consolidated framework map,
+session start essentials, architecture invariants, extension contracts, gate
+verification, the new-work playbook, and all durable-state pointers.
+
 All PRs need **ruff 0 errors + `bash scripts/run_tests.sh` green**. The full contribution guide (environment setup, pCO package layout, 6 extension APIs you can use WITHOUT touching core code, PR checklist) lives in [CONTRIBUTING.md](CONTRIBUTING.md). Start there.
 
 For bug reports, feature requests, or **requests for a new platform capability that currently shows as 🔴/⏳ in the [Capability Maturity Matrix](docs/CAPABILITY_MATURITY_MATRIX.md)**, open a GitHub issue using one of the provided templates.
